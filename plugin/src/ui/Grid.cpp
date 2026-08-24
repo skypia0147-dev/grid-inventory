@@ -8586,7 +8586,24 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // tiles in open bags (same spill rules as Rebuild). Phase 7: stack
         // buy/take sliders clamp to this so a bulk purchase can't overflow.
         if (a_want <= 0) return 0;
-        if (!a_obj || a_obj->IsGold()) return a_want;
+        // ★★★A LEVELED ITEM IS A TABLE, NOT A THING, and measuring it for grid
+        // space is measuring the menu instead of the meal. Vanilla's coin
+        // purses are the case that found this: CoinPurseSmall is a FLOR whose
+        // produceItem is CoinPurseGoldSmall, an LVLI -- so the harvest gate
+        // asked "does a leveled list fit on the board", got a footprint out of
+        // the fallback, and refused the pickup once the board filled. The list
+        // resolves to GOLD, which takes no space at all.
+        //
+        // The gate exists to refuse what we KNOW cannot be taken. What a list
+        // will hand over is not known until the engine opens it, so it is not
+        // ours to refuse -- and an item that does arrive too big for the board
+        // still lands in the growth rows and trips the overload, which is the
+        // same treatment every other bypass (scripted AddItem, shop, console)
+        // already gets.
+        if (!a_obj || a_obj->IsGold() ||
+            a_obj->Is(RE::FormType::LeveledItem)) {
+            return a_want;
+        }
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return a_want;
 

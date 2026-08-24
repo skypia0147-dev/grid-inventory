@@ -163,6 +163,17 @@ namespace
                 }
                 if (auto* base = a_object->GetBaseObject();
                     base && !FUI::Grid::CanFitNewItem(base)) {
+                    // ⓖ PROBE. A refusal used to leave no trace at all, so a
+                    // report of "gold would not pick up" could not be told
+                    // apart from "the torch next to it would not". Gold is
+                    // supposed to be exempt (MaxAcceptUnits returns early on
+                    // IsGold), and this line is what proves whether it was.
+                    logger::info("[PICKUP] refused '{}' ({:08X}) type={} "
+                                 "gold={} coin={} -- board full (PickUpObject)",
+                        base->GetName(), base->GetFormID(),
+                        static_cast<int>(base->GetFormType()),
+                        base->IsGold(),
+                        FUI::GoldCoins::IsCoinForm(base->GetFormID()));
                     FUI::Sfx::FailNote(FUI::Lang::T(FUI::Lang::Str::InventoryFull));
                     return;   // blocked: the reference stays in the world
                 }
@@ -201,6 +212,13 @@ namespace
                 // level as CapacityActivateHook (the sack conversion above
                 // must run first: gold ignores grid space)
                 if (!FUI::Grid::CanFitNewItem(a_this)) {
+                    // ⓖ probe: the same question at the MISC door, which is the
+                    // one gold actually walks through (Gold001 is a MISC record)
+                    logger::info("[PICKUP] refused '{}' ({:08X}) gold={} coin={} "
+                                 "-- board full (MISC activate)",
+                        a_this->GetName(), a_this->GetFormID(),
+                        a_this->IsGold(),
+                        FUI::GoldCoins::IsCoinForm(a_this->GetFormID()));
                     NotifyInventoryFull();
                     return false;   // blocked: the reference stays in the world
                 }
@@ -369,6 +387,16 @@ namespace
         {
             if (a_activatorRef && a_activatorRef->IsPlayerRef() &&
                 a_this->produceItem && !FUI::Grid::CanFitNewItem(a_this->produceItem)) {
+                // ⓖ probe: WHAT the plant would have produced. This gate is
+                // where the vanilla coin purse was dying and it said nothing at
+                // all -- the refusal reached the player as a toast and the log
+                // as silence.
+                logger::info("[PICKUP] refused harvest '{}' -> produce '{}' "
+                             "({:08X}) type={} -- board full",
+                    a_this->GetName(),
+                    a_this->produceItem->GetName(),
+                    a_this->produceItem->GetFormID(),
+                    static_cast<int>(a_this->produceItem->GetFormType()));
                 NotifyInventoryFull();
                 return false;   // blocked: the plant stays harvestable
             }
@@ -400,6 +428,11 @@ namespace
         {
             if (a_activatorRef && a_activatorRef->IsPlayerRef() &&
                 !FUI::Grid::CanFitNewItem(a_this)) {
+                // ⓖ probe: the last of the four gates to get a voice
+                logger::info("[PICKUP] refused '{}' ({:08X}) type={} "
+                             "-- board full (activate)",
+                    a_this->GetName(), a_this->GetFormID(),
+                    static_cast<int>(a_this->GetFormType()));
                 NotifyInventoryFull();
                 return false;   // blocked: the reference stays in the world
             }
