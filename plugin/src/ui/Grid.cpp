@@ -5637,6 +5637,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     for (auto& [k, v] : g_layout) {
                         if (BaseKey(k) != baseKey) continue;
                         if (v.bag.empty() && v.row >= kMinRows) continue;   // overflow = temporary
+                        // ★★★AND THE SLOT ON THE CURSOR IS NOT A SLOT TO FILL.
+                        // Its layout entry stays in g_layout so the tile can go
+                        // home when it is put down -- but leaving it in this
+                        // list hands its cell to somebody else's amount, which
+                        // is the report: lift a coin and a different coin
+                        // appears in the hole you just made.
+                        if (g_held && k == g_held->key) continue;
                         if (GoldCoins::PinnedValue(k) >= 0) pinnedSlots.push_back({ k, v });
                         else                                 autoSlots.push_back(v);
                     }
@@ -5701,7 +5708,40 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // 2) auto tiles from WALKING gold (pending drops subtracted).
                     // Re-key #0.. by position, skipping keys owned by a pin, so the
                     // ordinal (= value index) stays dense while pins keep their key.
-                    const int coinTiles = GoldCoins::CoinTileCount(cfid);
+                    // ★★★THE CURSOR IS A PLACE, AND GOLD IS THE ONE THING THAT
+                    // FORGOT IT. Every other tile points at something real in
+                    // the inventory -- that sword, that extra list -- so lifting
+                    // one moves a thing out of the board's space and the rest
+                    // are untouched. A coin tile points at nothing: the ledger
+                    // is a single number and these tiles are that number drawn
+                    // out. Lifting one therefore MOVES NOTHING, the number does
+                    // not budge, and the board goes on believing it owes this
+                    // many tiles -- so it mints a fresh one into the cell the
+                    // player just emptied, and the amounts shuffle behind it.
+                    // Reported as "clicking a coin makes a coin somewhere else
+                    // vanish", and that is exactly what the player saw.
+                    //
+                    // Gold has three places to be and only two were counted:
+                    //   in the ledger     -> in WalkingGold()          ✓
+                    //   pinned to a tile  -> subtracted from it        ✓
+                    //   on the cursor     -> nowhere at all            ✗
+                    //
+                    // So take the carried amount out HERE, in the drawing, and
+                    // leave the ledger alone -- the player must still be able to
+                    // spend gold they happen to be holding. The generic tile
+                    // path has always done the same thing one function along
+                    // (freeKey's `!(g_held && k == g_held->key)`); this is that
+                    // rule reaching the coins.
+                    //
+                    // ★A PINNED purse is already out of WalkingGold, so lifting
+                    // one must NOT be subtracted twice.
+                    const bool heldAutoCoin =
+                        g_held && g_held->coinValue > 0 &&
+                        BaseKey(g_held->key) == baseKey &&
+                        GoldCoins::PinnedValue(g_held->key) < 0;
+                    const int coinTiles = GoldCoins::CoinTilesFor(
+                        GoldCoins::WalkingGoldValue() -
+                        (heldAutoCoin ? g_held->coinValue : 0));
                     // ★★The walking total decides WHICH AMOUNTS exist; the slots
                     // decide who holds them. Those were one decision before,
                     // taken by grid position, and that is what moved a tile's
@@ -5716,7 +5756,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // ★asked ONCE: the total is the same for every tile in this
                     // loop, and deriving it walks the inventory (see
                     // GoldCoins::InstanceValueAt).
-                    const int walking = GoldCoins::WalkingGoldValue();
+                    // ★The SAME total the tile count was taken from -- the
+                    // carried amount removed. Asking the raw walking value here
+                    // would hand out amounts for gold that is on the cursor.
+                    const int walking = GoldCoins::WalkingGoldValue() -
+                                        (heldAutoCoin ? g_held->coinValue : 0);
                     for (int r = 0; r < coinTiles; ++r) {
                         want.push_back(GoldCoins::InstanceValueAt(walking, r));
                     }
@@ -5749,10 +5793,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     int probe = 0;
                     for (int rank = 0; rank < coinTiles; ++rank) {
                         std::string key;
-                        for (;;) {   // next free key not owned by a pin
+                        // next free key: not owned by a pin, and NOT THE ONE ON
+                        // THE CURSOR -- re-minting that slot is what dropped a
+                        // second tile into the cell the player had just lifted
+                        // from.
+                        for (;;) {
                             key = probe == 0 ? baseKey : baseKey + "#" + std::to_string(probe);
                             ++probe;
-                            if (GoldCoins::PinnedValue(key) < 0) break;
+                            if (GoldCoins::PinnedValue(key) >= 0) continue;
+                            if (g_held && key == g_held->key) continue;
+                            break;
                         }
                         emitCoin(key, want[static_cast<std::size_t>(rank)],
                                  place[static_cast<std::size_t>(rank)]);
