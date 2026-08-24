@@ -191,6 +191,11 @@ namespace FUI
     void GridInventoryMenu::OnShow()
     {
         g_closeSfxPlayed = false;
+        // ★The museum sweep, taken HERE and only here. Donating requires
+        // closing the inventory, so a reading taken as the menu opens cannot go
+        // stale while it is up -- and the alternative, resolving a reference
+        // handle per tile per frame, is the cost this avoids.
+        FUI::Lotd::Refresh();
         // ★1.4/B0: the strongest test in the whole step. Everything that
         // happened while the menu was SHUT had to arrive as events; if the
         // running total disagrees with a fresh count here, the engine does not

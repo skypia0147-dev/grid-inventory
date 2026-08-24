@@ -3072,7 +3072,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 const ImVec2 wedgeCell = AnchorCell(it.mask, p0, /*bottom*/ false);
                 DrawRarityWedge(dl, wedgeCell,
                                 ImVec2(wedgeCell.x + CellPx(), wedgeCell.y + CellPx()),
-                                it.glow);
+                                it.glow,
+                                it.obj ? Lotd::Of(it.obj->GetFormID())
+                                       : Lotd::Status::kNotRelic);
 
                 // ★★★THE NEW MARK, and it goes AFTER the wedge on purpose.
                 //
@@ -9448,10 +9450,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     // Black underneath so the colour reads on a pale sheet as well as on a
     // dark panel — the same trick every marker on this tile already uses.
     void DrawRarityWedge(ImDrawList* a_dl, const ImVec2& a_boxMin,
-                         const ImVec2& a_boxMax, std::uint8_t a_haloBits)
+                         const ImVec2& a_boxMax, std::uint8_t a_haloBits,
+                         Lotd::Status a_relic)
     {
         const std::uint8_t bits = a_haloBits & 0x3;
-        if (!a_dl || !bits) return;
+        // ★A museum relic earns the wedge even with no rarity of its own: a
+        // plain book the player has already donated is exactly the case the
+        // grey below exists for.
+        if (!a_dl || (!bits && a_relic == Lotd::Status::kNotRelic)) return;
         const float cell = CellPx();
         const float d    = cell * kWedgeFrac;
         const float rim  = RimPx();
@@ -9465,8 +9471,22 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         const float x1  = a_boxMax.x - in;
         const float y0  = a_boxMin.y + in;
         // ★GI67: unique wins outright over enchanted — see DrawMarkerTray.
-        const ImU32 col = (bits & 0x2) ? IM_COL32(232, 182, 74, 255)    // unique
-                                       : IM_COL32(79, 143, 240, 255);   // enchanted
+        // ★★1.4.4, AND THE ORDER IS THE WHOLE DESIGN. A relic still owed to the
+        // museum takes the wedge from whatever rarity the item has, because
+        // "carry this home" is the only urgent thing about it. Once it is
+        // donated the wedge goes BACK to its rarity -- there is nothing urgent
+        // left, and hiding "unique" on 1273 weapons and armours forever would
+        // cost more than it buys. A donated item with no rarity of its own gets
+        // the grey, which reads as "already handed in, safe to sell".
+        // The fact itself is never lost: the tooltip says it in every case.
+        constexpr ImU32 kUnique   = IM_COL32(232, 182, 74, 255);
+        constexpr ImU32 kEnchant  = IM_COL32(79, 143, 240, 255);
+        constexpr ImU32 kRelicOwe = IM_COL32(169, 123, 232, 255);   // #A97BE8
+        constexpr ImU32 kRelicHad = IM_COL32(107, 116, 128, 255);   // #6B7480
+        const ImU32 col = (a_relic == Lotd::Status::kUndonated) ? kRelicOwe
+                        : (bits & 0x2)                          ? kUnique
+                        : (bits & 0x1)                          ? kEnchant
+                                                                : kRelicHad;
 
         // outer: the full wedge, in black. Both legs are d, so the top and the
         // right side are the same length — it is a right ISOSCELES triangle.
@@ -9576,8 +9596,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // Both are gone — see Grid.h. What remains is the corner wedge, kept
         // behind the old name so the doll and the partner window keep their one
         // call site for "mark this item's rarity".
-        (void)a_obj; (void)a_iconMin; (void)a_iconMax; (void)a_rot;
-        DrawRarityWedge(a_dl, a_boxMin, a_boxMax, a_bits);
+        // ★a_obj is read again as of 1.4.4 -- the museum status hangs off the
+        // base form, and routing it through here is what gives the doll and the
+        // partner window the same mark the board has, for free.
+        (void)a_iconMin; (void)a_iconMax; (void)a_rot;
+        DrawRarityWedge(a_dl, a_boxMin, a_boxMax, a_bits,
+                        a_obj ? Lotd::Of(a_obj->GetFormID()) : Lotd::Status::kNotRelic);
     }
 
     namespace
@@ -9672,11 +9696,27 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     // the page, and ref = nullptr is how a book held in the inventory is shown
     // rather than one lying in the world.
     //
-    // ★★★THIS IS NOT READING. Measured across this one call: `spell 0 -> 1,
-    // held 2 -> 2` -- it APPLIES the book on the spot and leaves it in the
-    // pack. That is why a tome was learned the instant it was right-clicked,
-    // why nothing a skill gate hangs off ever ran, and why the Elder Scroll
-    // opened to an empty page. Display only; the reading happens above.
+    // ★★★THIS APPLIES THE BOOK, IT DOES NOT MERELY DRAW IT. Measured across
+    // this one call: `spell 0 -> 1, held 2 -> 2` -- the tome is learned on the
+    // spot and stays in the pack. That is why a tome was learned the instant it
+    // was right-clicked, why nothing a skill gate hangs off ever ran, and why
+    // the Elder Scroll opened to an empty page.
+    //
+    // ★★2026-08-24 CORRECTION -- this comment used to end "Display only; the
+    // reading happens above", and that sent a whole day's hunt the wrong way.
+    // It is NOT display only. Measured against a report that scripted books do
+    // nothing when read from our board (The Dark Arts: Practical Necromancy):
+    //
+    //   [BOOK]    the engine raised no page -- showing it ourselves
+    //   [BOOKEVT] ref=inventory uid=2                    <- 28ms after
+    //   [MARKS]   perks 16->17 addedPerks 18->19 spells 20->21
+    //
+    // This call raises TESBookReadEvent, Papyrus' OnRead rides that same event
+    // source, and the book's script ran to completion -- perk, scripted perk
+    // and ability all arrived. The reading DOES happen here.
+    //
+    // What is true is that it is not the WHOLE reading: the engine's own menu
+    // path spends a tome, and that spending is still done explicitly above.
     void ShowBookPage(RE::TESObjectBOOK* a_book, std::uint16_t a_uid,
                       std::uint16_t a_sig)
     {
@@ -9785,6 +9825,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // Measured, in order, and each step ruled one thing out:
         //   OpenBookMenu   applies the book and keeps it -- neither read nor equip
         //   Read()         works for tomes only; 0 and no change on anything else
+        //                  ★CORRECTION (2026-08-24): skill books too. Measured,
+        //                  'The Importance of Where' -> `Read=true Use=false`
+        //                  and the skill went up. Read() applies `teaches`,
+        //                  whatever it teaches; it is anything with an EMPTY
+        //                  teaches that it turns away.
         //   Activate       never fires, not even in the vanilla inventory
         //   BooksRead      fires from our path now, and the scroll still does
         //                  nothing -- so it is a tally, not the trigger
@@ -10287,6 +10332,21 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         if (const auto* bk = a_obj->As<RE::TESObjectBOOK>();
             bk && bk->IsRead() && !bk->TeachesSpell()) {
             ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::BookRead));
+        }
+        // ★★THE MUSEUM LINE, and it is said in EVERY case -- which is the half
+        // of the design the wedge cannot carry. A donated relic hands its wedge
+        // back to its own rarity, so on the board a donated unique is
+        // indistinguishable from an ordinary unique; here is where that fact
+        // still lives. "Safe to sell" is the question this answers, and it is a
+        // question asked of one item at a time, not of a bag being skimmed.
+        switch (Lotd::Of(a_obj->GetFormID())) {
+        case Lotd::Status::kUndonated:
+            ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::MuseumOwed));
+            break;
+        case Lotd::Status::kDonated:
+            ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::MuseumDone));
+            break;
+        default: break;
         }
         // ★The armour CLASS reads as a second qualifier of the same kind as the
         // slot -- "Body", then "Heavy Armor" -- so it belongs on its own line

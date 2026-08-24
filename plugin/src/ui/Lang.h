@@ -199,6 +199,8 @@ namespace FUI::Lang
         X(ActRead, "read")                                                                                  \
         X(ActReread, "read again")                                                                          \
         X(BookRead, "Read")                                                                                 \
+        X(MuseumOwed, "Museum: not donated")   /* LOTD relic still owed */                                  \
+        X(MuseumDone, "Museum: donated")       /* already on a pedestal -- safe to sell */                  \
         X(ActLearn, "learn")                                                                                \
         X(ActSell, "sell")                                                                                  \
         X(ActStoreIn, "store")                                                                              \

@@ -781,12 +781,21 @@ namespace FUI::Equip
                     // renderer (GI49: this was a THIRD hand copy of the halo
                     // switch; unmasked, it read poison/temper status bits as
                     // "both rarities" red and never drew the rings)
-                    if (eq->glow) {
-                        Grid::DrawGlow(dl, eq->obj, eq->glow,
-                            ImVec2(c.x - dw * 0.5f, c.y - dh * 0.5f),
-                            ImVec2(c.x + dw * 0.5f, c.y + dh * 0.5f),
-                            p0, p1);
-                    }
+                    // ★★1.4.4: THE `if (eq->glow)` GUARD IS GONE, and it was
+                    // hiding the museum mark on every worn item that has no
+                    // rarity of its own. Reported as "weapons show it, armour
+                    // does not" -- which was a coincidence of that character's
+                    // gear, not a difference between the two: the worn weapon
+                    // happened to be enchanted and the armour did not.
+                    // The guard was never needed. DrawGlow is one call through
+                    // to DrawRarityWedge, which decides for itself whether
+                    // there is anything to draw -- and the other two boards
+                    // (partner window, stored bag) have always called it
+                    // unguarded for exactly that reason.
+                    Grid::DrawGlow(dl, eq->obj, eq->glow,
+                        ImVec2(c.x - dw * 0.5f, c.y - dh * 0.5f),
+                        ImVec2(c.x + dw * 0.5f, c.y + dh * 0.5f),
+                        p0, p1);
                     // ★1.0.5: the same shadow the grid gives its tiles, so a
                     // pale item does not vanish here either
                     Grid::DrawItemShadow(dl, icon->srv,

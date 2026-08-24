@@ -7,6 +7,7 @@
 #include "game/WornLedger.h"
 #include "game/DualRing.h"
 #include "game/GoldCoins.h"
+#include "game/Lotd.h"
 #include "ui/Editor.h"
 #include "ui/Fallback.h"
 #include "ui/Lang.h"
@@ -2253,6 +2254,8 @@ namespace
             // no cosave load callback fires on new game — start with an empty
             // grid layout instead of migrating the legacy ini (old saves only)
             FUI::Grid::MarkLayoutFresh();
+            // ⓛ probe: the museum index, once the forms are real
+            SKSE::GetTaskInterface()->AddTask([]() { FUI::Lotd::Rebuild(); });
             break;
         case SKSE::MessagingInterface::kPreLoadGame:
             ResetSession();
@@ -2261,6 +2264,9 @@ namespace
             FUI::DeltaWatch::Reset("load");
             FUI::Census::Reset("load");
             FUI::Ledger::Reset("load");
+            // ★The museum handles name THIS game's references. Dropped before
+            // the swap, rebuilt after it (kPostLoadGame).
+            FUI::Lotd::Clear();
             break;
         case SKSE::MessagingInterface::kPostLoadGame:
             ResetSession();
@@ -2278,6 +2284,9 @@ namespace
             // re-read the carrier from the plugin. Re-lend before the player
             // can notice a second ring that stopped working.
             FUI::DualRing::OnLoad();
+            // ⓛ probe: the museum index. Deferred like the rest -- the display
+            // references have to exist before their state means anything.
+            SKSE::GetTaskInterface()->AddTask([]() { FUI::Lotd::Rebuild(); });
             break;
         }
     }

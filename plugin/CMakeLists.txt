@@ -81,6 +81,8 @@ set(SOURCES
     src/game/Ledger.cpp
     src/game/WornLedger.h
     src/game/WornLedger.cpp
+    src/game/Lotd.h
+    src/game/Lotd.cpp
     src/ui/ItemPreview.h
     src/ui/ItemPreview.cpp
     src/ui/GridMenu.h

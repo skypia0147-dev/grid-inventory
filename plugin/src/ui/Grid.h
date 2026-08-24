@@ -2,6 +2,7 @@
 
 #include <source_location>
 
+#include "game/Lotd.h"
 #include "ui/ItemDef.h"
 #include "ui/Lang.h"
 #include "ui/Theme.h"
@@ -557,8 +558,13 @@ namespace FUI::Grid
     // its own ground. It also costs two triangles.
     //
     // Drawn once per ITEM at the footprint's top-right, not per cell.
+    // ★a_relic (1.4.4) rides the same wedge: a relic still owed to the museum
+    // takes the colour outright, a donated one hands it back to the item's own
+    // rarity, and a donated item with no rarity gets the grey. Full reasoning
+    // at the implementation.
     void DrawRarityWedge(ImDrawList* a_dl, const ImVec2& a_boxMin,
-                         const ImVec2& a_boxMax, std::uint8_t a_haloBits);
+                         const ImVec2& a_boxMax, std::uint8_t a_haloBits,
+                         Lotd::Status a_relic);
 
     // Rarity glow, shared with the partner (loot/barter) window so its items
     // glow exactly like the player grid's.
