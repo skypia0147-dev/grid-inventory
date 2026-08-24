@@ -1867,7 +1867,18 @@ namespace FUI::Wheeler
                 m->depthPriority = 12;
                 return m;
             }
+
+            // ★VR's RE::IMenu is 0x40, ours compiles to 0x30 — the engine
+            // writes unk30/unk34/menuName into the sixteen bytes past our
+            // allocation. Same tail, same reason, as GridMenu.h; the full
+            // account of the crash that found it lives there.
+            REX::EnumSet<RE::UI_MENU_Unk09, std::uint32_t> _vrUnk30{ RE::UI_MENU_Unk09::kNone };
+            std::byte                                     _vrUnk34{ std::byte{ 1 } };
+            RE::BSFixedString                             _vrMenuName{};
         };
+
+        static_assert(sizeof(WheelerMenu) >= 0x40,
+            "VR's IMenu is 0x40 -- the engine writes past a 0x30 allocation");
 
         void ShowMenu(bool a_show)
         {
