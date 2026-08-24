@@ -188,6 +188,28 @@ namespace FUI::Editor
         constexpr float kLabelW = 46.0f;   // * scale
         constexpr float kTrackW = 158.0f;  // * scale
 
+        // ★★★THE TRACK, CLIPPED TO WHAT THE ROW ACTUALLY HAS LEFT.
+        //
+        // kTrackW is a FIXED width, so the moment a scrollbar appeared the
+        // track carried on underneath it and took its value label with it --
+        // reported as "raising the scale makes the settings and edit windows
+        // unusable": the body gets taller, ImGui adds a vertical scrollbar,
+        // every row loses ScrollbarSize of width, and nothing in here noticed.
+        //
+        // Asking for the remaining width costs nothing while there is room --
+        // min() returns kTrackW untouched -- and is the whole fix when there is
+        // not. The floor keeps a squeezed track grabbable rather than letting
+        // it collapse to a hairline.
+        //
+        // ★Call it AFTER the label's SameLine: the value it reads is measured
+        // from the current cursor to the content edge, which is exactly the
+        // space the track is allowed to use.
+        [[nodiscard]] float TrackW(float a_scale)
+        {
+            const float avail = ImGui::GetContentRegionAvail().x;
+            return (std::min)(kTrackW * a_scale, (std::max)(24.0f, avail));
+        }
+
         // ★The name beside a gauge, drawn the way the settings rows draw
         // theirs: the skin's own ink, with the black edge that keeps a light
         // string legible over a translucent panel. These were TextColored in
@@ -329,7 +351,8 @@ namespace FUI::Editor
             const ImVec2 at = ImGui::GetCursorScreenPos();
             const float  h = ImGui::GetFrameHeight();
             const bool typing = Theme::GaugeEditing(id.c_str());
-            bool changed = GaugeRow(at, kTrackW * S,
+            const float tw = TrackW(S);
+            bool changed = GaugeRow(at, tw,
                 (a_val + 1.0f) * 0.5f, false, id.c_str(), "%.2f", a_val,
                 [&] {
                     return ImGui::DragFloat(id.c_str(), &a_val, 0.005f,
@@ -341,7 +364,7 @@ namespace FUI::Editor
             // right-click on the track would quietly stop resetting.
             changed |= ResetOnRightClick(a_val, a_defVal);
             if (!typing) {
-                changed |= Theme::GaugeStep(at, kTrackW * S, h, id.c_str(),
+                changed |= Theme::GaugeStep(at, tw, h, id.c_str(),
                                             a_val, 0.01f, -1.0f, 1.0f);
             }
             ImGui::SameLine();
@@ -361,7 +384,8 @@ namespace FUI::Editor
             const ImVec2 at = ImGui::GetCursorScreenPos();
             const float  h = ImGui::GetFrameHeight();
             const bool typing = Theme::GaugeEditing(id.c_str());
-            bool changed = GaugeRow(at, kTrackW * S,
+            const float tw = TrackW(S);
+            bool changed = GaugeRow(at, tw,
                 (a_val + 180.0f) / 360.0f, false, id.c_str(), "%.1f\xC2\xB0", a_val,
                 [&] {
                     return ImGui::DragFloat(id.c_str(), &a_val, 0.5f,
@@ -369,7 +393,7 @@ namespace FUI::Editor
                 });
             changed |= ResetOnRightClick(a_val, a_defVal);   // before the arrows
             if (!typing) {
-                changed |= Theme::GaugeStep(at, kTrackW * S, h, id.c_str(),
+                changed |= Theme::GaugeStep(at, tw, h, id.c_str(),
                                             a_val, 1.0f, -180.0f, 180.0f);
             }
             ImGui::SameLine();
@@ -449,8 +473,31 @@ namespace FUI::Editor
         // ★+ the title's top pad, paid for in the height as every window that
         // takes it must (Theme::TitleTopPad).
         const float topPad = Theme::TitleTopPad();
-        const ImVec2 size(342.0f * s + 2.0f * Theme::FrameInsetX(),
-                          666.0f * s + 2.0f * Theme::FrameInsetY());   // +Stack row (G3)
+        // ★★★THE HEIGHT COMES FROM THE CONTENT NOW, not from a number that
+        // hoped to be big enough. 666 was picked as "tall enough that the body
+        // never needs a scrollbar", and that held right up until something made
+        // the content taller than the guess -- a low resolution, a longer
+        // translation, and (next) a font-size setting. When it stopped holding
+        // there was no recovery: the window kept its guessed height, the child
+        // scrolled inside it, and the scrollbar ate the width the rows were
+        // already using. Reported as "the edit window is unusable once a
+        // scrollbar appears".
+        //
+        // Measured from the previous frame and clamped to the screen, which is
+        // exactly what the settings window has always done -- and the reason
+        // THAT window never had this bug. Past the clamp the child scrolls, and
+        // the window widens by the scrollbar so the rows keep their room.
+        // The first frame has nothing to measure, so it falls back to the old
+        // fixed height and snaps one frame later.
+        static float s_wantH = 0.0f;
+        const float maxH = ImGui::GetIO().DisplaySize.y - 80.0f * s;
+        const bool clamped = s_wantH > 0.0f && s_wantH > maxH;
+        const float winH = s_wantH > 0.0f
+                             ? (std::min)(s_wantH, maxH)
+                             : 666.0f * s + 2.0f * Theme::FrameInsetY();
+        const ImVec2 size(342.0f * s + 2.0f * Theme::FrameInsetX() +
+                              (clamped ? ImGui::GetStyle().ScrollbarSize : 0.0f),
+                          winH);   // +Stack row (G3)
         ImVec2 defPos(60.0f, 120.0f);
         if (auto* mw = wm->Find("main")) {
             defPos = ImVec2(mw->pos.x - size.x - 8.0f, mw->pos.y);
@@ -471,10 +518,17 @@ namespace FUI::Editor
         // scrollable body child — the titlebar pins the content start to a
         // SCREEN position each frame, so window-level scrolling moves the
         // scrollbar but never the content; the child scrolls internally
+        // ★where the body begins, so the measurement below can say how tall the
+        // WINDOW wants to be rather than just the body
+        const float childTop = ImGui::GetCursorPosY();
         ImGui::BeginChild("##editor_body", ImVec2(0.0f, 0.0f));
 
         if (!g_sel) {
             ImGui::TextDisabled("%s", Lang::T(Lang::Str::SelectHint));
+            // ★s_wantH is deliberately NOT updated here. With nothing selected
+            // the body is one line, and measuring that would shrink the window
+            // to a sliver and snap it back the moment an item is clicked. The
+            // last real measurement is the honest size for an empty editor.
             ImGui::EndChild();
             ImGui::End();
             ImGui::PopStyleVar();   // WindowPadding (torn-frame inset)
@@ -611,7 +665,8 @@ namespace FUI::Editor
             const ImVec2 at = ImGui::GetCursorScreenPos();
             const float  h = ImGui::GetFrameHeight();
             const bool zTyping = Theme::GaugeEditing("##Scale");
-            if (GaugeRow(at, kTrackW * S0,
+            const float tw = TrackW(S0);
+            if (GaugeRow(at, tw,
                     (zoom - zmin) / (drawnStyle ? 3.8f : 1.95f), false,
                     "##Scale", "%.2f", zoom,
                     [&] {
@@ -621,7 +676,7 @@ namespace FUI::Editor
                 chOrient = true;
             }
             if (ResetOnRightClick(zoom, zdef)) chOrient = true;   // before arrows
-            if (!zTyping && Theme::GaugeStep(at, kTrackW * S0, h, "##Scale",
+            if (!zTyping && Theme::GaugeStep(at, tw, h, "##Scale",
                                              zoom, 0.01f, zmin, zmax)) {
                 chOrient = true;
             }
@@ -649,7 +704,8 @@ namespace FUI::Editor
                 const ImVec2 at = ImGui::GetCursorScreenPos();
                 const float  hh = ImGui::GetFrameHeight();
                 const bool typing = Theme::GaugeEditing(id.c_str());
-                bool ch = GaugeRow(at, kTrackW * S3,
+                const float tw = TrackW(S3);
+                bool ch = GaugeRow(at, tw,
                     (a_val - a_lo) / (a_hi - a_lo), false, id.c_str(),
                     "%.0f\xC2\xB0", a_val,
                     [&] {
@@ -658,7 +714,7 @@ namespace FUI::Editor
                     });
                 ch |= ResetOnRightClick(a_val, a_base);   // before the arrows
                 if (!typing) {
-                    ch |= Theme::GaugeStep(at, kTrackW * S3, hh, id.c_str(),
+                    ch |= Theme::GaugeStep(at, tw, hh, id.c_str(),
                                            a_val, 1.0f, a_lo, a_hi);
                 }
                 ImGui::SameLine();
@@ -903,7 +959,8 @@ namespace FUI::Editor
             const ImVec2 stAt = ImGui::GetCursorScreenPos();
             const float  stH = ImGui::GetFrameHeight();
             const bool sTyping = Theme::GaugeEditing("##StackCap");
-            if (GaugeRowI(stAt, kTrackW * S0,
+            const float stW = TrackW(S0);
+            if (GaugeRowI(stAt, stW,
                     g_cur.stack > 0 ? g_cur.stack / 100.0f : 0.0f, false,
                     "##StackCap", stackFmt, g_cur.stack,
                     [&] {
@@ -914,7 +971,7 @@ namespace FUI::Editor
             }
             if (!sTyping) {
                 // the steppers move the number; the apply is below
-                (void)Theme::GaugeStepInt(stAt, kTrackW * S0, stH,
+                (void)Theme::GaugeStepInt(stAt, stW, stH,
                                           "##StackCap", g_cur.stack, 1, 0, 999);
             }
             // ★...and it is NOT applied here. It lands at Save (SaveSession).
@@ -1021,7 +1078,11 @@ namespace FUI::Editor
             MarkDirty();
         }
         ImGui::EndDisabled();
+        // ★The height the window will be asked for NEXT frame. Taken before
+        // EndChild, where the cursor still sits at the bottom of the content.
+        const float bodyH = ImGui::GetCursorPosY() + 4.0f * s;   // bottom margin
         ImGui::EndChild();
+        s_wantH = childTop + bodyH + 8.0f + Theme::FrameInsetY();
         ImGui::End();
         ImGui::PopStyleVar();   // WindowPadding (torn-frame inset)
     }
