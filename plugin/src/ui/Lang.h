@@ -200,8 +200,15 @@ namespace FUI::Lang
         X(ActRead, "read")                                                                                  \
         X(ActReread, "read again")                                                                          \
         X(BookRead, "Read")                                                                                 \
-        X(MuseumOwed, "Museum: not donated")   /* LOTD relic still owed */                                  \
-        X(MuseumDone, "Museum: donated")       /* already on a pedestal -- safe to sell */                  \
+        /* ★LOTD'S OWN WORD, counted in its plugin rather than guessed: "on     \
+           display" 50 times, "displayed" 46, and "donate" never once in a      \
+           string a player reads. Its own messages are DBM_SetDisplayedMessage  \
+           and DBM_SetDisplayedDoneMessage, and its dialogue says "the item is  \
+           not on display" in as many words. It is also what we actually        \
+           MEASURE -- the pedestal's reference being enabled -- so it stays     \
+           true for a relic that was handed in but never put out. */            \
+        X(MuseumOwed, "Museum: not on display")   /* LOTD relic still owed */                               \
+        X(MuseumDone, "Museum: on display")       /* already on a pedestal */                               \
         X(ActLearn, "learn")                                                                                \
         X(ActSell, "sell")                                                                                  \
         X(ActStoreIn, "store")                                                                              \
