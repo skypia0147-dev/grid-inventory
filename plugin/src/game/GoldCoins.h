@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <string>
 #include <vector>
@@ -52,26 +52,21 @@ namespace FUI::GoldCoins
     // G2: value represented by ONE coin tile of a_form at split-stack index
     // a_index (04 tiles show one-per-coin: index < fullThousands -> 1000,
     // last one -> the 100..999 remainder; tiers 1..3 always index 0).
-    [[nodiscard]] int InstanceValue(RE::FormID a_form, int a_index);
     // Same rule, walking total supplied once -- for callers filling every tile
     // in a loop (InstanceValue re-walks the inventory on each call).
-    [[nodiscard]] int InstanceValueAt(int a_walking, int a_index);
 
     // Number of grid tiles this coin form should display, computed from
     // WALKING gold (pending drops already subtracted). The rebuild uses this
     // instead of the live item count, which lags a tick behind a drop.
     // NOTE: AUTO tiles only — pinned purses (below) are counted separately.
-    [[nodiscard]] int CoinTileCount(RE::FormID a_form);
 
     // Total AUTO coin cells (all tiers, 1x1 each) a given WALKING-gold amount
     // would occupy. Grid's spill pass uses this to add back the coin tiles a
     // barter payment just dissolved, so a purchase doesn't reuse the freed
     // cells (the item spills into a bag as if gold still filled the board).
-    [[nodiscard]] int CoinTilesFor(int a_walking);
 
     // Current walking gold (ledger - pouch - pinned): the pool the auto coin
     // tiles decompose from. Grid's spill pass pairs it with CoinTilesFor above.
-    [[nodiscard]] int WalkingGoldValue();
 
     // ---- G4: pinned gold purses (Mabinogi split, symmetric with stacks) ----
     // A split fixes an amount (1..1000) onto a specific grid tile key; that
@@ -79,8 +74,6 @@ namespace FUI::GoldCoins
     // ignores it, and the purse keeps its exact value & position until merged
     // or dropped back. Value cap == one 04 coin (1000); larger never occurs.
     inline constexpr int kCoinCap = 1000;
-    [[nodiscard]] int PinnedValue(const std::string& a_tileKey);   // -1 if not pinned
-    [[nodiscard]] int PinnedTotal();                               // Σ pinned values
     [[nodiscard]] int BandTier(int a_value);                       // value -> coin tier 0..3
     [[nodiscard]] RE::TESBoundObject* CoinForTier(int a_tier);     // 0x800..0x803
 
@@ -89,8 +82,6 @@ namespace FUI::GoldCoins
     // holds is Gold001, and anything that has to name the stored gold to the
     // partner side (a drop-cell note, for one) needs that form rather than ours.
     [[nodiscard]] RE::TESBoundObject* VanillaGold();
-    void PinAmount(const std::string& a_tileKey, int a_value);     // create/replace a purse
-    void UnpinTile(const std::string& a_tileKey);                  // merged / dropped / cancelled
 
     // G2 interactions — mutate the ledger/pouch and mark the mirror dirty.
     // ★★PER POUCH. Every one of these used to be player-wide, which is why
@@ -230,6 +221,10 @@ namespace FUI::GoldCoins
     };
     void SetBagWares(std::vector<BagWare> a_wares);
 
+    // ★S-G: pending ledger ops + announced transfers still in flight.
+    // Grid::CoinCensus refuses to square the tile invariant while this is
+    // non-zero -- the tile half and the ledger half land on different frames.
+    [[nodiscard]] int UnsettledDelta();
     void MarkDirty();   // player's Gold001 (or a coin form) changed
     void Tick();        // reconcile mirror -> inventory (game thread)
 

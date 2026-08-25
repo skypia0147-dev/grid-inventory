@@ -372,10 +372,18 @@ namespace FUI::Grid
 
     [[nodiscard]] int GoldAmount();   // v9: UIRoot draws the GOLD bar
 
-    // B: report gold spent by a barter purchase this frame. The next Rebuild's
-    // spill pass adds back the coin tiles the payment dissolved, so the bought
-    // item spills into a bag instead of reusing the freed cells.
-    void NotePaidGold(int a_price);
+    // ★S-G: gold's only mechanisms, called from GoldCoins::Tick (main
+    // thread). The ledger moved, so the coin TILES move -- income fills the
+    // rear-most partial tile and mints capfuls; a spend debits partials
+    // before full thousands, rear board position first. CoinCensus squares
+    // the one invariant that replaced the mirror (Σ tiles == ledger − pouch)
+    // whenever nothing of ours is in flight.
+    void CoinIncome(int a_value);
+    void CoinSpend(int a_value);
+    void CoinCensus(const char* a_why);
+
+    // ★S-G: NotePaidGold is retired -- a payment debits named coin tiles
+    // (Grid::CoinSpend), so the spill pass no longer guesses at freed cells.
 
     // Phase 7: sold/stored units whose engine removal is still queued on the
     // transfer Tick. The rebuild subtracts them immediately and drains the

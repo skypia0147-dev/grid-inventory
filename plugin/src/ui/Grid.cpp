@@ -332,10 +332,6 @@ namespace FUI::Grid
         // withdraw from whichever one the map happened to list first.
         std::string g_pouchTile;
 
-        // B: gold paid by a barter purchase this frame. The spill pass adds the
-        // coin tiles this payment dissolved back into the main-board sim so the
-        // bought item can't claim the freed cells (it spills to a bag instead).
-        int  g_paidGold = 0;
 
         // ★B4-3c: the pending-removal counters that lived here for three
         // versions -- g_pendingRemoveForm / Pool / Xl and their TTL stamps,
@@ -1029,7 +1025,7 @@ namespace FUI::Grid
             auto& layout = Layout();
             // a key is taken if it's placed OR reserved by a pin not yet placed
             auto taken = [&](const std::string& k) {
-                return layout.contains(k) || GoldCoins::PinnedValue(k) >= 0;
+                return layout.contains(k);   // ★S-G: every coin tile has a record
             };
             if (!taken(a_baseKey)) return a_baseKey;
             for (int k = 1;; ++k) {
@@ -1527,6 +1523,33 @@ namespace FUI::Grid
         bool g_wantTrashView = false;
         // ★S2: the expiry's one-tile recovery (defined with the verb bodies)
         bool ReEmitTileAt(std::uint32_t a_form, const std::string& a_key);
+        // ★S-G: the layout book's coin accessors -- the pin API's successors,
+        // now that every coin tile owns its amount on its slot. A fresh record
+        // is born UNPLACED (col -1), or the placer guard never fires and it
+        // sits down at [0,0] on top of whatever lives there (the mint trap).
+        [[nodiscard]] int CoinRecordOf(const std::string& a_key)
+        {
+            const auto li = g_layout.find(a_key);
+            return li == g_layout.end() ? -1 : li->second.coin;
+        }
+        void SetCoinRecord(const std::string& a_key, int a_value)
+        {
+            const auto li = g_layout.find(a_key);
+            if (a_value <= 0) {
+                if (li != g_layout.end()) li->second.coin = -1;
+                return;
+            }
+            const int v = (std::min)(a_value, GoldCoins::kCoinCap);
+            if (li != g_layout.end()) {
+                li->second.coin = v;
+                return;
+            }
+            auto& le = g_layout[a_key];
+            le.col = -1;
+            le.row = -1;
+            le.count = 1;
+            le.coin = v;
+        }
         // occupancy of one view (defined with the verb bodies; S3's Enter
         // seats fresh units into bag views through it)
         std::vector<std::vector<bool>> ViewOccOf(const View& a_v, int a_skipIdx = -1);
@@ -3384,8 +3407,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                 // G4: a pinned purse releases its fixed value; an
                                 // auto coin drops its ordinal value. Either way
                                 // DropAsGold debits the (now-walking) gold.
-                                if (GoldCoins::PinnedValue(it.key) >= 0)
-                                    GoldCoins::UnpinTile(it.key);
                                 GoldCoins::DropAsGold(it.coinValue);
                                 g_layout.erase(it.key);   // free THIS slot; rebuild re-maps survivors by position
                                 RequestRebuild();
@@ -3660,15 +3681,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             // that was clicked; the survivors re-map around it.
                             // Same reason the drop-on-pouch path erases too.
                             if (GoldCoins::PouchHeld() && it.coinValue > 0) {
-                                const int  v = it.coinValue;
-                                const bool pinned = GoldCoins::PinnedValue(it.key) >= 0;
-                                if (pinned) GoldCoins::UnpinTile(it.key);
-                                if (GoldCoins::StoreToPouch(v) > 0) {
+                                const int v = it.coinValue;
+                                // ★S-G: the tile's record IS the amount -- a
+                                // partial store shrinks it, a full one erases
+                                const int stored = GoldCoins::StoreToPouch(v);
+                                if (stored > 0 && stored < v) {
+                                    SetCoinRecord(it.key, v - stored);
+                                }
+                                if (stored >= v) {
                                     g_layout.erase(it.key);
                                     if (g_sound) g_sound(it.obj, false);
-                                } else if (pinned) {
-                                    GoldCoins::PinAmount(it.key, v);
                                 }
+                                // refused outright: the record never moved
                             }
                         } else {
                             // ★ONE PATH / O-1: D3's right-click -- use, or put
@@ -4135,8 +4159,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             }
             if (carryKey.empty()) {
                 carryKey = FormKey(a_obj);
-                for (int n = 1; g_layout.contains(carryKey) ||
-                                GoldCoins::PinnedValue(carryKey) >= 0; ++n) {
+                for (int n = 1; g_layout.contains(carryKey); ++n) {
                     carryKey = FormKey(a_obj) + "#" + std::to_string(n);
                 }
             }
@@ -5055,7 +5078,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 for (int n = 0;; ++n) {
                     std::string k = n == 0 ? a_base : a_base + "#" + std::to_string(n);
                     if (!g_layout.contains(k) && !minted.contains(k) &&
-                        GoldCoins::PinnedValue(k) < 0 &&
                         !(g_held && k == g_held->key)) {
                         minted.insert(k);
                         return k;
@@ -5749,225 +5771,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 }
                 if (IsUniqueCached(obj)) glow |= 2;
 
-                // COIN tiles: a coin's VALUE is bound to its ordinal (InstanceValue:
-                // low index = 1000, top index = remainder). If the value stayed
-                // keyed to the tile index while the position is free-placed, a drop
-                // would remove the wrong-LOOKING tile (the reconciler re-lays value
-                // by index, not by where the user put it). Fix: sort THIS form's
-                // saved slots by grid position and re-key #0,#1,... in that order,
-                // so ordinal == visual order (front cell = 1000, last cell =
-                // remainder). A drop erases exactly its slot (below), and the next
-                // rebuild re-maps the survivors by position — the emptied cell is
-                // the one the user dropped, never a shuffled neighbour.
-                // coins ONLY — the pouch also passes IsCoinForm but is a normal
-                // 2x2 bag tile (no tier), so it must take the generic path.
+                // ★S-G: COIN TILES ARE NOT WALKED ANY MORE. Every coin
+                // tile owns its amount on its layout slot, and the emission
+                // pass at the end of this function draws them straight out of
+                // g_layout (the trash-parked precedent). The physical coin
+                // items this branch used to partition are purged at load; any
+                // straggler that still walks past here is skipped so it can
+                // never tile twice. The pouch still takes the generic path.
                 if (GoldCoins::IsCoinForm(obj->GetFormID()) &&
                     !GoldCoins::IsPouch(obj->GetFormID())) {
-                    const RE::FormID cfid = obj->GetFormID();
-                    // Partition this form's saved slots: PINNED purses (G4, fixed
-                    // key/value/position) vs AUTO tiles (walking gold, re-keyed by
-                    // position with an ordinal-bound value).
-                    std::vector<std::pair<std::string, LayoutEntry>> pinnedSlots;
-                    std::vector<LayoutEntry> autoSlots;
-                    for (auto& [k, v] : g_layout) {
-                        if (BaseKey(k) != baseKey) continue;
-                        if (v.bag.empty() && v.row >= kMinRows) continue;   // overflow = temporary
-                        // ★★★AND THE SLOT ON THE CURSOR IS NOT A SLOT TO FILL.
-                        // Its layout entry stays in g_layout so the tile can go
-                        // home when it is put down -- but leaving it in this
-                        // list hands its cell to somebody else's amount, which
-                        // is the report: lift a coin and a different coin
-                        // appears in the hole you just made.
-                        if (g_held && k == g_held->key) continue;
-                        if (GoldCoins::PinnedValue(k) >= 0) pinnedSlots.push_back({ k, v });
-                        else                                 autoSlots.push_back(v);
-                    }
-                    auto byPos = [](const LayoutEntry& a, const LayoutEntry& b) {
-                        if (a.bag != b.bag) return a.bag < b.bag;
-                        if (a.row != b.row) return a.row < b.row;
-                        return a.col < b.col;
-                    };
-                    std::sort(autoSlots.begin(), autoSlots.end(), byPos);
-
-                    // wipe only this form's AUTO keys (pinned keys keep their spot)
-                    for (auto li = g_layout.begin(); li != g_layout.end();) {
-                        if (BaseKey(li->first) == baseKey && GoldCoins::PinnedValue(li->first) < 0)
-                            li = g_layout.erase(li);
-                        else ++li;
-                    }
-
-                    auto emitCoin = [&](const std::string& key, int value,
-                                        const LayoutEntry* pos) {
-                        if (g_held && key == g_held->key) return;   // cell stays free
-                        Item it;
-                        it.key = key;
-                        // ★★The KEY names a coin form; the VALUE is what the
-                        // purse actually holds. They can disagree — a save
-                        // written before the shrink path re-keyed still has a
-                        // 900 G purse, split down to 50, wearing its 0x803 key.
-                        // The value is the truth, so the drawn form comes from
-                        // the value's band. Auto tiles always agree already
-                        // (InstanceValue only ever yields values inside the
-                        // form's own band), so this changes nothing for them
-                        // and repairs an old pin the moment it is drawn.
-                        auto* drawn = value >= 0
-                                          ? GoldCoins::CoinForTier(GoldCoins::BandTier(value))
-                                          : nullptr;
-                        it.obj = drawn ? drawn : obj;
-                        it.glow = glow;
-                        it.count = 1;   // coins: one unit per tile (never favoritable)
-                        it.def = (drawn && drawn != obj && g_resolver) ? g_resolver(drawn)
-                                                                      : gdef;
-                        it.mask = MaskOf(it.def);
-                        it.coinValue = value;
-                        if (pos) {
-                            it.col = pos->col;
-                            it.row = pos->row;
-                            it.inBag = pos->bag;
-                            g_layout[key] = *pos;
-                            // ★Write the amount back onto the slot, so the next
-                            // rebuild can recognise it. Without this the field
-                            // would only ever be -1 and every tile would take
-                            // whatever the position order handed it -- the very
-                            // behaviour this replaces.
-                            g_layout[key].coin = value;
-                        }
-                        g_items.push_back(std::move(it));
-                    };
-
-                    // 1) pinned purses — fixed value & position
-                    for (auto& [k, le] : pinnedSlots) {
-                        emitCoin(k, GoldCoins::PinnedValue(k), &le);
-                    }
-
-                    // 2) auto tiles from WALKING gold (pending drops subtracted).
-                    // Re-key #0.. by position, skipping keys owned by a pin, so the
-                    // ordinal (= value index) stays dense while pins keep their key.
-                    // ★★★THE CURSOR IS A PLACE, AND GOLD IS THE ONE THING THAT
-                    // FORGOT IT. Every other tile points at something real in
-                    // the inventory -- that sword, that extra list -- so lifting
-                    // one moves a thing out of the board's space and the rest
-                    // are untouched. A coin tile points at nothing: the ledger
-                    // is a single number and these tiles are that number drawn
-                    // out. Lifting one therefore MOVES NOTHING, the number does
-                    // not budge, and the board goes on believing it owes this
-                    // many tiles -- so it mints a fresh one into the cell the
-                    // player just emptied, and the amounts shuffle behind it.
-                    // Reported as "clicking a coin makes a coin somewhere else
-                    // vanish", and that is exactly what the player saw.
-                    //
-                    // Gold has three places to be and only two were counted:
-                    //   in the ledger     -> in WalkingGold()          ✓
-                    //   pinned to a tile  -> subtracted from it        ✓
-                    //   on the cursor     -> nowhere at all            ✗
-                    //
-                    // So take the carried amount out HERE, in the drawing, and
-                    // leave the ledger alone -- the player must still be able to
-                    // spend gold they happen to be holding. The generic tile
-                    // path has always done the same thing one function along
-                    // (freeKey's `!(g_held && k == g_held->key)`); this is that
-                    // rule reaching the coins.
-                    //
-                    // ★A PINNED purse is already out of WalkingGold, so lifting
-                    // one must NOT be subtracted twice.
-                    const bool heldAutoCoin =
-                        g_held && g_held->coinValue > 0 &&
-                        BaseKey(g_held->key) == baseKey &&
-                        GoldCoins::PinnedValue(g_held->key) < 0;
-                    const int coinTiles = GoldCoins::CoinTilesFor(
-                        GoldCoins::WalkingGoldValue() -
-                        (heldAutoCoin ? g_held->coinValue : 0));
-                    // ★★The walking total decides WHICH AMOUNTS exist; the slots
-                    // decide who holds them. Those were one decision before,
-                    // taken by grid position, and that is what moved a tile's
-                    // worth out from under it.
-                    // Every slot that already holds an amount still on the list
-                    // keeps it -- carrying a thousand across the board changes
-                    // where it is and nothing else. Only what is left over gets
-                    // handed out, in position order, which is what a fresh tile
-                    // or a changed remainder needs.
-                    std::vector<int> want;
-                    want.reserve(static_cast<std::size_t>(coinTiles));
-                    // ★asked ONCE: the total is the same for every tile in this
-                    // loop, and deriving it walks the inventory (see
-                    // GoldCoins::InstanceValueAt).
-                    // ★The SAME total the tile count was taken from -- the
-                    // carried amount removed. Asking the raw walking value here
-                    // would hand out amounts for gold that is on the cursor.
-                    const int walking = GoldCoins::WalkingGoldValue() -
-                                        (heldAutoCoin ? g_held->coinValue : 0);
-                    for (int r = 0; r < coinTiles; ++r) {
-                        want.push_back(GoldCoins::InstanceValueAt(walking, r));
-                    }
-                    // Each amount finds its slot: first the one already holding
-                    // that amount, then whatever is left over, in position
-                    // order. Walking the AMOUNTS (not the slots) is what keeps
-                    // each one handed out exactly once -- matching slot-first
-                    // and falling back to InstanceValue for the leftovers
-                    // could pay the same remainder twice when there were fewer
-                    // slots than tiles.
-                    std::vector<const LayoutEntry*> place(want.size(), nullptr);
-                    std::vector<bool> used(autoSlots.size(), false);
-                    for (std::size_t w = 0; w < want.size(); ++w) {
-                        for (std::size_t s = 0; s < autoSlots.size(); ++s) {
-                            if (used[s] || autoSlots[s].coin != want[w]) continue;
-                            used[s] = true;
-                            place[w] = &autoSlots[s];
-                            break;
-                        }
-                    }
-                    // ★Leftovers used to take the first unused slot in
-                    // POSITION order, and a spend that broke a thousand showed
-                    // why that is wrong: the shrunk remainder landed on the
-                    // OLD remainder's cell (front-most unused) while the
-                    // broken thousand's cell died -- so the rear tile looked
-                    // like it teleported onto the partial and was spent there
-                    // (user report, shop test). The slot whose OLD amount is
-                    // NEAREST the new one is the tile the player watched
-                    // change, so it keeps its cell and shrinks (or fills) in
-                    // place. Ties prefer the slot that could have shrunk into
-                    // the amount (old >= new), then the later board position.
-                    for (std::size_t w = 0; w < want.size(); ++w) {
-                        if (place[w]) continue;
-                        std::size_t best = autoSlots.size();
-                        int  bestD = 0;
-                        bool bestGe = false;
-                        for (std::size_t s = 0; s < autoSlots.size(); ++s) {
-                            if (used[s]) continue;
-                            const int c = autoSlots[s].coin;
-                            const int d = c >= want[w] ? c - want[w] : want[w] - c;
-                            const bool ge = c >= want[w];
-                            if (best == autoSlots.size() || d < bestD ||
-                                (d == bestD && ge && !bestGe) ||
-                                (d == bestD && ge == bestGe)) {   // later position wins ties
-                                best = s;
-                                bestD = d;
-                                bestGe = ge;
-                            }
-                        }
-                        if (best == autoSlots.size()) break;   // brand new tiles from here
-                        used[best] = true;
-                        place[w] = &autoSlots[best];
-                    }
-
-                    int probe = 0;
-                    for (int rank = 0; rank < coinTiles; ++rank) {
-                        std::string key;
-                        // next free key: not owned by a pin, and NOT THE ONE ON
-                        // THE CURSOR -- re-minting that slot is what dropped a
-                        // second tile into the cell the player had just lifted
-                        // from.
-                        for (;;) {
-                            key = probe == 0 ? baseKey : baseKey + "#" + std::to_string(probe);
-                            ++probe;
-                            if (GoldCoins::PinnedValue(key) >= 0) continue;
-                            if (g_held && key == g_held->key) continue;
-                            break;
-                        }
-                        emitCoin(key, want[static_cast<std::size_t>(rank)],
-                                 place[static_cast<std::size_t>(rank)]);
-                    }
-                    continue;   // coins handled — skip the generic tile loop
+                    continue;
                 }
 
                 // emit one tile Item at a saved (or fresh, col<0) spot
@@ -6598,6 +6411,32 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     }
                 }
             }
+
+            // ---- ★S-G: coin tiles, straight out of the layout --------------
+            // The slot is the book now: every coin tile is a (key, amount)
+            // the player's gestures (or CoinIncome / CoinSpend) put there.
+            // Drawn like the trash-parked tiles -- no inventory walk behind
+            // them, the obj is the one coin form, the amount rides coinValue.
+            if (auto* cform = GoldCoins::CoinForTier(0)) {
+                const GridDef cdef = g_resolver ? g_resolver(cform) : GridDef{};
+                for (const auto& [ck, cle] : g_layout) {
+                    if (cle.coin < 0) continue;
+                    if (g_held && ck == g_held->key) continue;   // cursor money
+                    if (cle.bag == kTrashKey) continue;          // coins never park
+                    Item cit;
+                    cit.key = ck;
+                    cit.obj = cform;
+                    cit.count = 1;
+                    cit.def = cdef;
+                    cit.rot = 0;
+                    cit.mask = MaskOf(cit.def);
+                    cit.coinValue = cle.coin;
+                    cit.col = cle.col;
+                    cit.row = cle.row;
+                    cit.inBag = cle.bag;
+                    g_items.push_back(std::move(cit));
+                }
+            }
         }
 
         // stage 3: bag existence bookkeeping (E3/E4) — returns the map of
@@ -6910,39 +6749,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             }
         }
 
-        // B: purchase-payment spill accounting — 1x1 dummies re-fill the
-        // coin cells the payment dissolved this frame
-        std::vector<Item> MakePaidGoldDummies()
-        {
-            // ---- B: consume this frame's purchase payment (spill accounting) ----
-            // A barter payment already left the ledger, so the coin mirror shows
-            // fewer tiles now. Re-fill the dissolved coin cells with 1x1 dummies so
-            // a bought item is judged against the PRE-payment board (else it lands
-            // in the very cells the gold just vacated instead of spilling to a bag).
-            const int paidGold = g_paidGold;
-            g_paidGold = 0;
-            std::vector<Item> dummies;
-            // (bag PRESENT, not bag window open — see CollectBagSlots)
-            if (paidGold > 0 && !CollectBagSlots(g_items).empty()) {
-                const int walking = GoldCoins::WalkingGoldValue();
-                const int n = (std::max)(0,
-                    GoldCoins::CoinTilesFor(walking + paidGold) - GoldCoins::CoinTilesFor(walking));
-                dummies.reserve(n);
-                for (int i = 0; i < n; ++i) {
-                    Item d;
-                    d.key = "##paid" + std::to_string(i);
-                    d.def = GridDef{};   // 1x1
-                    d.mask = MaskOf(d.def);
-                    dummies.push_back(std::move(d));
-                }
-            }
-            return dummies;
-        }
+        // ★S-G: MakePaidGoldDummies is gone. A payment debits NAMED coin
+        // tiles now (CoinSpend), so there is no dissolved-cells guess for the
+        // spill pass to re-fill -- the cells a payment frees really are free.
 
         // stage 4: bag views -> main list -> overflow spill into open bags
         // -> main view (placement is FINAL here)
-        void BuildViewsAndSpill(std::map<std::string, int>& bags,
-                                std::vector<Item>& dummies)
+        void BuildViewsAndSpill(std::map<std::string, int>& bags)
         {
             // ---- views: EVERY present bag (their overflow falls back to main).
             //      Closed ones get the same placement pass and are simply not
@@ -7103,8 +6916,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 [](const View& v) { return !v.bagKey.empty() && v.bagKey != kTrashKey; });
             if (anyBag) {
                 std::vector<Item*> probe;
-                probe.reserve(dummies.size() + mainList.size());
-                for (auto& d : dummies) probe.push_back(&d);   // freed coin cells first
+                probe.reserve(mainList.size());
                 for (auto* it : mainList) probe.push_back(it);
                 PlaceItems(probe, kCols, kMinRows, kMinRows);   // hard board, no growth
                 for (auto* cand : probe) {
@@ -7374,7 +7186,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                 li->second.bag == kTrashKey ||
                                 queuedKeys.contains(li->first) ||
                                 (g_held && li->first == g_held->key) ||
-                                GoldCoins::PinnedValue(li->first) >= 0;
+                                li->second.coin >= 0;   // ★S-G: coin records are live tiles
                     if (!keep) {
                         if (auto* obj = ObjFromBaseKey(base)) {
                             if (Loadout::ReservedCount(obj->GetFormID()) > 0) {
@@ -7413,6 +7225,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // B4-1: consume the flag here -- this IS the rebuild it was asking
         // for. The empty-board test covers the openings no flag announces:
         // the first of the session, and the post-load B6 resets.
+        // ★S-G: square the gold invariant at the opening -- migration of an
+        // old save and any drift the events missed both settle here.
+        CoinCensus("menu-open");
         if (g_needRebuild.exchange(false, std::memory_order_acq_rel) ||
             g_items.empty()) {
             Rebuild(a_where);
@@ -7527,8 +7342,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
         CollectDisplayTiles(player);            // stage 1+2 (collect + coin partition)
         auto bags = ReconcileBagBookkeeping();  // stage 3
-        auto dummies = MakePaidGoldDummies();   // B: payment spill accounting
-        BuildViewsAndSpill(bags, dummies);      // stage 4 (views + spill)
+        BuildViewsAndSpill(bags);               // stage 4 (views + spill)
         FinalizeRebuild();                      // stage 5
     }
 
@@ -8537,6 +8351,39 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             g_viewMoveQ.clear();
         }
 
+        // ★S-G: one tile off the board, the lean way -- layout, marks, then
+        // the display if it is up (a closed menu has no display to fix, and
+        // the layout was the point). No drain-hint spend, no optimistic
+        // claim: those belong to CLICK paths.
+        bool RemoveTileLean(const std::string& a_key)
+        {
+            g_layout.erase(a_key);
+            g_prevKeys.erase(a_key);
+            g_newTiles.erase(a_key);
+            int idx = -1;
+            for (std::size_t i = 0; i < g_items.size(); ++i) {
+                if (g_items[i].key == a_key) { idx = static_cast<int>(i); break; }
+            }
+            if (idx < 0) return false;
+            auto& t = g_items[static_cast<std::size_t>(idx)];
+            for (const auto& v : g_views) {
+                if (std::find(v.items.begin(), v.items.end(), idx) == v.items.end()) {
+                    continue;
+                }
+                if (ViewCountsSpace(v)) g_spaceUsed -= MaskCells(t.mask.rows);
+                break;
+            }
+            g_items.erase(g_items.begin() + idx);
+            for (auto& v : g_views) {
+                std::erase(v.items, idx);
+                for (int& i2 : v.items) {
+                    if (i2 > idx) --i2;
+                }
+            }
+            ++g_boardVersion;
+            return true;
+        }
+
         void RefreshPoolFlagsFor(RE::TESBoundObject* a_obj)
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
@@ -8647,10 +8494,136 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         return g_gold;
     }
 
-    void NotePaidGold(int a_price)
+    // ---- ★S-G: gold's only mechanisms -----------------------------------
+    // The ledger moved, so the TILES move. Income fills the rear-most
+    // partial tile (the decomposition's remainder, now an owned slot) and
+    // mints capfuls for the rest; a spend debits partials before full
+    // thousands, rear board position first. The LAYOUT is the book -- the
+    // display follows when it is up, and the col -1 mints are seated by the
+    // rebuild the request flag buys. Main thread only (GoldCoins::Tick).
+
+    void CoinIncome(int a_value)
     {
-        if (a_price > 0) g_paidGold += a_price;
+        if (a_value <= 0) return;
+        auto* cform = GoldCoins::CoinForTier(0);
+        if (!cform) return;
+        int left = a_value;
+        auto slots = CoinTilesByPosition();   // cursor money excluded by design
+        for (auto it = slots.rbegin(); it != slots.rend() && left > 0; ++it) {
+            if (it->value >= GoldCoins::kCoinCap) continue;
+            const auto li = g_layout.find(it->key);
+            if (li == g_layout.end()) continue;
+            const int add = (std::min)(GoldCoins::kCoinCap - li->second.coin, left);
+            if (add <= 0) continue;
+            li->second.coin += add;
+            left -= add;
+            bool shown = false;
+            for (auto& gi : g_items) {
+                if (gi.key == it->key) {
+                    gi.coinValue = li->second.coin;
+                    shown = true;
+                    break;
+                }
+            }
+            if (!shown) RequestRebuild();   // closed menu: the board is stale
+            SKSE::log::info("[GOLD] +{} G -> '{}' ({} G)", add, it->key,
+                li->second.coin);
+            break;   // one remainder fills; the rest arrives as fresh capfuls
+        }
+        bool minted = false;
+        while (left > 0) {
+            const int n = (std::min)(GoldCoins::kCoinCap, left);
+            const std::string key = NextTileKey(FormKey(cform));
+            auto& le = g_layout[key];
+            le.col = -1;   // the placer seats it
+            le.row = -1;
+            le.coin = n;
+            le.count = 1;
+            left -= n;
+            minted = true;
+            SKSE::log::info("[GOLD] +{} G minted as '{}'", n, key);
+        }
+        MarkCapacityDirty();
+        ++g_boardVersion;
+        if (minted) RequestRebuild();
     }
+
+    void CoinSpend(int a_value)
+    {
+        if (a_value <= 0) return;
+        auto slots = CoinTilesByPosition();
+        std::vector<const CoinSlot*> order;
+        order.reserve(slots.size());
+        for (auto it = slots.rbegin(); it != slots.rend(); ++it) {
+            if (it->value < GoldCoins::kCoinCap) order.push_back(&*it);
+        }
+        for (auto it = slots.rbegin(); it != slots.rend(); ++it) {
+            if (it->value >= GoldCoins::kCoinCap) order.push_back(&*it);
+        }
+        int left = a_value;
+        for (const auto* s : order) {
+            if (left <= 0) break;
+            const auto li = g_layout.find(s->key);
+            if (li == g_layout.end() || li->second.coin <= 0) continue;
+            const int take = (std::min)(li->second.coin, left);
+            left -= take;
+            if (take < li->second.coin) {
+                li->second.coin -= take;
+                bool shown = false;
+                for (auto& gi : g_items) {
+                    if (gi.key == s->key) {
+                        gi.coinValue = li->second.coin;
+                        shown = true;
+                        break;
+                    }
+                }
+                if (!shown) RequestRebuild();   // closed menu: the board is stale
+                SKSE::log::info("[GOLD] spend: '{}' pays {} -> {} G",
+                    s->key, take, li->second.coin);
+            } else {
+                if (!RemoveTileLean(s->key)) RequestRebuild();
+                SKSE::log::info("[GOLD] spend: '{}' emptied (-{} G)", s->key, take);
+            }
+        }
+        MarkCapacityDirty();
+        ++g_boardVersion;
+        if (left > 0) {
+            SKSE::log::warn("[GOLD] spend exceeded the tiles by {} G -- the "
+                            "census squares it", left);
+        }
+    }
+
+    void CoinCensus(const char* a_why)
+    {
+        // one invariant replaces the mirror: Σ tile amounts == ledger − pouch.
+        // Never squared while our own transfers are in flight -- their tile
+        // half and ledger half land on different frames by design.
+        if (GoldCoins::UnsettledDelta() != 0) return;
+        auto* p = RE::PlayerCharacter::GetSingleton();
+        auto* gold = GoldCoins::VanillaGold();
+        if (!p || !gold) return;
+        int ledger = 0;
+        {
+            auto inv = p->GetInventory(
+                [&](RE::TESBoundObject& o) { return &o == gold; });
+            for (auto& [o2, d2] : inv) ledger = d2.first;
+        }
+        int tiles = 0;
+        for (const auto& [k, le] : g_layout) {
+            if (le.coin > 0) tiles += le.coin;
+        }
+        const int target = (std::max)(0, ledger - GoldCoins::PouchStored());
+        const int diff = tiles - target;
+        if (diff == 0) return;
+        SKSE::log::warn("[GOLD] ★census ({}): tiles {} G vs ledger-share {} G "
+                        "-- {} {} G", a_why, tiles, target,
+            diff > 0 ? "trimming" : "minting", diff > 0 ? diff : -diff);
+        if (diff > 0) CoinSpend(diff);
+        else          CoinIncome(-diff);
+    }
+
+    // ★S-G: NotePaidGold is retired -- a payment debits named coin tiles
+    // (CoinSpend), so nothing is guessed for the spill pass any more.
 
     void NotePendingEquip(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
                           std::uint16_t a_sig, int a_hand, const std::string& a_srcKey,
@@ -9286,6 +9259,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // exactly this: every pre-first-open capacity query compared the
             // engine against an empty g_items (104 -> 10 -> 1 divergences,
             // all engine-only, all before the first menu open).
+            CoinCensus("gate-freshen");   // ★S-G: gates read coin cells too
             if (g_needRebuild.exchange(false, std::memory_order_acq_rel) ||
                 g_items.empty()) {
                 Rebuild();
@@ -9605,53 +9579,20 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         if (GoldCoins::IsCoinForm(a_obj->GetFormID()) &&
             !GoldCoins::IsPouch(a_obj->GetFormID())) {
             const int val = (std::min)(a_count, GoldCoins::kCoinCap);
-            if (const int sv = GoldCoins::PinnedValue(a_srcKey); sv >= 0) {
-                const int rem = sv - val;   // source was a pin: shrink/remove it
-                if (rem <= 0) {
-                    GoldCoins::UnpinTile(a_srcKey);
-                    g_layout.erase(a_srcKey);
-                } else if (GoldCoins::BandTier(rem) == GoldCoins::BandTier(sv)) {
-                    GoldCoins::PinAmount(a_srcKey, rem);   // same band: key still fits
-                } else {
-                    // ★★A tile KEY carries its coin FORM, so a value that
-                    // changes band has to be re-keyed or the purse keeps
-                    // drawing the old tier's icon. Growing already did this
-                    // (MergeGoldInto -> PlacePin); SHRINKING kept the key and
-                    // silently lied — 900 G split down to 50 still drew the
-                    // 100~1000 stack. Both directions go through PlacePin now.
-                    LayoutEntry pos{};
-                    bool havePos = false;
-                    if (auto li = g_layout.find(a_srcKey); li != g_layout.end()) {
-                        pos = li->second;
-                        havePos = true;
-                    }
-                    GoldCoins::UnpinTile(a_srcKey);
-                    g_layout.erase(a_srcKey);
-                    PlacePin(rem, havePos ? pos.col : -1, havePos ? pos.row : -1,
-                             havePos ? pos.bag : std::string{});
-                }
-            } else {
-                // AUTO source: converting only part of walking gold would let
-                // Desired() reshuffle the OTHER auto tiles. Convert the WHOLE
-                // source tile to a pin (its remainder stays at the source cell),
-                // so sibling coins are untouched.
-                const int srcRem = (std::max)(0, a_srcTotal - val);
-                LayoutEntry pos{};
-                bool havePos = false;
-                if (auto li = g_layout.find(a_srcKey); li != g_layout.end()) {
-                    pos = li->second;
-                    havePos = true;
-                }
-                g_layout.erase(a_srcKey);
-                if (srcRem > 0) {
-                    PlacePin(srcRem, havePos ? pos.col : -1, havePos ? pos.row : -1,
-                             havePos ? pos.bag : std::string{});
-                }
+            // ★S-G: the source is an OWNED SLOT either way (the pin/auto split
+            // died with walking gold) -- shrink it, or erase it when the whole
+            // amount leaves. One coin form, so the key never changes band.
+            {
+                const int sv = CoinRecordOf(a_srcKey);
+                const int total = sv >= 0 ? sv : a_srcTotal;
+                const int rem = total - val;
+                if (rem <= 0) g_layout.erase(a_srcKey);
+                else          SetCoinRecord(a_srcKey, rem);
             }
             auto* cform = GoldCoins::CoinForTier(GoldCoins::BandTier(val));
             if (!cform) return;
             const std::string pinKey = NextTileKey(FormKey(cform));
-            GoldCoins::PinAmount(pinKey, val);   // walking -= val, fragment reserved
+            SetCoinRecord(pinKey, val);   // the fragment's own record (cursor money)
             const GridDef gd = g_resolver ? g_resolver(cform) : GridDef{};
             Held g;
             g.key = pinKey;          // real pin key; position assigned on drop
@@ -12001,8 +11942,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             GoldCoins::WithdrawFrom(g_pouchTile, v, false);   // pickup sound plays instead
             const int carry = (std::min)(v, GoldCoins::kCoinCap);
             if (auto* cform = GoldCoins::CoinForTier(GoldCoins::BandTier(carry))) {
-                PickupPartial(cform, carry, {}, 0);   // pins from walking
+                PickupPartial(cform, carry, {}, 0);   // the purse rides the cursor
             }
+            // ★S-G: whatever exceeds one purse becomes board tiles at once --
+            // the mirror that used to materialise "walking" gold is gone
+            if (v > carry) CoinIncome(v - carry);
             g_pouchOpen = false;             // window closes; the purse rides
             g_pouchSlider = 0;
             g_pouchTile.clear();
@@ -12538,7 +12482,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             auto* f = GoldCoins::CoinForTier(GoldCoins::BandTier(a_value));
             if (!f) return {};
             const std::string key = NextTileKey(FormKey(f));
-            GoldCoins::PinAmount(key, a_value);
+            SetCoinRecord(key, a_value);
             PlaceTile(key, a_col, a_row, a_bag, 1);
             return key;
         }
@@ -12557,16 +12501,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             const int leftover = combined - placed;
             LayoutEntry pos = a_fallbackPos;
             if (auto li = g_layout.find(a_tgtKey); li != g_layout.end()) pos = li->second;
-            if (GoldCoins::PinnedValue(a_tgtKey) >= 0) GoldCoins::UnpinTile(a_tgtKey);
             g_layout.erase(a_tgtKey);
-            if (GoldCoins::PinnedValue(a_held.key) >= 0) GoldCoins::UnpinTile(a_held.key);
             g_layout.erase(a_held.key);
             PlacePin(placed, pos.col, pos.row, pos.bag);
             if (g_sound) g_sound(a_held.obj, false);
             if (leftover > 0) {   // remainder keeps riding as a pin
                 auto* lf = GoldCoins::CoinForTier(GoldCoins::BandTier(leftover));
                 const std::string lk = NextTileKey(FormKey(lf));
-                GoldCoins::PinAmount(lk, leftover);
+                SetCoinRecord(lk, leftover);
                 a_held.key = lk;
                 a_held.obj = lf;
                 a_held.coinValue = leftover;
@@ -13098,14 +13040,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // whole-tile rule: the pin returns to walking first so the
                 // pouch can draw from it; no room -> the pin restores)
                 const int v2 = a_held.coinValue;
-                GoldCoins::UnpinTile(a_held.key);
-                if (GoldCoins::StoreToPouch(tgt.key, v2) > 0) {
+                const int stored = GoldCoins::StoreToPouch(tgt.key, v2);
+                if (stored > 0 && stored < v2) {   // ★S-G: partial keeps riding
+                    SetCoinRecord(a_held.key, v2 - stored);
+                    a_held.coinValue = v2 - stored;
+                    if (g_sound) g_sound(a_held.obj, false);
+                }
+                if (stored >= v2) {
                     g_layout.erase(a_held.key);
                     if (g_sound) g_sound(a_held.obj, false);
                     g_held.reset();
-                } else {
-                    GoldCoins::PinAmount(a_held.key, v2);
                 }
+                // refused outright: the record never moved -- keep riding
             } else if (tgtGold) {
                 // (2) merge onto ANY gold tile (pin or auto) — the value
                 // lands as a pinned purse at the target's cell
@@ -13140,7 +13086,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
         bool GoldFragToVoid(Held& a_held)
         {
-            GoldCoins::UnpinTile(a_held.key);   // back to walking first
             if (LootBarter::CurrentMode() == LootBarter::Mode::kNormal) {
                 GoldCoins::DropAsGold(a_held.coinValue);   // (4) discard the gold
             }
@@ -13564,15 +13509,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // the cap; no room -> keep carrying). G4: a pinned purse
                     // must return to walking first so the pouch can draw.
                     const int v2 = a_held.coinValue;
-                    const bool wasPinned = GoldCoins::PinnedValue(a_held.key) >= 0;
-                    if (wasPinned) GoldCoins::UnpinTile(a_held.key);
-                    if (GoldCoins::StoreToPouch(disp.key, v2) > 0) {
-                        if (wasPinned) g_layout.erase(a_held.key);
+                    // ★S-G: the tile's record is the amount; partials shrink
+                    const int stored = GoldCoins::StoreToPouch(disp.key, v2);
+                    if (stored > 0 && stored < v2) {
+                        SetCoinRecord(a_held.key, v2 - stored);
+                        a_held.coinValue = v2 - stored;
+                        if (g_sound) g_sound(a_held.obj, false);
+                        RequestRebuild();
+                    } else if (stored >= v2) {
+                        g_layout.erase(a_held.key);
                         if (g_sound) g_sound(a_held.obj, false);
                         g_held.reset();
                         RequestRebuild();
-                    } else if (wasPinned) {
-                        GoldCoins::PinAmount(a_held.key, v2);   // no room: restore
                     }
                 } else if (heldCoin && dispCoin &&
                            a_held.coinValue >= 0 && disp.coinValue >= 0) {
@@ -13821,10 +13769,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         }
                     }
                 }
+                if (moved > 0 && moved < a_held.coinValue) {
+                    // ★S-G: a partial store keeps the remainder riding (the
+                    // record already shrank in StoreCoinValueTo)
+                    a_held.coinValue -= moved;
+                    if (g_sound) g_sound(a_held.obj, false);
+                    return true;
+                }
                 if (moved > 0) {
-                    if (GoldCoins::PinnedValue(a_held.key) >= 0) {
-                        GoldCoins::UnpinTile(a_held.key);
-                    }
                     g_layout.erase(a_held.key);
                     if (g_sound) g_sound(a_held.obj, false);
                     g_held.reset();
@@ -14087,8 +14039,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // G2/G4: the coin's VALUE drops as a real Gold001 world ref;
                 // a pinned purse returns to walking first so the debit lands.
                 // The mirror then removes the coin tile.
-                if (GoldCoins::PinnedValue(a_held.key) >= 0)
-                    GoldCoins::UnpinTile(a_held.key);
                 GoldCoins::DropAsGold(a_held.coinValue);
                 g_layout.erase(a_held.key);   // free this coin's slot
                 g_held.reset();
@@ -14483,11 +14433,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // the same restore when the destination refuses.
         int StoreCoinValueTo(RE::TESObjectREFR* a_dst, Held& a_held)
         {
-            const bool wasPinned = GoldCoins::PinnedValue(a_held.key) >= 0;
-            if (wasPinned) GoldCoins::UnpinTile(a_held.key);
+            // ★S-G: the record IS the amount. A refusal leaves it untouched;
+            // a partial store shrinks it (the caller keeps the carry when it
+            // sees moved < value); a full one is erased by the caller.
             const int moved = GoldCoins::StoreToContainer(a_dst, a_held.coinValue);
-            if (moved <= 0 && wasPinned) {
-                GoldCoins::PinAmount(a_held.key, a_held.coinValue);   // put it back
+            if (moved > 0 && moved < a_held.coinValue) {
+                SetCoinRecord(a_held.key, a_held.coinValue - moved);
             }
             return moved;
         }
@@ -14508,8 +14459,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
                 return true;
             }
-            if (GoldCoins::PinnedValue(a_held.key) >= 0) {
-                GoldCoins::UnpinTile(a_held.key);
+            const int rem = a_held.coinValue - moved;
+            if (rem > 0) {   // ★S-G: a partial deposit keeps riding
+                SetCoinRecord(a_held.key, rem);
+                a_held.coinValue = rem;
+                if (g_sound) g_sound(a_held.obj, false);
+                return true;
             }
             g_layout.erase(a_held.key);
             if (g_sound) g_sound(a_held.obj, false);
@@ -15077,6 +15032,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         if (auto* cform = GoldCoins::CoinForTier(GoldCoins::BandTier(carry))) {
             PickupPartial(cform, carry, {}, 0);
         }
+        // ★S-G: the excess beyond one purse becomes board tiles at once --
+        // "stays walking" stopped meaning anything when walking gold died
+        if (a_value > carry) CoinIncome(a_value - carry);
     }
 
     bool PeekHeldForShelf(RE::TESBoundObject*& a_obj, int& a_count,
@@ -15333,7 +15291,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         g_suppressNew = true;
         g_capacityDirty = true;
         g_avResidueCleared = false;   // legacy CW cleanup is per-save
-        g_paidGold = 0;
         ClearAllPendingRemoves();
         // B6: defensive resets — these carried PREVIOUS-session state across
         // a load (g_held even held a stale TESBoundObject*). The menu-close

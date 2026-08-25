@@ -1,4 +1,4 @@
-#include "game/GoldCoins.h"
+﻿#include "game/GoldCoins.h"
 
 #include "game/BagFilter.h"
 #include "ui/Grid.h"
@@ -41,7 +41,7 @@ namespace FUI::GoldCoins
         // ★★PER POUCH, NOT PER PLAYER. This was one int, which is exactly
         // why two pouches in the same inventory both read the same number
         // and drew the same icon -- there was only ever ONE number. It now
-        // lives per TILE KEY, next to g_pinned and for the same stated
+        // lives per TILE KEY, next to the (retired) pin map and for the same stated
         // reason: the engine has nowhere to hang per-instance data, and the
         // slot is what "this pouch" means to the board (LayoutEntry::rot,
         // LayoutEntry::coin already say so).
@@ -72,7 +72,6 @@ namespace FUI::GoldCoins
         // G4: pinned gold purses — grid tile key -> fixed amount (1..1000).
         // Subtracted from walking gold so the auto tier-decomposition ignores
         // them; each keeps its exact value & position until merged/dropped.
-        std::map<std::string, int> g_pinned;
 
         // ★Vendor restock: the last stock CYCLE we seeded for each merchant.
         // Not a timestamp — a cycle index, floor(daysPassed / iDaysToRespawnVendor).
@@ -180,13 +179,6 @@ namespace FUI::GoldCoins
             return d;
         }
 
-        int PinnedSum()
-        {
-            int s = 0;
-            for (const auto& [k, v] : g_pinned) s += v;
-            return s;
-        }
-
         // string (de)serialisation for the pinned map (cosave v4)
         bool WriteStr(SKSE::SerializationInterface* a_intfc, const std::string& a_s)
         {
@@ -225,12 +217,6 @@ namespace FUI::GoldCoins
         // Everything still lands in slot [0], because slot = tier and there is
         // one tier left. The array shape stays so the mirror's diff, its log
         // line and its callers are untouched.
-        void Desired(int a_gold, int a_out[4])
-        {
-            a_out[0] = a_out[1] = a_out[2] = a_out[3] = 0;
-            if (a_gold <= 0) return;
-            a_out[0] = (a_gold + kCoinCap - 1) / kCoinCap;
-        }
     }
 
     void InitForms()
@@ -621,22 +607,20 @@ namespace FUI::GoldCoins
             return -1;
         }
 
+        // ★S-G: WALKING GOLD IS GONE. Every coin tile owns its amount on its
+        // SLOT now (Grid's layout is the one book), so the only pool question
+        // left is "how much of the ledger is not the pouch's" -- the clamp a
+        // physical op needs so a tile-backed amount can never spend the
+        // pouch's share. Pinned purses ceased to be a special case: every
+        // tile is what a pin used to be.
         int WalkingGold()
         {
             auto* p = RE::PlayerCharacter::GetSingleton();
             if (!p) return 0;
             auto* gold = RE::TESForm::LookupByID<RE::TESBoundObject>(kGold001);
             if (!gold) return 0;
-            // ONE formula: (ledger + pending ledger change) - pouch - pinned.
-            // The pending delta makes every deferred op (coin drop, pouch
-            // leave/return) reflect in the coins THIS frame, before Tick runs
-            // the actual engine mutation. Pouch leave/return net to zero here
-            // (stored moves with the ledger), so walking gold is stable; a
-            // coin drop nets negative, so the dropped tile vanishes at once.
-            // Pinned purses (G4) are user-fixed amounts pulled OUT of the
-            // auto-decomposed walking pool.
             return (std::max)(0,
-                (CountOf(p, gold) + PendingLedgerDelta()) - PouchSum() - PinnedSum());
+                (CountOf(p, gold) + PendingLedgerDelta()) - PouchSum());
         }
 
         // world-drop purse by amount (same bands as the coin tiers).
@@ -666,39 +650,14 @@ namespace FUI::GoldCoins
     // GetInventory: an entry-list walk plus a map allocation. At 100,000 gold
     // that was a hundred inventory walks per rebuild, and the rebuild runs on
     // every player-side container delta.
-    int InstanceValueAt(int a_walking, int a_index)
-    {
-        if (a_walking <= 0 || a_index < 0) return 0;
-        const int left = a_walking - a_index * kCoinCap;
-        return left > 0 ? (std::min)(left, kCoinCap) : 0;
-    }
+    // ★S-G: InstanceValueAt / InstanceValue / CoinTileCount / CoinTilesFor
+    // and WalkingGoldValue are gone with the decomposition -- every coin tile
+    // owns its amount on its layout slot, and Grid::CoinIncome / CoinSpend /
+    // CoinCensus are the only mechanisms that move those amounts.
 
-    int InstanceValue(RE::FormID a_form, int a_index)
+    int UnsettledDelta()
     {
-        if (TierOf(a_form) < 0) return 0;
-        return InstanceValueAt(WalkingGold(), a_index);
-    }
-
-    int CoinTileCount(RE::FormID a_form)
-    {
-        // Tiles this coin form should show, from WALKING gold (pending drops
-        // already subtracted) — NOT the live item count, which lags a tick
-        // behind a drop and would let the rebuild self-refill the dropped cell.
-        // ★One coin means one form carries every tile, and the retired three
-        // carry none -- a save that still holds tiles keyed to them draws them
-        // down to nothing on the next mirror pass, which is the migration.
-        if (TierOf(a_form) != 0) return 0;
-        return CoinTilesFor(WalkingGold());
-    }
-
-    int WalkingGoldValue() { return WalkingGold(); }
-
-    int CoinTilesFor(int a_walking)
-    {
-        // One tile per capful, plus one for the remainder -- the same rule
-        // Desired() uses, said once so the two cannot drift apart again.
-        if (a_walking <= 0) return 0;
-        return (a_walking + kCoinCap - 1) / kCoinCap;
+        return PendingLedgerDelta() + g_expected;
     }
 
     // ---- G4: pinned gold purses ------------------------------------------
@@ -738,26 +697,9 @@ namespace FUI::GoldCoins
         return RE::TESForm::LookupByID<RE::TESBoundObject>(kGold001);
     }
 
-    int PinnedValue(const std::string& a_tileKey)
-    {
-        const auto it = g_pinned.find(a_tileKey);
-        return it == g_pinned.end() ? -1 : it->second;
-    }
-
-    int PinnedTotal() { return PinnedSum(); }
-
-    void PinAmount(const std::string& a_tileKey, int a_value)
-    {
-        const int v = (std::min)(a_value, kCoinCap);
-        if (v <= 0) { g_pinned.erase(a_tileKey); }
-        else        { g_pinned[a_tileKey] = v; }
-        g_dirty = true;
-    }
-
-    void UnpinTile(const std::string& a_tileKey)
-    {
-        if (g_pinned.erase(a_tileKey) > 0) g_dirty = true;
-    }
+    // ★S-G: the pin API is gone. Every coin tile owns its amount on its
+    // layout slot (Grid::CoinValueOf / SetCoinRecord), which is exactly what
+    // a pin used to be -- the special case became the only case.
 
     // ★No pouch named: a coin CLICKED into storage does not say which one.
     // Fill the fullest that still has room rather than spreading a little
@@ -1016,7 +958,7 @@ namespace FUI::GoldCoins
         if (v <= 0) {
             SKSE::log::warn("[GOLD] store of {} G declined -- only {} G is walking "
                             "(pinned {}, pouch {})",
-                            a_value, WalkingGold(), PinnedSum(), PouchSum());
+                            a_value, WalkingGold(), 0, PouchSum());
             return 0;
         }
         g_pending.push_back({ LedgerOp::kStoreCoin, v, a_dst->GetFormID() });
@@ -1123,72 +1065,24 @@ namespace FUI::GoldCoins
                     const int store = (std::min)(gain, room);
                     if (store > 0) {
                         held += store;
+                        gain -= store;   // ★S-G: swept gold is banked, not tiled
                         SKSE::log::info("[GOLD] auto-stored {} G into '{}' -> {}",
                             store, key, held);
                     }
                 }
             }
-            // ★An external DROP is a SPEND (shop, trainer, bounty, script) --
-            // the mirror image of `gain`, and until now nobody looked at it:
-            // walking gold is the residual of the one formula, so the whole
-            // payment silently came out of the auto tiles while every pinned
-            // purse stood protected. Measured (user shop test): three partial
-            // purses prepared, and a buy broke a full thousand instead.
-            //
-            // The BOARD rule says who pays -- partial tiles before full
-            // thousands, rear board position first within each group; the
-            // same order the auto decomposition and the STEP 3 trim follow.
-            // Auto tiles in the queue pay implicitly (reducing no pin leaves
-            // their share on walking, which already fell with the ledger), so
-            // only the pinned purses act. The pouch is not in the queue at
-            // all -- it stays the last-resort money it has always been.
+            // ★S-G: the LEDGER MOVED, so the TILES move -- and Grid owns the
+            // tiles now. Unexpected income fills the rear partial tile and
+            // mints what will not fit; a spend debits partials before full
+            // thousands, rear board position first. Both live in ONE place
+            // (Grid::CoinIncome / CoinSpend), which is what §7 meant by "the
+            // allocation rule is the only mechanism left" -- the walking
+            // residual, the decomposition and the mirror that reconciled them
+            // are gone.
+            if (gain > 0) Grid::CoinIncome(gain);
             const int spend = (g_lastLedger >= 0) ? (std::max)(0, g_lastLedger - pre)
                                                   : 0;
-            if (spend > 0 && !g_pinned.empty()) {
-                const auto slots = Grid::CoinTilesByPosition();
-                std::vector<const Grid::CoinSlot*> order;
-                order.reserve(slots.size());
-                for (auto si = slots.rbegin(); si != slots.rend(); ++si) {
-                    if (si->value < kCoinCap) order.push_back(&*si);
-                }
-                for (auto si = slots.rbegin(); si != slots.rend(); ++si) {
-                    if (si->value >= kCoinCap) order.push_back(&*si);
-                }
-                int  left = spend;
-                bool pinsPaid = false;
-                for (const auto* s : order) {
-                    if (left <= 0) break;
-                    const auto pi = g_pinned.find(s->key);
-                    if (pi == g_pinned.end()) {
-                        // an auto tile: its share stays on walking gold, which
-                        // the decomposition takes remainder-first on its own
-                        left -= (std::min)(s->value, left);
-                        continue;
-                    }
-                    const int take = (std::min)(pi->second, left);
-                    left -= take;
-                    pinsPaid |= take > 0;
-                    if (take >= pi->second) {
-                        SKSE::log::info("[GOLD] spend {} G: purse '{}' emptied "
-                                        "(-{} G)", spend, pi->first, pi->second);
-                        // the cell dies with the purse -- a slot left behind
-                        // would rejoin the AUTO pool and hand its cell to
-                        // whatever amount the partition matches into it
-                        Grid::ForgetTile(pi->first);
-                        g_pinned.erase(pi);
-                    } else {
-                        pi->second -= take;
-                        SKSE::log::info("[GOLD] spend {} G: purse '{}' pays {} "
-                                        "-> {} G", spend, pi->first, take,
-                            pi->second);
-                    }
-                }
-                // ★A pin that paid within its own band moves no engine coin,
-                // so STEP 3's mirror sees nothing to change and asks for no
-                // redraw -- the tile would show the old amount until some
-                // unrelated rebuild. Ask here; the flag coalesces.
-                if (pinsPaid) Grid::RequestRebuild();
-            }
+            if (spend > 0) Grid::CoinSpend(spend);
             // ★The promise expires. A request that was refused downstream, or
             // a transfer that simply never landed, must not leave walking gold
             // permanently inflated -- the board would show coins that are not
@@ -1242,93 +1136,30 @@ namespace FUI::GoldCoins
             else                     g_pouchStored.erase(last);
         }
 
-        // G4: pinned purses can't outlast the ledger either — if gold was spent
-        // (shop/quest) below pouch+pinned, trim purses so walking never goes
-        // negative. Rare; keeps the mirror consistent.
-        // ★The trim ORDER is a rule now, not a map accident. It used to take
-        // the highest map key -- "effectively arbitrary", its own words --
-        // which looked at neither the amount nor the board. The auto tiles
-        // already have the rule the player expects (the remainder shrinks
-        // first, and the rear tiles absorb the spend), so the purses follow
-        // it: PARTIAL purses (< 1000) pay before full thousands, and within
-        // each group the rear-most board position pays first.
-        {
-            const int budget = total - PouchSum();   // gold available to pinned+walking
-            int psum = PinnedSum();
-            if (psum > budget && !g_pinned.empty()) {
-                std::vector<std::string> keys;
-                keys.reserve(g_pinned.size());
-                for (const auto& [k, v] : g_pinned) keys.push_back(k);
-                const auto byPos = Grid::OrderKeysByPosition(std::move(keys));
-                // back-to-front twice: partials first, then full thousands
-                std::vector<const std::string*> order;
-                order.reserve(byPos.size());
-                for (auto it = byPos.rbegin(); it != byPos.rend(); ++it) {
-                    if (const auto pi = g_pinned.find(*it);
-                        pi != g_pinned.end() && pi->second < kCoinCap) {
-                        order.push_back(&*it);
-                    }
-                }
-                for (auto it = byPos.rbegin(); it != byPos.rend(); ++it) {
-                    if (const auto pi = g_pinned.find(*it);
-                        pi != g_pinned.end() && pi->second >= kCoinCap) {
-                        order.push_back(&*it);
-                    }
-                }
-                for (const auto* k : order) {
-                    if (psum <= budget) break;
-                    const auto pi = g_pinned.find(*k);
-                    if (pi == g_pinned.end()) continue;
-                    const int over = psum - budget;
-                    if (pi->second > over) {
-                        pi->second -= over;
-                        psum -= over;
-                        SKSE::log::info("[GOLD] pinned trim: '{}' -{} -> {} G "
-                                        "(spend exceeded walking gold)",
-                            *k, over, pi->second);
-                    } else {
-                        psum -= pi->second;
-                        SKSE::log::info("[GOLD] pinned trim: '{}' emptied (-{} G, "
-                                        "spend exceeded walking gold)",
-                            *k, pi->second);
-                        g_pinned.erase(pi);
-                    }
-                }
-            }
-        }
-
-        int want[4];
-        Desired(total - PouchSum() - PinnedSum(), want);
-        // pinned purses are real coin tiles too — add one coin of each purse's
-        // band so the mirror keeps the correct per-form item counts.
-        for (const auto& [k, v] : g_pinned) {
-            const int t = BandTier(v);
-            if (t >= 0 && t < 4) want[t] += 1;
-        }
-
+        // ★S-G: THE MIRROR IS GONE. Coin tiles are owned slots in Grid's
+        // layout and are emitted from it -- there is no per-tier item count to
+        // reconcile, so the trims and the AddObject/RemoveItem loop that kept
+        // it honest have nothing left to keep honest. What replaces them is
+        // one invariant, checked and repaired in Grid::CoinCensus:
+        //     Σ tile amounts == ledger − pouch
+        //
+        // The PHYSICAL coin items the mirror used to maintain are legacy now.
+        // Purged here (once per load, and again if anything re-mints them):
+        // nothing re-adds them, so a non-zero count only ever means an old
+        // save arriving.
         g_applying = true;
-        bool changed = false;
         for (int i = 0; i < 4; ++i) {
+            if (!g_coins[i]) continue;
             const int cur = CountOf(p, g_coins[i]);
-            const int diff = want[i] - cur;
-            if (diff > 0) {
-                p->AddObjectToContainer(g_coins[i], nullptr, diff, nullptr);
-                changed = true;
-            } else if (diff < 0) {
-                p->RemoveItem(g_coins[i], -diff, RE::ITEM_REMOVE_REASON::kRemove,
+            if (cur > 0) {
+                p->RemoveItem(g_coins[i], cur, RE::ITEM_REMOVE_REASON::kRemove,
                     nullptr, nullptr);
-                changed = true;
+                SKSE::log::info("[GOLD] ★S-G purge: {} legacy coin item(s) of "
+                                "tier {} removed (tiles own their amounts now)",
+                    cur, i);
             }
         }
         g_applying = false;
-
-        if (changed) {
-            SKSE::log::info("[GOLD] mirror: {} G walking (+{} pouch) -> {}/{}/{}/{}",
-                total - PouchSum(), PouchSum(),
-                want[0], want[1], want[2], want[3]);
-            Grid::RequestRebuild();
-            Grid::MarkCapacityDirty();
-        }
     }
 
     // ---- cosave: pouch stored amount (+v2: world sack refs) ----
@@ -1345,12 +1176,10 @@ namespace FUI::GoldCoins
             a_intfc->WriteRecordData(static_cast<std::uint32_t>(val));
         }
         a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_awayGold));   // v3
-        // v4: pinned gold purses (tileKey -> value)
-        a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_pinned.size()));
-        for (const auto& [key, val] : g_pinned) {
-            WriteStr(a_intfc, key);
-            a_intfc->WriteRecordData(static_cast<std::int32_t>(val));
-        }
+        // v4 slot: the pinned map -- ★S-G writes it EMPTY. The field stays
+        // in place so older readers keep their offsets; the amounts live on
+        // the layout slots (Grid cosave) and have for several versions.
+        a_intfc->WriteRecordData(static_cast<std::uint32_t>(0));
         // v5: which restock cycle each merchant was last stocked for
         a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_vendorCycle.size()));
         for (const auto& [id, cyc] : g_vendorCycle) {
@@ -1418,7 +1247,9 @@ namespace FUI::GoldCoins
                     std::string  key;
                     std::int32_t val = 0;
                     if (!ReadStr(a_intfc, key) || !a_intfc->ReadRecordData(val)) break;
-                    if (val > 0) g_pinned[key] = (std::min)(val, kCoinCap);
+                    // ★S-G: read for the stream position, kept nowhere -- the
+                    // layout slot has carried the same amount since G6, and
+                    // CoinCensus squares any pre-G6 drift against the ledger.
                 }
             }
         }
@@ -1462,7 +1293,6 @@ namespace FUI::GoldCoins
         g_awayGold = 0;
         g_leavingHint.clear();   // (1.3.0-C) a hint from the previous save is a lie
         g_returnFreshGrace = 0;  // (1.3.0) ...and so is a grace from one
-        g_pinned.clear();
         // per-save state: a new game must not inherit the last save's cycles,
         // or its first merchants look "already stocked" and skip a rotation
         g_vendorCycle.clear();

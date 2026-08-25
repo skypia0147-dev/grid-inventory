@@ -1813,9 +1813,6 @@ namespace FUI::LootBarter
                         nullptr, nullptr);
                     source->AddObjectToContainer(gold, nullptr, r.price, nullptr);
                     goldMoved = true;
-                    // B: the payment dissolved coin tiles -> tell the spill pass
-                    // to treat those cells as still occupied for placement.
-                    Grid::NotePaidGold(r.price);
                 }
                 ClearOut(r.obj, r.uid, r.sig, r.count);   // engine moved it
                 itemSound(r.obj, true);   // the purchase lands in your hands
