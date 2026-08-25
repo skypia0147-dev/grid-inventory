@@ -2628,16 +2628,18 @@ namespace
         const ImVec2 size(cols * cell + 2.0f * Theme::PadX() * S +
                               2.0f * Theme::FrameInsetX(),
                           rows * cell + 54.0f * S + 2.0f * Theme::FrameInsetY());
-        // ★★THE WINDOW IS NAMED AFTER THE BAG, and after nothing else. The
-        // cell used to be in here too, which was one fact too many: a bag that
-        // moved between a cell and a bundle -- or between two cells -- kept its
-        // own name and still got a new window key, so ImGui filed it as a
-        // window it had never seen and dropped it back at the default position.
-        // A nested bag answers with its entry's name; the bag ON the cell
-        // answers with the cell's, minted here on first sight.
+        // ★★THE WINDOW IS NAMED AFTER THE BAG ITEM ITSELF -- the same key the
+        // player board's own bag window uses (a single-copy bag's tile key is
+        // its bare form key), so the position follows the bag between the
+        // inventory and any shelf, and between shelves. It was keyed by the
+        // cell's bundle id before, and that id is MINTED FRESH on every store:
+        // ImGui filed each re-shelving as a window it had never seen and
+        // dropped it at the default spot (user report). Two same-form bags
+        // open at once now share one name -- a rarity we accept for the
+        // position stability every single-copy bag gets.
+        // (bagId still mints here: the cell-follow machinery reads it.)
         if (a_w.bag == 0 && si->second.bagId == 0) si->second.bagId = NextBundleId();
-        const std::string wid =
-            fmt::format("sb|{}", a_w.bag != 0 ? a_w.bag : si->second.bagId);
+        const std::string wid = Grid::DefKeyOf(bagObj);
         wm->ApplyNext(wid,
             ImVec2(disp.x * 0.52f + a_ord * 44.0f * S,
                    (disp.y - size.y) * 0.5f + a_ord * 36.0f * S),
