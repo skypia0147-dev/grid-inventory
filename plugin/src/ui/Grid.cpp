@@ -1542,6 +1542,9 @@ namespace FUI::Grid
         constexpr int         kTrashCols = 6;
         constexpr int         kTrashRows = 4;
         bool                                     g_trashOpen = false;
+        // ★Defined with the other trash intake paths, far below;
+        // the right-click handler that calls it is far above.
+        bool RightClickIntoTrash(const Item& a_it);
         std::map<std::string, LayoutEntry>       g_trashReturn;   // key -> pre-park spot
         std::deque<std::string>                  g_trashOrder;    // FIFO, oldest first
         // GI25: a queued deletion names its POOL. Form + count alone let the
@@ -3435,6 +3438,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             g_pouchTile = it.key;
                             g_pouchSlider = (std::max)(1, GoldCoins::PouchStoredOf(it.key) / 2);
                             Sfx::SelectOn();
+                        } else if (RightClickIntoTrash(it)) {
+                            // ★★While the TRASH is open, a right-click bins the
+                            // tile instead of doing whatever it would otherwise
+                            // do -- and this is where that override belongs.
+                            // ★BELOW the restore, so a tile already in the bin
+                            // still comes back out. Below the bag and pouch
+                            // cases, because their right-click is declared
+                            // mode-independent management just above and an
+                            // open bin is another mode: taking the toggle away
+                            // would remove the organising tool at exactly the
+                            // moment it is being used. Both still go in by
+                            // drag, as they always did.
+                            // ★ABOVE the mode branches, so loot, barter and
+                            // pickpocket all give way to it -- with the bin
+                            // open, "throw this away" is the intent on screen.
+                            // ★Returns false when the bin is shut, so every
+                            // branch below is untouched in ordinary play.
                         } else if (LootBarter::IsLootMode(LootBarter::CurrentMode())) {
                             // loot: right-click stores this tile into the
                             // container — a stack (>1) opens the quantity
@@ -7753,6 +7773,30 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 g_layout[key] = mp.le;
                 MakeDisplayTile(obj, entry, gdef, glow, key, mp.units, mp.le, -1);
                 mv.items.push_back(static_cast<int>(g_items.size()) - 1);
+                // ★★★AND IT IS NEW, SAID HERE. The mark used to be worked out
+                // only inside a full rebuild, by asking which keys were absent
+                // from g_prevKeys -- and this path mints a key without ever
+                // touching that set. So a container emptied by right-click
+                // (every take a partial add) showed no marks at all, and then
+                // the first DRAG forced a rebuild that found the whole batch
+                // missing from g_prevKeys and lit every one of them at once.
+                // Reported exactly that way.
+                //
+                // ★The same two gates the rebuild uses, so the two paths
+                // cannot disagree: nothing is marked before a snapshot exists,
+                // nothing is marked on the rebuild a load asks for, and the
+                // form has to hold MORE than it did when the player last
+                // looked. `count` is that live total, read at the top.
+                if (g_seenValid && !g_suppressNew) {
+                    const auto sc = g_seenCount.find(a_form);
+                    if (count > (sc == g_seenCount.end() ? 0 : sc->second)) {
+                        g_newTiles.insert(key);
+                    }
+                }
+                // ★...and the key is ON THE BOARD now. Without this the next
+                // full rebuild finds it missing from g_prevKeys and marks it a
+                // second time -- which is the batch above, arriving late.
+                g_prevKeys.insert(key);
                 g_spaceUsed += MaskCells(g_items.back().mask.rows);
                 SKSE::log::info("[B3] ★stack mint '{}' x{} key '{}' at [{},{}] -- "
                                 "no rebuild",
@@ -10392,9 +10436,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         const char* nm = DisplayNameOf(a_obj, scoped,
             a_scope == ExtraScope::kAny ? entry : nullptr);
         if (a_count > 1) {
-            ImGui::TextColored(Theme::TipVal(), "%s  x%d", nm, a_count);
+            ImGui::TextColored(Theme::TipBody(), "%s  x%d", nm, a_count);
         } else {
-            ImGui::TextColored(Theme::TipVal(), "%s", nm);
+            ImGui::TextColored(Theme::TipBody(), "%s", nm);
         }
         // ★★Directly under the NAME, as a subtitle: "Iron Greatsword / Greatsword"
         // is how the eye expects a kind to be told, and it is the one fact here
@@ -10405,7 +10449,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // is what mod pages quote and what two cloaks fighting over one slot have
         // in common. Empty for anything not worn, which is most of the grid.
         if (const std::string slot = Equip::SlotLabel(a_obj); !slot.empty()) {
-            ImGui::TextColored(Theme::TipSub(), "%s", slot.c_str());
+            ImGui::TextColored(Theme::TipHead(), "%s", slot.c_str());
         }
         // ★A BOOK YOU HAVE READ SAYS SO, which is what vanilla's list does and
         // what a shelf of two hundred titles needs to be usable at all. The
@@ -10414,7 +10458,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // read one copy is having read the book.
         if (const auto* bk = a_obj->As<RE::TESObjectBOOK>();
             bk && bk->IsRead() && !bk->TeachesSpell()) {
-            ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::BookRead));
+            ImGui::TextColored(Theme::TipState(), "%s", Lang::T(Lang::Str::BookRead));
         }
         // ★★THE MUSEUM LINE, and it is said in EVERY case -- which is the half
         // of the design the wedge cannot carry. A donated relic hands its wedge
@@ -10424,10 +10468,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // question asked of one item at a time, not of a bag being skimmed.
         switch (Lotd::Of(a_obj->GetFormID())) {
         case Lotd::Status::kUndonated:
-            ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::MuseumOwed));
+            ImGui::TextColored(Theme::TipState(), "%s", Lang::T(Lang::Str::MuseumOwed));
             break;
         case Lotd::Status::kDonated:
-            ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::MuseumDone));
+            ImGui::TextColored(Theme::TipState(), "%s", Lang::T(Lang::Str::MuseumDone));
             break;
         default: break;
         }
@@ -10439,13 +10483,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         if (const auto* armoCls = a_obj->As<RE::TESObjectARMO>()) {
             switch (armoCls->GetArmorType()) {
             case RE::BIPED_MODEL::ArmorType::kLightArmor:
-                ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::ArmorLight));
+                ImGui::TextColored(Theme::TipHead(), "%s", Lang::T(Lang::Str::ArmorLight));
                 break;
             case RE::BIPED_MODEL::ArmorType::kHeavyArmor:
-                ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::ArmorHeavy));
+                ImGui::TextColored(Theme::TipHead(), "%s", Lang::T(Lang::Str::ArmorHeavy));
                 break;
             default:
-                ImGui::TextColored(Theme::TipSub(), "%s", Lang::T(Lang::Str::ArmorClothing));
+                ImGui::TextColored(Theme::TipHead(), "%s", Lang::T(Lang::Str::ArmorClothing));
                 break;
             }
         }
@@ -10454,10 +10498,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // GI64: the pouch prints "stored / cap". Without the cap there was
             // no way to learn the limit short of filling it.
             if (isPouch) {
-                ImGui::TextColored(Theme::TipVal(), "%s / %s G", Commas(a_coinValue).c_str(),
+                ImGui::TextColored(Theme::TipHead(), "%s / %s G", Commas(a_coinValue).c_str(),
                     Commas(GoldCoins::PouchCap()).c_str());
             } else {
-                ImGui::TextColored(Theme::TipVal(), "%dG", a_coinValue);
+                ImGui::TextColored(Theme::TipHead(), "%dG", a_coinValue);
             }
         }
 
@@ -10653,7 +10697,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         weap->GetAttackDamage(), pc ? "y" : "n");
                 }
             }
-            ImGui::TextColored(Theme::TipSub(), "%s %d", Lang::T(Lang::Str::Damage), dmg);
+            ImGui::TextColored(Theme::TipVal(), "%s %d", Lang::T(Lang::Str::Damage), dmg);
             diffText(dmg);
         } else if (auto* armo = a_obj->As<RE::TESObjectARMO>()) {
             int arm = static_cast<int>(armo->GetArmorRating());
@@ -10693,7 +10737,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             }
             // (the CLASS is printed up beside the slot, where it reads as what
             // the piece IS rather than as part of its measurement)
-            ImGui::TextColored(Theme::TipSub(), "%s %d", Lang::T(Lang::Str::Armor), arm);
+            ImGui::TextColored(Theme::TipVal(), "%s %d", Lang::T(Lang::Str::Armor), arm);
             diffText(arm);
         } else {
             RE::MagicItem* magic = a_obj->As<RE::AlchemyItem>();
@@ -10721,7 +10765,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 std::uint16_t bit = 1;
                 for (auto* e : magic->effects) {
                     if (known & bit) {
-                        effectLine(e, Theme::TipSub());
+                        effectLine(e, Theme::TipBody());
                     } else {
                         // ★An unknown effect keeps its PLACE. Vanilla's item
                         // card simply omits it, which left a freshly picked
@@ -10773,7 +10817,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // text. The effect belongs to the SPELL, and effectLine
                 // already renders one the way vanilla does -- tags filled,
                 // hidden helpers skipped.
-                for (auto* e : spell->effects) effectLine(e, Theme::TipSub());
+                for (auto* e : spell->effects) effectLine(e, Theme::TipBody());
             }
         }
 
@@ -10813,7 +10857,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     if (auto* xc = extraOf.operator()<RE::ExtraCharge>()) {
                         cur = xc->charge;
                     }
-                    ImGui::TextColored(Theme::TipSub(), "%s %d / %d",
+                    ImGui::TextColored(Theme::TipVal(), "%s %d / %d",
                         Lang::T(Lang::Str::ChargeLabel),
                         static_cast<int>(cur), static_cast<int>(maxCharge));
                 }
@@ -10839,7 +10883,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 };
                 const auto idx = (std::min)(static_cast<size_t>(lvl),
                     std::size(kSoulNames) - 1);
-                ImGui::TextColored(Theme::TipSub(), "%s: %s",
+                ImGui::TextColored(Theme::TipState(), "%s: %s",
                     Lang::T(Lang::Str::SoulLabel), Lang::T(kSoulNames[idx]));
             }
         }
@@ -10851,9 +10895,24 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 RE::BSString out;
                 desc->GetDescription(out, a_obj->As<RE::TESForm>());
                 if (out.size() > 0 && out.c_str() && *out.c_str()) {
-                    ImGui::PushTextWrapPos(300.0f * Theme::Scale());
-                    ImGui::TextColored(Theme::TipSub(), "%s", out.c_str());
-                    ImGui::PopTextWrapPos();
+                    // ★★THE SAME TIDYING THE EFFECT LINES GET, and it was
+                    // missing here. GetDescription resolves the magnitude but
+                    // leaves it WRAPPED -- the Gauldur Amulet came out reading
+                    // "by <30> points", brackets and all, in a screenshot.
+                    // A description and an effect line are the same kind of
+                    // sentence from the same records; only one of them was
+                    // being finished.
+                    // ★Survival blocks too: a description written for a mode
+                    // that is switched off must not be half-printed.
+                    std::string line = out.c_str();
+                    StripSurvivalBlocks(line, SurvivalModeOn());
+                    UnwrapNumericTags(line);
+                    TrimInPlace(line);
+                    if (!line.empty()) {
+                        ImGui::PushTextWrapPos(300.0f * Theme::Scale());
+                        ImGui::TextColored(Theme::TipBody(), "%s", line.c_str());
+                        ImGui::PopTextWrapPos();
+                    }
                 }
             }
         }
@@ -10865,7 +10924,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // forms carry 0 in the record (they are icons for a ledger, not goods),
         // so this line could only ever add a contradictory second number.
         if (a_coinValue < 0) {
-            ImGui::TextColored(Theme::TipSub(), "%s %d",
+            ImGui::TextColored(Theme::TipHead(), "%s %d",
                 Lang::T(Lang::Str::Value), UnitValueWith(a_obj, scoped));
         }
 
@@ -10927,6 +10986,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                      ? Lang::Str::ActCloseBag : Lang::Str::ActOpenBag;
             } else if (isPouch) {
                 verb = Lang::Str::ActWithdraw;
+            } else if (g_trashOpen && !a_tile.partner && !a_tile.equipSlot &&
+                       !a_tile.parked) {
+                // ★The bin is open, so this is what the button does now. It
+                // sits in the same place here as in the click handler -- below
+                // bag and pouch, above every mode -- because the two lists are
+                // one decision written twice, and a bar that promises "sell"
+                // while the click bins the item is worse than no bar at all.
+                // ★partner / equipSlot never reach the handler this mirrors
+                // (they have their own), so they must not claim the verb here.
+                verb = Lang::Str::ActTrash;
             } else if (a_tile.partner) {
                 verb = mode == LootBarter::Mode::kBarter     ? Lang::Str::ActBuy
                      : mode == LootBarter::Mode::kPickpocket ? Lang::Str::ActSteal
@@ -13501,6 +13570,46 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             ParkKeyInTrash(a_held.key, a_held.obj, a_held.count, col, row,
                            a_held.xlIdx, a_held.uid, a_held.sig, a_held.rot);
             g_held.reset();
+            return true;
+        }
+
+        // ★★★THE OPEN BIN CHANGES WHAT A RIGHT-CLICK MEANS, and only on the
+        // player's own surfaces. Binning one item at a time by dragging is the
+        // slowest thing this UI asks of anyone -- lift, travel to the window,
+        // drop, repeat -- and the trash being OPEN is already the player
+        // saying "I am throwing things away now". So while it is up, a
+        // right-click on the board or in a bag sends the tile straight in.
+        //
+        // ★It reuses the drag's own guards rather than restating them: quest
+        // items, gold and coins, a worn or non-empty bag all refuse here
+        // exactly as they refuse a drop, with the same note. A favourite still
+        // asks first -- the confirmation exists because the mark means "I chose
+        // this on purpose", and a faster gesture is a better reason to keep it,
+        // not a reason to drop it.
+        //
+        // ★★The PARTNER window and the equipment doll are untouched, and not
+        // by a condition: they own their own right-click handlers
+        // (LootBarter.cpp, Equip.cpp) and never reach this code. Nothing about
+        // a container's or a merchant's board is ours to bin.
+        bool RightClickIntoTrash(const Item& a_it)
+        {
+            if (!g_trashOpen || !a_it.obj) return false;
+            if (!TrashIntakeAllowed(a_it.obj, a_it.quest, a_it.key, a_it.def.bag != 0)) {
+                return true;   // refused, and it has already said why
+            }
+            const LayoutEntry le = g_layout.count(a_it.key) ? g_layout[a_it.key]
+                                                            : LayoutEntry{};
+            if (a_it.fav) {
+                // col/row -1: the bin first-fits it, there being no drop point
+                g_trashAsk = { true, a_it.obj, a_it.key, a_it.count, -1, -1,
+                               le.xlIdx, a_it.uid, a_it.sig, a_it.rot };
+                Sfx::SelectOn();
+                RequestRebuild();
+                return true;
+            }
+            TrashMakeRoomFor(a_it.mask);
+            ParkKeyInTrash(a_it.key, a_it.obj, a_it.count, -1, -1,
+                           le.xlIdx, a_it.uid, a_it.sig, a_it.rot);
             return true;
         }
 

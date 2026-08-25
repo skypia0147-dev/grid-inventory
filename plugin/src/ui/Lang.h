@@ -207,8 +207,8 @@ namespace FUI::Lang
            not on display" in as many words. It is also what we actually        \
            MEASURE -- the pedestal's reference being enabled -- so it stays     \
            true for a relic that was handed in but never put out. */            \
-        X(MuseumOwed, "Museum: not on display")   /* LOTD relic still owed */                               \
-        X(MuseumDone, "Museum: on display")       /* already on a pedestal */                               \
+        X(MuseumOwed, "Unexhibited")   /* LOTD relic still owed */                                          \
+        X(MuseumDone, "Exhibited")     /* already on a pedestal */                                          \
         X(ActLearn, "learn")                                                                                \
         X(ActSell, "sell")                                                                                  \
         X(ActStoreIn, "store")                                                                              \
@@ -224,6 +224,10 @@ namespace FUI::Lang
         X(ActUnequip, "unequip")   /* GI63: potions, food and poisons are drunk/eaten, not worn... */       \
         X(ActUse, "use")                                                                                    \
         X(ActDrop, "drop")                                                                                  \
+        /* ★Distinct from ActDrop: that one puts the item on the ground,                            \
+           this one puts it in the open bin. Two disposals, and a player                            \
+           reading one word must not have to guess which. */                                        \
+        X(ActTrash, "discard")   /* RMB while the trash window is open */                           \
         X(ActFavorite, "favorite")                                                                          \
         X(ActRecharge, "recharge")   /* (1.3.1) T on an enchanted weapon that is not full */                \
         X(ActSplit, "split")                                                                                \

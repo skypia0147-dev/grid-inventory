@@ -2123,12 +2123,40 @@ namespace FUI::Theme
     // of fact rather than one per emphasis level
     namespace
     {
-        const ImVec4 kTipHead = Rgba(232, 200, 110);   // section label, gold
-        const ImVec4 kTipVal  = Rgba(111, 200, 240);   // name, numbers
-        const ImVec4 kTipGood = Rgba(127, 201, 138);   // temper, enchantment
-        const ImVec4 kTipBad  = Rgba(232, 106, 106);   // restriction, overload
-        const ImVec4 kTipSub  = Rgba(151, 163, 172);   // hints, shop price
-        const ImVec4 kTipBody = Rgba(230, 237, 242);   // running text
+        // ★★★ONE COLOUR PER KIND OF FACT — and it took a measurement to notice
+        // that the palette had stopped meaning that. Six tokens existed, and of
+        // the 40 coloured lines in a tooltip, 24 were the SAME grey: the
+        // armour rating, the price, and "right-click to open" all read alike,
+        // so nothing in the card had a shape the eye could aim at. TipHead,
+        // TipBad and TipBody were down to one use each.
+        //
+        // The kinds, and what each is for:
+        //   Body   the item's own name, and running text (descriptions,
+        //          effects) -- the brightest thing, because it is the subject
+        //   Head   CLASSIFICATION and MONEY: what kind of thing this is
+        //          (Body / Heavy Armour) and what it is worth. Gold reads as
+        //          coin on a board whose coins are already gold
+        //   Val    NUMBERS you compare -- damage, armour, charge, cells
+        //   Good   what the item does FOR you: temper, enchantment
+        //   State  a fact about this copy that is neither number nor rarity:
+        //          read, exhibited, the soul inside a gem
+        //   Bad    what blocks you: a merchant's refusal, a full bag
+        //   Sub    the quietest line there is -- hints and placeholders,
+        //          dimmed further so it stops competing with the facts
+        const ImVec4 kTipHead  = Rgba(232, 200, 110);   // classification, money
+        const ImVec4 kTipVal   = Rgba(111, 200, 240);   // numbers
+        const ImVec4 kTipGood  = Rgba(127, 201, 138);   // temper, enchantment
+        const ImVec4 kTipBad   = Rgba(232, 106, 106);   // restriction, overload
+        // ★★The SAME purple the museum wedge uses (Grid.cpp kRelicOwe). Two
+        // places on one screen say "the museum still wants this", and they now
+        // say it in one colour -- the mark on the tile and the line on the card
+        // are the same fact, so a player learns the colour once.
+        const ImVec4 kTipState = Rgba(169, 123, 232);   // read / exhibited / soul
+        // ★Dimmed from 151,163,172. It used to carry two thirds of the card, so
+        // it had to be readable as a primary; now it carries hints only, and a
+        // hint that competes with a stat is a hint drawn too bright.
+        const ImVec4 kTipSub   = Rgba(120, 132, 142);   // hints, placeholders
+        const ImVec4 kTipBody  = Rgba(230, 237, 242);   // name, running text
 
         // ★The tooltip's CHROME, named once. PushTipStyle pushes these and
         // TipBg/TipBorder/... hand the same values to whoever has to paint the
@@ -2144,6 +2172,7 @@ namespace FUI::Theme
     const ImVec4& TipVal()  { return kTipVal; }
     const ImVec4& TipGood() { return kTipGood; }
     const ImVec4& TipBad()  { return kTipBad; }
+    const ImVec4& TipState(){ return kTipState; }
     const ImVec4& TipSub()  { return kTipSub; }
     const ImVec4& TipBody() { return kTipBody; }
 

@@ -447,6 +447,10 @@ namespace FUI::Theme
     [[nodiscard]] const ImVec4& TipVal();    // name, numbers
     [[nodiscard]] const ImVec4& TipGood();   // temper, enchantment
     [[nodiscard]] const ImVec4& TipBad();    // "cannot", overload
+    // ★A fact about THIS copy that is neither a number nor a rarity:
+    // read, exhibited, the soul in a gem. Shares the museum wedge's
+    // purple so the tile and the card say one thing in one colour.
+    [[nodiscard]] const ImVec4& TipState();  // read / exhibited / soul
     [[nodiscard]] const ImVec4& TipSub();    // hints, shop price
     [[nodiscard]] const ImVec4& TipBody();   // running text
     // push/pop around BeginTooltip: dark ground + pale hairline + body ink
