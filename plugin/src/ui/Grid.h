@@ -61,6 +61,26 @@ namespace FUI::Grid
     // returning (or pre-1.3.0) amount belongs to.
     [[nodiscard]] std::vector<std::string> PouchTiles();
     [[nodiscard]] std::string              AnyPouchTile();
+    // ★Order the given tile keys by BOARD POSITION: main board first, then
+    // bags (row-major within each); keys with no layout entry sort last.
+    // GoldCoins' pinned-purse trim walks the result back-to-front, so the
+    // purse that pays for an over-spend is the rear-most one -- the same
+    // "the rear tiles absorb the spend" rule the auto coin partition already
+    // follows. Main thread only (reads the layout).
+    [[nodiscard]] std::vector<std::string> OrderKeysByPosition(
+        std::vector<std::string> a_keys);
+    // ★Every COIN tile's slot (key + the amount it holds), in board-position
+    // order -- what the spend allocator needs to decide WHO pays for an
+    // external gold drop (shop, trainer, script). Pouch tiles are excluded
+    // (the pouch is storage, not spending money) and so is the tile on the
+    // cursor (money mid-carry cannot be the one a shop consumed). Read from
+    // the layout, so it answers with the menu closed too. Main thread only.
+    struct CoinSlot
+    {
+        std::string key;
+        int         value = 0;
+    };
+    [[nodiscard]] std::vector<CoinSlot> CoinTilesByPosition();
     // ★(1.3.0) hand any waiting return to the pouch tiles, NEW tiles first
     // (the pouch that just walked in claims its own gold before any
     // pre-existing empty pouch gets a look). Called on every rebuild.

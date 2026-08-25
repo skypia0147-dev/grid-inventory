@@ -266,6 +266,12 @@ namespace FUI::Grid
             // to tell the two apart, and what the leak guard in FinishFrame
             // watches for. Appended LAST (§10-6).
             bool                transient = false;
+            // ★S1: this carry's board tile has not been detached yet -- the C1
+            // lift fires inside the tile loop, where g_items must not move.
+            // FinishFrame stashes it (StashTileForCarry) before the drop
+            // resolution runs; the one-frame latency is what the deferred
+            // rebuild always had. Appended LAST (§10-6).
+            bool                needsDetach = false;
             // Adopting an angle (lifting a tile that already lies on its side)
             // must NOT animate -- there is nothing to show, the item was already
             // like that. Only a keypress starts a turn.
@@ -1460,6 +1466,70 @@ namespace FUI::Grid
         int                                            g_gold = 0;
         std::optional<Held>                            g_held;
         DropTarget                                     g_target;
+
+        // ---- ★PLAN_SPACE_AUTHORITY S0: the board verbs ---------------------
+        //
+        // A verb updates exactly the tiles it names and maintains the §4-2
+        // books by hand; anything it cannot PROVE declines into the caller's
+        // existing RequestRebuild -- the OnFormDelta doctrine applied to the
+        // board's own gestures. Every verb answers false for "I could not do
+        // this provably", and the caller's rebuild is the unchanged fallback,
+        // so a verb can never be less correct than the path it replaces.
+        //
+        // §4-2 checklist a mutating verb settles (measured off FinalizeRebuild):
+        //   1. g_layout col/row/bag/count/rot     (the caller's PlaceTile, or here)
+        //   2. new marks: only MINTING paths touch g_newTiles/g_prevKeys
+        //   3. g_spaceUsed increment/decrement + MarkCapacityDirty
+        //   4. g_liveObjs: derived at rebuild; a stale member is permissive
+        //   5. g_boardVersion++ when the tile SET changes (search)
+        //   6. icon queue: only minting paths (draw-time queue self-heals)
+        //   7. pool hints (uid/sig) ride the Item / the carry
+        //   8. coins: NEVER through these verbs (§7) -- callers keep the tail
+        //
+        // ★THREAD/PHASE RULE: g_items/g_views mutate ONLY outside the draw
+        // loop (FinishFrame, Tick, input handlers that already run Rebuild()
+        // directly). The one in-draw gesture, the C1 lift, defers through
+        // Held::needsDetach and is executed at FinishFrame -- the same one-
+        // frame latency the deferred rebuild always had.
+
+        // The tile riding the cursor, OFF the board -- the cursor space's
+        // board-side half. Erasing at lift and re-inserting at put keeps every
+        // g_items consumer (capacity B5, coin partition, pouch lists) seeing
+        // exactly what the rebuild model showed them: a carried tile is not on
+        // the board. The layout entry stays put (cancel returns home).
+        std::optional<Item> g_stash;
+
+        bool StashTileForCarry(const std::string& a_key);            // Lift
+        bool UnstashTileTo(const std::string& a_bag, int a_col, int a_row,
+                           int a_rot, int a_count);                  // Put
+        bool UnstashTileHome();                                      // cancel
+        void DiscardStash(const char* a_why);                        // Exit spent it
+        void RefreshPoolFlagsFor(RE::TESBoundObject* a_obj);         // star/stolen/quest, in place
+        bool SetTileDisplayCount(const std::string& a_key, int a_count);   // Merge/split
+        // Park/Restore: move ONE tile between views (a_col < 0 = first-fit;
+        // an occupied remembered spot degrades to first-fit, restore's rule).
+        bool MoveTileToView(const std::string& a_key, const std::string& a_bag,
+                            int a_col, int a_row);
+        // ...and its in-draw deferral: a right-click park fires inside the
+        // tile loop, where g_items/g_views must not move. Queued here, run at
+        // FinishFrame before the drop resolution; a failed move rebuilds.
+        struct ViewMoveReq
+        {
+            std::string key;
+            std::string bag;
+            int         col = -1;
+            int         row = -1;
+        };
+        std::vector<ViewMoveReq> g_viewMoveQ;
+        void RunQueuedViewMoves();
+        // ★S1: the trash button fires mid-draw; the (always empty) trash view
+        // is appended at FinishFrame instead of by a rebuild.
+        bool g_wantTrashView = false;
+        // ★S2: the expiry's one-tile recovery (defined with the verb bodies)
+        bool ReEmitTileAt(std::uint32_t a_form, const std::string& a_key);
+        // occupancy of one view (defined with the verb bodies; S3's Enter
+        // seats fresh units into bag views through it)
+        std::vector<std::vector<bool>> ViewOccOf(const View& a_v, int a_skipIdx = -1);
         // One-shot: the STACK TILE a unit was just taken from. Stackables have no
         // per-unit identity, so rule 2-B decides it -- the cell the player acted
         // on is the cell that gives one up. Without this the drain took from
@@ -3344,7 +3414,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             !GoldCoins::IsCoinForm(fid)) {
                             ToggleFavorite(it.key, it.obj, it.uid, it.xlIdx, it.sig);
                             Sfx::Favorite();
-                            RequestRebuild();
+                            // ★S1: no rebuild -- the star lands when the engine
+                            // applies it (ProcessFavorites), and THAT refreshes
+                            // this form's tiles in place. The rebuild here drew
+                            // a board on which nothing had changed yet.
                         }
                     }
                     if (tileClicked(ImGuiMouseButton_Left)) {   // C1: pickup
@@ -3394,7 +3467,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                     it.obj->GetName(), it.key, le.col, le.row);
                             }
                             if (g_sound) g_sound(it.obj, true);
-                            RequestRebuild();   // cells free next frame (C1)
+                            // ★S1: the cells free next frame as they always
+                            // did -- via the deferred STASH now, not a full
+                            // rebuild (FinishFrame runs it; a miss rebuilds)
+                            g_held->needsDetach = true;
                         }
                     } else if (tileClicked(ImGuiMouseButton_Right)) {
                         // bag / pouch right-click is ALWAYS manage (toggle /
@@ -3402,6 +3478,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         // by drag only (confirmed spec). Everything else
                         // branches on the UI mode so loot/barter never fires
                         // the equip action.
+                        // ★S1: a branch that repainted itself (or changed no
+                        // board state at all) says so, and the catch-all
+                        // rebuild at the chain's end stands down for it.
+                        bool rcQuiet = false;
                         if (it.inBag == kTrashKey) {
                             // F2: right-click on a PARKED tile = restore. Its
                             // pre-park spot is tried first; taken/gone -> the
@@ -3424,6 +3504,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             }
                             g_layout[it.key] = back;
                             if (g_sound) g_sound(it.obj, true);
+                            // ★S1: the restore is ONE tile moving back to the
+                            // board -- queued (this runs mid-draw), seated at
+                            // FinishFrame; an occupied spot first-fits there.
+                            g_viewMoveQ.push_back({ it.key, back.bag,
+                                                    back.col, back.row });
+                            rcQuiet = true;
                         } else if (it.def.bag != 0) {   // E2: bag right-click = window toggle
                             if (g_openBags.contains(it.key)) {
                                 g_openBags.erase(it.key);
@@ -3432,12 +3518,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                 g_openBags.insert(it.key);
                                 Sfx::BagOpen();
                             }
+                            // ★S1: the window follows the flag IN PLACE -- the
+                            // view (and its placement) exists either way, open
+                            // only decides the drawing (its own stated rule).
+                            for (auto& v : g_views) {
+                                if (v.bagKey == it.key) {
+                                    v.open = g_openBags.contains(it.key);
+                                    break;
+                                }
+                            }
+                            rcQuiet = true;
                         } else if (GoldCoins::IsPouch(it.obj->GetFormID())) {
                             g_pouchOpen = true;   // G2: withdraw window
                             // start at half the stored amount (split-friendly default)
                             g_pouchTile = it.key;
                             g_pouchSlider = (std::max)(1, GoldCoins::PouchStoredOf(it.key) / 2);
                             Sfx::SelectOn();
+                            rcQuiet = true;   // ★S1: a window opened, no tile moved
                         } else if (RightClickIntoTrash(it)) {
                             // ★★While the TRASH is open, a right-click bins the
                             // tile instead of doing whatever it would otherwise
@@ -3455,6 +3552,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             // open, "throw this away" is the intent on screen.
                             // ★Returns false when the bin is shut, so every
                             // branch below is untouched in ordinary play.
+                            rcQuiet = true;   // ★S1: park queued / refusal said no
                         } else if (LootBarter::IsLootMode(LootBarter::CurrentMode())) {
                             // loot: right-click stores this tile into the
                             // container — a stack (>1) opens the quantity
@@ -3586,7 +3684,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             g_clickAction =
                                 ClickAction{ it.key, ClickRoute::kUse };
                         }
-                        if (!g_clickAction) RequestRebuild();
+                        // ★S1: only branches that neither routed (clickAction)
+                        // nor spoke for themselves (rcQuiet) still pay the
+                        // catch-all -- today that is the mode branches' inline
+                        // engine work and the coin actions (§7's rule).
+                        if (!g_clickAction && !rcQuiet) RequestRebuild();
                     }
                 }
             }
@@ -3967,8 +4069,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // frames until the engine confirms the re-wear.
             SKSE::log::info("[ACT] carry cancel -> origin slot '{}'",
                 h.obj ? h.obj->GetName() : "?");
+            DiscardStash("doll-origin cancel");   // a board tile it never was
             return;
         }
+        // ★S1: a whole-tile board carry goes home as ONE tile -- its layout
+        // entry was never erased and its Item rides the stash. Everything the
+        // stash cannot prove (a fragment, a partner carry, a lift whose
+        // detach never ran, a spot that stopped existing) falls through to
+        // the rebuild, which re-derives exactly as before.
+        if (!h.preSplit && !h.fromPartner && UnstashTileHome()) return;
         Rebuild();   // the item resumes its saved spot (pickup never erased it)
     }
 
@@ -4135,10 +4244,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // ★The cell comes back FIRST -- a rebuild before this would re-mint the
         // slot and first-fit it into the front gap, which is the very bug.
         if (a_delta < 0) CancelSlotDrop(a_form, a_slot);
-        // ★The board is still derived from the engine, so the engine's answer is
-        // still the truth and re-deriving IS the recovery. That stops being true
-        // in B3-b, and this is where the undo goes when it does.
+        // ★S2: the undo B3-b promised. The kept slot gets its unit re-drawn,
+        // ONE tile wide -- no other tile moves (원칙 3: the refusal is
+        // confined to the cell it named). Anything unproven still re-derives.
         const auto* form = RE::TESForm::LookupByID(a_form);
+        if (a_delta < 0 && ReEmitTileAt(a_form, a_slot)) {
+            SKSE::log::warn("[GRID] '{}' {:+d} ({}) was never confirmed -- its "
+                            "tile is back, nothing else moved",
+                form && form->GetName() ? form->GetName() : "?", a_delta, a_who);
+            return;
+        }
         SKSE::log::warn("[GRID] '{}' {:+d} ({}) was never confirmed -- rebuilding "
                         "to recover",
             form && form->GetName() ? form->GetName() : "?", a_delta, a_who);
@@ -5801,13 +5916,38 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             break;
                         }
                     }
-                    std::size_t freeSlot = 0;
+                    // ★Leftovers used to take the first unused slot in
+                    // POSITION order, and a spend that broke a thousand showed
+                    // why that is wrong: the shrunk remainder landed on the
+                    // OLD remainder's cell (front-most unused) while the
+                    // broken thousand's cell died -- so the rear tile looked
+                    // like it teleported onto the partial and was spent there
+                    // (user report, shop test). The slot whose OLD amount is
+                    // NEAREST the new one is the tile the player watched
+                    // change, so it keeps its cell and shrinks (or fills) in
+                    // place. Ties prefer the slot that could have shrunk into
+                    // the amount (old >= new), then the later board position.
                     for (std::size_t w = 0; w < want.size(); ++w) {
                         if (place[w]) continue;
-                        while (freeSlot < autoSlots.size() && used[freeSlot]) ++freeSlot;
-                        if (freeSlot >= autoSlots.size()) break;   // a brand new tile
-                        used[freeSlot] = true;
-                        place[w] = &autoSlots[freeSlot];
+                        std::size_t best = autoSlots.size();
+                        int  bestD = 0;
+                        bool bestGe = false;
+                        for (std::size_t s = 0; s < autoSlots.size(); ++s) {
+                            if (used[s]) continue;
+                            const int c = autoSlots[s].coin;
+                            const int d = c >= want[w] ? c - want[w] : want[w] - c;
+                            const bool ge = c >= want[w];
+                            if (best == autoSlots.size() || d < bestD ||
+                                (d == bestD && ge && !bestGe) ||
+                                (d == bestD && ge == bestGe)) {   // later position wins ties
+                                best = s;
+                                bestD = d;
+                                bestGe = ge;
+                            }
+                        }
+                        if (best == autoSlots.size()) break;   // brand new tiles from here
+                        used[best] = true;
+                        place[w] = &autoSlots[best];
                     }
 
                     int probe = 0;
@@ -7089,6 +7229,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     le.bag = it.inBag;
                     le.count = it.count;   // G4: keep owned count in sync with placement
                     le.rot = it.rot;       // GI62 (pass 2 may have stood it back up)
+                    // ★The slot's coin amount too: a freshly minted auto tile
+                    // (emitCoin with no pos) had no layout entry to stamp, so
+                    // its slot said -1 until the NEXT partition -- one rebuild
+                    // during which the spend allocator could not see it.
+                    // -1 for every non-coin tile, which is the field's default.
+                    le.coin = it.coinValue;
                 }
             }
 
@@ -7291,6 +7437,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // form. The cost of being wrong in this direction is one extra
         // rebuild; in the other it is a tile that stays on screen.
         g_optimisticGone.clear();
+        // ★S1: a full pass supersedes the cursor stash and any queued view
+        // moves -- the re-derivation IS their answer (the carry exclusion
+        // still holds the held unit back, so nothing doubles). A later put
+        // with no stash declines into another rebuild, which is correct.
+        g_stash.reset();
+        g_viewMoveQ.clear();
         for (auto ti = g_transientArrivals.begin(); ti != g_transientArrivals.end();) {
             ti = (--ti->second <= 0) ? g_transientArrivals.erase(ti) : std::next(ti);
         }
@@ -7627,15 +7779,94 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 tilesByPool[pool].push_back(static_cast<int>(i));
                 sumByPool[pool] += it.count;
             }
+            bool shrank = false, grew = false;
             for (const auto& [pool, sum] : sumByPool) {
                 const auto pi = pools.find(pool);
-                if ((pi == pools.end() ? 0 : pi->second) < sum) {
-                    return decline("a pool shrank");
-                }
+                if ((pi == pools.end() ? 0 : pi->second) < sum) shrank = true;
             }
-            bool grew = false;
             for (const auto& [pool, n] : pools) {
                 if (n > sumByPool[pool]) { grew = true; break; }
+            }
+            // ★S3: pools crossing (one down, one up) is a RELABEL -- the same
+            // unit changed value, and which tile keeps which cell is census's
+            // matching question (PLAN §3), not this fast path's.
+            if (shrank && grew) return decline("pools crossed (relabel)");
+            if (shrank) {
+                // ---- ★S3: the REMOVE direction, pure-shrink only ----------
+                // The gates above proved nothing of ours is in flight, so the
+                // deficit is a genuine outside removal (script, follower,
+                // vanilla favourites). Tiles pay REAR-first in position order
+                // -- the same "the rear tiles absorb the spend" rule the gold
+                // partition follows -- and a tile that empties leaves whole.
+                struct Cut { std::string key; int take; };
+                std::vector<Cut> plan;
+                for (auto& [pool, sum] : sumByPool) {
+                    const auto pi = pools.find(pool);
+                    int deficit = sum - (pi == pools.end() ? 0 : pi->second);
+                    if (deficit <= 0) continue;
+                    auto idxs = tilesByPool[pool];
+                    std::sort(idxs.begin(), idxs.end(), [&](int a, int b) {
+                        const auto& x = g_items[static_cast<std::size_t>(a)];
+                        const auto& y = g_items[static_cast<std::size_t>(b)];
+                        if (x.inBag != y.inBag) return x.inBag > y.inBag;   // bags first (rear)
+                        if (x.row != y.row) return x.row > y.row;
+                        return x.col > y.col;
+                    });
+                    for (int i : idxs) {
+                        if (deficit <= 0) break;
+                        const auto& t = g_items[static_cast<std::size_t>(i)];
+                        const int take = (std::min)(t.count, deficit);
+                        plan.push_back({ t.key, take });
+                        deficit -= take;
+                    }
+                    if (deficit > 0) return decline("shrink exceeds shown tiles");
+                }
+                for (const auto& c : plan) {
+                    // by KEY, one at a time -- each erase re-finds, so the
+                    // index shifts of a previous cut cannot mislead this one.
+                    // The lean removal: no drain-hint spend, no optimistic
+                    // claim -- those belong to CLICK paths, and this is an
+                    // outside delta.
+                    int idx = -1;
+                    for (std::size_t i = 0; i < g_items.size(); ++i) {
+                        if (g_items[i].key == c.key) { idx = static_cast<int>(i); break; }
+                    }
+                    if (idx < 0) { RequestRebuild(); return true; }
+                    auto& t = g_items[static_cast<std::size_t>(idx)];
+                    if (c.take < t.count) {
+                        t.count -= c.take;
+                        g_layout[c.key].count = t.count;
+                        SKSE::log::info("[B3] ★outside shrink '{}' -{} -> {} in '{}'"
+                                        " -- no rebuild",
+                            obj->GetName(), c.take, t.count, c.key);
+                        continue;
+                    }
+                    for (const auto& v : g_views) {
+                        if (std::find(v.items.begin(), v.items.end(), idx) ==
+                            v.items.end()) {
+                            continue;
+                        }
+                        if (v.accept.empty() && v.bagKey != kTrashKey) {
+                            g_spaceUsed -= MaskCells(t.mask.rows);
+                        }
+                        break;
+                    }
+                    g_items.erase(g_items.begin() + idx);
+                    for (auto& v : g_views) {
+                        std::erase(v.items, idx);
+                        for (int& i2 : v.items) {
+                            if (i2 > idx) --i2;
+                        }
+                    }
+                    g_layout.erase(c.key);
+                    g_prevKeys.erase(c.key);
+                    g_newTiles.erase(c.key);
+                    ++g_boardVersion;
+                    SKSE::log::info("[B3] ★outside shrink '{}' tile '{}' off the "
+                                    "board -- no rebuild", obj->GetName(), c.key);
+                }
+                MarkCapacityDirty();
+                return true;
             }
             if (!grew) {
                 SKSE::log::info("[B3] partial add ({:08X}): nothing fresh -- "
@@ -7844,37 +8075,62 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // Decide EVERY placement before touching g_items -- a fallback after a
         // partial commit would leave a half-updated board for the rebuild to
         // race (rule 5: all traces or none).
+        // ★S3: seats span the MAIN view and the GENERAL bag views now -- a
+        // fresh unit whose saved spot (or drop hint) names a bag is seated in
+        // that bag's own occupancy instead of declining. Typed bags stay the
+        // rebuild's business (their claims run in the fill pass), and so does
+        // anything whose view cannot be found.
+        std::map<std::string, std::vector<std::vector<bool>>> occByBag;
+        const auto viewIdxOf = [&](const std::string& a_bag) -> int {
+            for (std::size_t i = 0; i < g_views.size(); ++i) {
+                if (g_views[i].bagKey == a_bag) return static_cast<int>(i);
+            }
+            return -1;
+        };
+        // nullptr = no seatable view for this bag (typed / trash / missing)
+        const auto occOf = [&](const std::string& a_bag)
+            -> std::vector<std::vector<bool>>* {
+            if (a_bag.empty()) return &occ;
+            if (a_bag == kTrashKey) return nullptr;
+            const auto oi = occByBag.find(a_bag);
+            if (oi != occByBag.end()) return &oi->second;
+            const int vi = viewIdxOf(a_bag);
+            if (vi < 0 || !g_views[static_cast<std::size_t>(vi)].accept.empty()) {
+                return nullptr;
+            }
+            return &occByBag.emplace(a_bag,
+                ViewOccOf(g_views[static_cast<std::size_t>(vi)])).first->second;
+        };
         struct Planned { const UnitTile* u; LayoutEntry le; };
         std::vector<Planned> plan;
         for (const auto* u : fresh) {
             LayoutEntry le;
             if (const auto li = g_layout.find(u->key); li != g_layout.end()) le = li->second;
-            if (!le.bag.empty()) return decline("fresh unit bound to a bag");
+            auto* seatOcc = occOf(le.bag);
+            if (!seatOcc) return decline("no seatable view for the saved bag");
             if (le.col >= 0) {
                 // a surviving saved spot (parked star, cancel) -- honour it if free
                 const Mask m = MaskOf(gdef, CanRotate(gdef) ? (le.rot & 3) : 0);
-                if (!OccFits(occ, le.col, le.row, m)) {
+                if (!OccFits(*seatOcc, le.col, le.row, m)) {
                     return decline("saved spot occupied");
                 }
-                OccMark(occ, le.col, le.row, m);
+                OccMark(*seatOcc, le.col, le.row, m);
             } else {
                 // ★A partner-drop hint aims the fresh tile at the drop cell --
-                // the same honour CollectDisplayTiles pays it (GI21/B2). A
-                // hint into a BAG is the rebuild's business (bag views are not
-                // placed here); an occupied hint falls through to first-fit,
-                // matching the placer's own behaviour.
+                // the same honour CollectDisplayTiles pays it (GI21/B2). ★S3:
+                // a hint into a GENERAL bag seats there now; an occupied hint
+                // falls through to first-fit, matching the placer.
                 if (!hintTaken && g_dropHint.Wants(baseKey,
                         PoolPrefix(baseKey, u->uid, u->sig))) {
-                    if (!g_dropHint.bag.empty()) {
-                        return decline("hinted into a bag");
-                    }
+                    auto* hOcc = occOf(g_dropHint.bag);
                     const int  hrot = CanRotate(gdef) ? (g_dropHint.rot & 3) : 0;
                     const Mask hm = MaskOf(gdef, hrot);
-                    if (OccFits(occ, g_dropHint.col, g_dropHint.row, hm)) {
+                    if (hOcc && OccFits(*hOcc, g_dropHint.col, g_dropHint.row, hm)) {
                         le.col = g_dropHint.col;
                         le.row = g_dropHint.row;
                         le.rot = hrot;
-                        OccMark(occ, le.col, le.row, hm);
+                        le.bag = g_dropHint.bag;
+                        OccMark(*hOcc, le.col, le.row, hm);
                         hintTaken = true;
                         plan.push_back({ u, le });
                         continue;
@@ -7882,7 +8138,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 }
                 // rule 13 forgot the cell at equip time: first-fit, both
                 // orientations, same as the rebuild's placer would
-                if (!OccPlace(occ, gdef, le)) {
+                if (!OccPlace(*seatOcc, gdef, le)) {
                     return decline("no room (growth/spill)");
                 }
             }
@@ -7900,11 +8156,33 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             g_layout[p.u->key] = p.le;   // persist BEFORE mint: the tile reads it
             MakeDisplayTile(obj, entry, gdef, glow, p.u->key, 1, p.le, p.u->xlIdx);
             const int idx = static_cast<int>(g_items.size()) - 1;
-            mv.items.push_back(idx);
-            g_spaceUsed += MaskCells(g_items.back().mask.rows);
+            const int tvi = viewIdxOf(p.le.bag);   // ★S3: the seat's own view
+            if (tvi < 0) { RequestRebuild(); return true; }
+            auto& tv = g_views[static_cast<std::size_t>(tvi)];
+            tv.items.push_back(idx);
+            if (tv.accept.empty() && tv.bagKey != kTrashKey) {
+                g_spaceUsed += MaskCells(g_items.back().mask.rows);
+            }
             g_liveObjs.insert(obj);
-            SKSE::log::info("[B3] ★partial add '{}' key '{}' at [{},{}] -- no rebuild",
-                obj->GetName(), p.u->key, p.le.col, p.le.row);
+            // ★★★AND IT IS NEW, SAID HERE -- the GEAR half. The 1.4.4 fix
+            // stamped the mark at the STACKABLE mint and never at this one,
+            // so a chest emptied of weapons by right-click showed no marks
+            // until a drag's rebuild lit the whole batch (user report, twice
+            // -- the second time when S3 widened this path's coverage and
+            // the rebuilds that had been papering over it stopped running).
+            // Same two gates as the rebuild and the stack mint, so the three
+            // paths cannot disagree; and the key goes into g_prevKeys, or
+            // the NEXT rebuild marks it a second time.
+            if (g_seenValid && !g_suppressNew) {
+                const auto sc = g_seenCount.find(a_form);
+                if (count > (sc == g_seenCount.end() ? 0 : sc->second)) {
+                    g_newTiles.insert(p.u->key);
+                }
+            }
+            g_prevKeys.insert(p.u->key);
+            SKSE::log::info("[B3] ★partial add '{}' key '{}' at [{},{}]{} -- no rebuild",
+                obj->GetName(), p.u->key, p.le.col, p.le.row,
+                p.le.bag.empty() ? "" : " (bag)");
         }
         // ★NOW it is spent -- the plan committed, so the cell the player aimed
         // at has actually been used. A decline above returns without touching
@@ -7996,6 +8274,300 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             SKSE::log::info("[B3] ★use click '{}' tile '{}' off the board -- no rebuild",
                 a_obj->GetName(), a_key);
             g_optimisticGone.insert(a_obj->GetFormID());   // the sink asks
+            return true;
+        }
+
+        // ---- ★PLAN_SPACE_AUTHORITY S0: verb bodies -------------------------
+        // (declared beside g_stash; the checklist they settle is written there)
+
+        // occupancy of ONE view, from the tiles standing on it -- MainViewOcc
+        // generalised, because Park/Restore fit into the trash and bag views
+        // (default a_skipIdx lives on the forward declaration)
+        std::vector<std::vector<bool>> ViewOccOf(const View& a_v, int a_skipIdx)
+        {
+            std::vector<std::vector<bool>> occ(
+                static_cast<std::size_t>(a_v.rows),
+                std::vector<bool>(static_cast<std::size_t>(a_v.cols), false));
+            for (int idx : a_v.items) {
+                if (idx == a_skipIdx) continue;
+                const auto& it = g_items[static_cast<std::size_t>(idx)];
+                if (it.col < 0) continue;
+                for (std::size_t r = 0; r < it.mask.rows.size(); ++r) {
+                    for (std::size_t c = 0; c < it.mask.rows[r].size(); ++c) {
+                        if (!it.mask.rows[r][c]) continue;
+                        const int rr = it.row + static_cast<int>(r);
+                        const int cc = it.col + static_cast<int>(c);
+                        if (rr >= 0 && rr < a_v.rows && cc >= 0 && cc < a_v.cols) {
+                            occ[static_cast<std::size_t>(rr)]
+                               [static_cast<std::size_t>(cc)] = true;
+                        }
+                    }
+                }
+            }
+            return occ;
+        }
+
+        // does this view count toward the space figure? FinalizeRebuild's rule
+        bool ViewCountsSpace(const View& a_v)
+        {
+            return a_v.accept.empty() && a_v.bagKey != kTrashKey;
+        }
+
+        bool StashTileForCarry(const std::string& a_key)
+        {
+            if (g_stash) return false;   // one cursor, one stash
+            int idx = -1;
+            for (std::size_t i = 0; i < g_items.size(); ++i) {
+                if (g_items[i].key == a_key) { idx = static_cast<int>(i); break; }
+            }
+            if (idx < 0) return false;
+            for (const auto& v : g_views) {
+                if (std::find(v.items.begin(), v.items.end(), idx) == v.items.end()) {
+                    continue;
+                }
+                if (ViewCountsSpace(v)) {
+                    g_spaceUsed -= MaskCells(g_items[static_cast<std::size_t>(idx)].mask.rows);
+                }
+                break;
+            }
+            g_stash = std::move(g_items[static_cast<std::size_t>(idx)]);
+            g_items.erase(g_items.begin() + idx);
+            for (auto& v : g_views) {
+                std::erase(v.items, idx);
+                for (int& i : v.items) {
+                    if (i > idx) --i;
+                }
+            }
+            ++g_boardVersion;
+            MarkCapacityDirty();
+            SKSE::log::info("[SPACE] lift '{}' -> cursor -- no rebuild", a_key);
+            return true;
+        }
+
+        bool UnstashTileTo(const std::string& a_bag, int a_col, int a_row,
+                           int a_rot, int a_count)
+        {
+            if (!g_stash) return false;
+            int vi = -1;
+            for (std::size_t i = 0; i < g_views.size(); ++i) {
+                if (g_views[i].bagKey == a_bag) { vi = static_cast<int>(i); break; }
+            }
+            if (vi < 0) return false;   // destination view missing: rebuild
+            // a_col < 0 = no cell named (the trash park's whole-tile intake):
+            // first-fit into the destination view, same as the placer would
+            if (a_col < 0) {
+                auto        occ = ViewOccOf(g_views[static_cast<std::size_t>(vi)]);
+                LayoutEntry seat;
+                seat.rot = g_stash->rot;
+                if (!OccPlace(occ, g_stash->def, seat)) return false;
+                a_col = seat.col;
+                a_row = seat.row;
+                a_rot = seat.rot;
+                if (a_bag.empty() && a_row >= kMinRows) return false;   // growth zone
+                PlaceTile(g_stash->key, a_col, a_row, a_bag, a_count, a_rot);
+            }
+            Item it = std::move(*g_stash);
+            g_stash.reset();
+            it.col = a_col;
+            it.row = a_row;
+            it.inBag = a_bag;
+            it.count = a_count;
+            const int rot = CanRotate(it.def) ? (a_rot & 3) : 0;
+            if (rot != it.rot) {
+                it.rot = rot;
+                it.mask = MaskOf(it.def, rot);
+            }
+            const std::string key = it.key;
+            g_items.push_back(std::move(it));
+            auto& v = g_views[static_cast<std::size_t>(vi)];
+            v.items.push_back(static_cast<int>(g_items.size()) - 1);
+            if (ViewCountsSpace(v)) {
+                g_spaceUsed += MaskCells(g_items.back().mask.rows);
+            }
+            ++g_boardVersion;
+            MarkCapacityDirty();
+            SKSE::log::info("[SPACE] put '{}' at [{},{}]{} -- no rebuild",
+                key, a_col, a_row, a_bag.empty() ? "" : " (bag)");
+            return true;
+        }
+
+        bool UnstashTileHome()
+        {
+            if (!g_stash) return false;
+            const auto li = g_layout.find(g_stash->key);
+            if (li == g_layout.end() || li->second.col < 0) return false;
+            // growth-zone spots are temporary (MakeDisplayTile's rule)
+            if (li->second.bag.empty() && li->second.row >= kMinRows) return false;
+            return UnstashTileTo(li->second.bag, li->second.col, li->second.row,
+                                 li->second.rot, g_stash->count);
+        }
+
+        void DiscardStash(const char* a_why)
+        {
+            if (!g_stash) return;
+            SKSE::log::info("[SPACE] stash '{}' spent ({})", g_stash->key, a_why);
+            g_stash.reset();
+        }
+
+        bool SetTileDisplayCount(const std::string& a_key, int a_count)
+        {
+            for (auto& it : g_items) {
+                if (it.key != a_key) continue;
+                it.count = a_count;
+                MarkCapacityDirty();
+                return true;
+            }
+            return false;
+        }
+
+        bool MoveTileToView(const std::string& a_key, const std::string& a_bag,
+                            int a_col, int a_row)
+        {
+            int idx = -1;
+            for (std::size_t i = 0; i < g_items.size(); ++i) {
+                if (g_items[i].key == a_key) { idx = static_cast<int>(i); break; }
+            }
+            if (idx < 0) return false;
+            int svi = -1, dvi = -1;
+            for (std::size_t i = 0; i < g_views.size(); ++i) {
+                if (svi < 0 && std::find(g_views[i].items.begin(), g_views[i].items.end(),
+                                         idx) != g_views[i].items.end()) {
+                    svi = static_cast<int>(i);
+                }
+                if (dvi < 0 && g_views[i].bagKey == a_bag) dvi = static_cast<int>(i);
+            }
+            if (svi < 0 || dvi < 0) return false;
+            auto& it = g_items[static_cast<std::size_t>(idx)];
+            auto& dst = g_views[static_cast<std::size_t>(dvi)];
+            auto occ = ViewOccOf(dst, idx);
+            LayoutEntry seat;
+            seat.col = a_col;
+            seat.row = a_row;
+            seat.rot = it.rot;
+            if (seat.col >= 0 && !OccFits(occ, seat.col, seat.row, it.mask)) {
+                seat.col = -1;   // remembered spot taken: degrade to first-fit
+                seat.row = -1;
+            }
+            if (seat.col < 0 && !OccPlace(occ, it.def, seat)) {
+                return false;    // no room in the destination view: rebuild
+            }
+            // main-view growth rows are the rebuild's business (its own rule)
+            if (a_bag.empty() && seat.row >= kMinRows) return false;
+            auto& src = g_views[static_cast<std::size_t>(svi)];
+            std::erase(src.items, idx);
+            dst.items.push_back(idx);
+            if (ViewCountsSpace(src) && !ViewCountsSpace(dst)) {
+                g_spaceUsed -= MaskCells(it.mask.rows);
+            } else if (!ViewCountsSpace(src) && ViewCountsSpace(dst)) {
+                g_spaceUsed += MaskCells(it.mask.rows);
+            }
+            it.col = seat.col;
+            it.row = seat.row;
+            it.inBag = a_bag;
+            if (CanRotate(it.def) && (seat.rot & 3) != it.rot) {
+                it.rot = seat.rot & 3;
+                it.mask = MaskOf(it.def, it.rot);
+            }
+            PlaceTile(a_key, seat.col, seat.row, a_bag, it.count, it.rot);
+            ++g_boardVersion;
+            MarkCapacityDirty();
+            SKSE::log::info("[SPACE] move '{}' -> [{},{}]{} -- no rebuild",
+                a_key, seat.col, seat.row,
+                a_bag == kTrashKey ? " (trash)" : (a_bag.empty() ? "" : " (bag)"));
+            return true;
+        }
+
+        void RunQueuedViewMoves()
+        {
+            if (g_viewMoveQ.empty()) return;
+            for (const auto& r : g_viewMoveQ) {
+                if (!MoveTileToView(r.key, r.bag, r.col, r.row)) {
+                    SKSE::log::info("[SPACE] queued move '{}' declined -- rebuild",
+                        r.key);
+                    RequestRebuild();
+                }
+            }
+            g_viewMoveQ.clear();
+        }
+
+        void RefreshPoolFlagsFor(RE::TESBoundObject* a_obj)
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!a_obj || !player) return;
+            auto* entry = LiveEntryOf(player, a_obj);
+            for (auto& it : g_items) {
+                if (it.obj != a_obj) continue;
+                it.fav    = PoolHasStar(entry, it.uid, it.sig);
+                it.stolen = PoolIsStolen(entry, it.uid, it.sig);
+                it.quest  = PoolIsQuest(entry, it.uid, it.sig);
+            }
+        }
+
+        // ---- ★S2: the expiry's recovery, one tile wide ---------------------
+        // The two-phase drop kept the SLOT (CancelSlotDrop); this puts the
+        // unit back on it without re-deriving the board. Everything unproven
+        // -- a drained stackable (its layout entry died with the request), a
+        // coin, a bag, an occupied seat -- returns false and the caller runs
+        // the rebuild, exactly as before S2.
+        bool ReEmitTileAt(std::uint32_t a_form, const std::string& a_key)
+        {
+            if (a_key.empty()) return false;
+            const auto li = g_layout.find(a_key);
+            if (li == g_layout.end() || li->second.col < 0) return false;
+            // a stackable partial: the display counted down at request time
+            // and the layout kept the full number -- resync upward, done
+            for (auto& it : g_items) {
+                if (it.key != a_key) continue;
+                if (li->second.count > it.count) it.count = li->second.count;
+                MarkCapacityDirty();
+                return true;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || !player->Is3DLoaded()) return false;
+            auto* form = RE::TESForm::LookupByID(a_form);
+            auto* obj = form ? form->As<RE::TESBoundObject>() : nullptr;
+            if (!obj) return false;
+            if (obj->IsGold() || GoldCoins::IsCoinForm(a_form)) return false;   // §7
+            const GridDef gdef = g_resolver ? g_resolver(obj) : GridDef{};
+            if (gdef.bag != 0) return false;   // bag wiring: the rebuild's business
+            auto inv = player->GetInventory(
+                [&](RE::TESBoundObject& o) { return &o == obj; });
+            int                     count = 0;
+            RE::InventoryEntryData* entry = nullptr;
+            for (auto& [o2, d2] : inv) {
+                count = d2.first;
+                entry = d2.second.get();
+            }
+            if (count <= 0 || !entry) return false;
+            int vi = -1;
+            for (std::size_t i = 0; i < g_views.size(); ++i) {
+                if (g_views[i].bagKey == li->second.bag) { vi = static_cast<int>(i); break; }
+            }
+            if (vi < 0) return false;
+            const Mask m = MaskOf(gdef, CanRotate(gdef) ? (li->second.rot & 3) : 0);
+            if (!OccFits(ViewOccOf(g_views[static_cast<std::size_t>(vi)]),
+                         li->second.col, li->second.row, m)) {
+                return false;
+            }
+            if (li->second.bag.empty() && li->second.row >= kMinRows) return false;
+            std::uint8_t glow = 0;
+            if (const auto* ef = obj->As<RE::TESEnchantableForm>();
+                ef && ef->formEnchanting) {
+                glow |= 1;
+            }
+            if (IsUniqueCached(obj)) glow |= 2;
+            MakeDisplayTile(obj, entry, gdef, glow, a_key,
+                            (std::max)(1, li->second.count), li->second,
+                            li->second.xlIdx);
+            auto& v = g_views[static_cast<std::size_t>(vi)];
+            v.items.push_back(static_cast<int>(g_items.size()) - 1);
+            if (ViewCountsSpace(v)) {
+                g_spaceUsed += MaskCells(g_items.back().mask.rows);
+            }
+            g_prevKeys.insert(a_key);   // not NEW: it never really left
+            ++g_boardVersion;
+            MarkCapacityDirty();
+            SKSE::log::info("[SPACE] re-emit '{}' after expiry -- no rebuild", a_key);
             return true;
         }
     }
@@ -8360,11 +8932,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 break;
             }
         }
-        // GI33: the star is read back OUT of the engine, so the board has to be
-        // rebuilt once the change has actually landed. Without this the toggle
-        // applied a frame later than the draw that was supposed to show it and F
-        // looked like it did nothing.
-        RequestRebuild();
+        // GI33: the star is read back OUT of the engine once the change has
+        // actually landed. ★S1: read back IN PLACE -- the star (and the other
+        // two pool-derived marks) refresh on this form's own tiles, and the
+        // full rebuild this line used to ask for is gone. Runs on the Tick,
+        // outside the draw, so mutating Item fields is safe.
+        for (const auto& f : q) RefreshPoolFlagsFor(f.obj);
     }
 
     // GI36: resolve the sub-stack that is ACTUALLY leaving the bag, and drop its
@@ -9109,6 +9682,67 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     {
         const auto v = PouchTiles();
         return v.empty() ? std::string{} : v.front();
+    }
+
+    std::vector<std::string> OrderKeysByPosition(std::vector<std::string> a_keys)
+    {
+        // The same ordering the coin partition's byPos uses (main "" sorts
+        // before any bag, then row-major) -- stated once more here because the
+        // two must agree: a purse the partition calls "front" must not be one
+        // the trim calls "rear". A key with no layout entry has no position to
+        // defend, so it sorts last and is therefore the first thing a
+        // back-to-front walk spends.
+        std::sort(a_keys.begin(), a_keys.end(),
+            [](const std::string& a, const std::string& b) {
+                const auto ai = g_layout.find(a);
+                const auto bi = g_layout.find(b);
+                const bool ah = ai != g_layout.end();
+                const bool bh = bi != g_layout.end();
+                if (ah != bh) return ah;      // placed keys first
+                if (!ah) return a < b;        // both unknown: stable by name
+                const auto& x = ai->second;
+                const auto& y = bi->second;
+                if (x.bag != y.bag) return x.bag < y.bag;
+                if (x.row != y.row) return x.row < y.row;
+                if (x.col != y.col) return x.col < y.col;
+                return a < b;
+            });
+        return a_keys;
+    }
+
+    std::vector<CoinSlot> CoinTilesByPosition()
+    {
+        // Coin tiles are keyed under whichever BAND form minted them -- a
+        // shrunk pin keeps its old band key (see the partition's emitCoin
+        // note) -- so all four tier bases are live even after the one-coin
+        // migration. Filtering by base is what keeps the pouch out: it passes
+        // IsCoinForm but is its own form, not a tier.
+        std::set<std::string> bases;
+        for (int t = 0; t < 4; ++t) {
+            if (auto* f = GoldCoins::CoinForTier(t)) bases.insert(FormKey(f));
+        }
+        struct Row
+        {
+            CoinSlot           slot;
+            const LayoutEntry* le = nullptr;
+        };
+        std::vector<Row> rows;
+        for (const auto& [k, le] : g_layout) {
+            if (le.coin < 0) continue;
+            if (!bases.contains(BaseKey(k))) continue;
+            if (g_held && k == g_held->key) continue;   // cursor money is spoken for
+            rows.push_back({ { k, le.coin }, &le });
+        }
+        std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+            if (a.le->bag != b.le->bag) return a.le->bag < b.le->bag;
+            if (a.le->row != b.le->row) return a.le->row < b.le->row;
+            if (a.le->col != b.le->col) return a.le->col < b.le->col;
+            return a.slot.key < b.slot.key;
+        });
+        std::vector<CoinSlot> out;
+        out.reserve(rows.size());
+        for (auto& r : rows) out.push_back(std::move(r.slot));
+        return out;
     }
 
     void MarkCapacityDirty() { g_capacityDirty = true; }
@@ -12109,6 +12743,26 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 } else if (sd.onCell && sd.occ && LootBarter::IsBundleCarry()) {
                     // (1.3.1) no swap with a bundled carry -- the occupant's
                     // slot machinery has nothing to hand it. Keep carrying.
+                } else if (sd.onCell && sd.occ && a_held.obj->IsGold() &&
+                           GoldCoins::IsPouch(sd.occ->GetFormID())) {
+                    // ★(1.4.4) SHELF GOLD ONTO A SHELF POUCH DEPOSITS, the
+                    // same promise the player-side coin routes already keep
+                    // (GoldOnPartnerPouch). Without this row the pair fell
+                    // through to the rearrange grammar below -- different
+                    // pools cannot merge, so the two cells simply traded
+                    // places (user report). Whatever the pouch cannot hold
+                    // keeps riding the cursor, coin-route grammar.
+                    const int moved =
+                        LootBarter::DepositHeldGoldIntoShelfPouch(sd.occSpotKey);
+                    if (moved >= a_held.count) {
+                        if (g_sound) g_sound(a_held.obj, false);
+                        g_held.reset();
+                    } else if (moved > 0) {
+                        a_held.count -= moved;
+                        if (g_sound) g_sound(a_held.obj, false);
+                    } else {
+                        Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
+                    }
                 } else if (sd.onCell && sd.occ) {
                     // ★Same thing on an occupied square, and the same grammar
                     // the player's own board uses: the same pool MERGES up to
@@ -12746,6 +13400,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 if (a_held.count > equipUnits) {
                     RequestRebuild();
                 }
+                // ★S1: the carried tile went to the DOLL -- its stash copy is
+                // spent. (The surplus rebuild above re-derives the remainder;
+                // Rebuild clears the stash itself, so the order is safe.)
+                DiscardStash("equipped");
             }
             g_held.reset();
             // Only an ACCEPTED equip that actually displaces something starts the
@@ -12796,7 +13454,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // until the next reopen (user report). The reject path keeps it --
             // unless the carry's origin is a SLOT, where the piece goes back
             // on the body instead and the board has nothing to redraw.
-            if (!accepted && !ReturnCarryToOrigin(heldSnap)) RequestRebuild();
+            // ★S1: a rejected BOARD-origin carry has a stash and a live
+            // layout entry -- it goes home as one tile. Doll-origin keeps its
+            // re-wear return; anything unproven re-derives as before.
+            if (!accepted && !ReturnCarryToOrigin(heldSnap) &&
+                !UnstashTileHome()) {
+                RequestRebuild();
+            }
             return true;
         }
 
@@ -12812,8 +13476,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 }
                 PlaceTile(a_held.key, g_target.col, g_target.row, v.bagKey, a_held.count, a_held.rot);
                 if (g_sound) g_sound(a_held.obj, false);
+                // ★S1: one tile lands, one tile is drawn. Captured before the
+                // reset invalidates a_held; a carry that never stashed (doll
+                // origin, post-rebuild carry) declines into the old rebuild.
+                const std::string dstBag = v.bagKey;
+                const int dstCol = g_target.col, dstRow = g_target.row;
+                const int dstRot = a_held.rot, dstCnt = a_held.count;
                 g_held.reset();
-                RequestRebuild();
+                if (!UnstashTileTo(dstBag, dstCol, dstRow, dstRot, dstCnt)) {
+                    RequestRebuild();
+                }
             // ★The swap/merge branch runs when the cell is NOT valid, so the
             // filter check above does not cover it — a sword dropped onto an
             // ore tile would trade places with it and end up inside the ore
@@ -12873,13 +13545,22 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         g_layout[disp.key].count = disp.count + absorbed;
                         a_held.count -= absorbed;
                         if (g_sound) g_sound(a_held.obj, false);
+                        // ★S1: the target tile's number changes, the carry's
+                        // number changes -- two counts, no rebuild. The stash
+                        // rides the remainder; a carry that never stashed
+                        // re-derives as before.
+                        const bool shown = SetTileDisplayCount(disp.key,
+                                                               disp.count + absorbed);
                         if (a_held.count <= 0) {
                             g_layout.erase(a_held.key);
                             g_held.reset();
+                            DiscardStash("merged whole");
+                            if (!shown) RequestRebuild();
                         } else {
                             g_layout[a_held.key].count = a_held.count;
+                            if (g_stash) g_stash->count = a_held.count;
+                            if (!shown || !g_stash) RequestRebuild();
                         }
-                        RequestRebuild();
                     }
                     if (g_poolTrace) {
                         SKSE::log::info("[SWAP] merge '{}' into '{}' absorbed={} "
@@ -12909,6 +13590,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         g_sound(a_held.obj, false);
                         g_sound(disp.obj, true);
                     }
+                    // ★S1 captures BEFORE the held slot is overwritten below
+                    const std::string myBag = v.bagKey;
+                    const int myCol = g_target.col, myRow = g_target.row;
+                    const int myRot = a_held.rot, myCnt = a_held.count;
                     g_held = Held{ disp.key, disp.obj, disp.mask, disp.count,
                                    disp.def.bag != 0, disp.def.scale,
                                    disp.mask.w * CellPx() * 0.5f,
@@ -12922,7 +13607,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     g_held->quest  = disp.quest;
                     g_held->SetRot(disp.rot);               // GI62
                     HoldByPivot(*g_held, disp.def);
-                    RequestRebuild();
+                    // ★S1: my tile seats, the displaced one comes off -- two
+                    // tiles, no rebuild. Any miss re-derives exactly as before
+                    // (the enumeration's carry exclusion is untouched).
+                    if (!UnstashTileTo(myBag, myCol, myRow, myRot, myCnt) ||
+                        !StashTileForCarry(disp.key)) {
+                        RequestRebuild();
+                    }
                 }
             }
             // other invalid targets (2+ blockers, bag-in-bag): keep carrying.
@@ -13183,9 +13874,21 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             const std::string         key = a_held.key;
             RE::TESBoundObject* const obj = a_held.obj;
             const int                 count = a_held.count;
+            const bool hadStash = g_stash && g_stash->key == a_held.key;   // ★S2
             g_held.reset();
             if (!transient) {
-                RequestRebuild();
+                // ★S2: a drag's tile left the board at the lift; the stash is
+                // all that remains. A store that queued spends it (confirm /
+                // expiry own the CELL from here -- the two-phase drop); one
+                // that did not puts the tile straight back. One tile either
+                // way; unproven shapes re-derive exactly as before.
+                if (queued && hadStash) {
+                    DiscardStash("stored");
+                } else if (!queued && UnstashTileHome()) {
+                    // refused or slider pending: back home, nothing else moved
+                } else {
+                    RequestRebuild();
+                }
             } else if (queued &&
                        !TryUseClickPartialRemove(key, obj, count, /*drained=*/true)) {
                 RequestRebuild();
@@ -13249,9 +13952,20 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             const bool                transient = a_held.transient;
             const std::string         key = a_held.key;
             RE::TESBoundObject* const obj = a_held.obj;
+            const int                 held = a_held.count;
+            const bool hadStash = g_stash && g_stash->key == a_held.key;   // ★S2
             g_held.reset();
             if (!transient) {
-                RequestRebuild();
+                // ★S2: same shape as the store tail -- a WHOLE sale spends the
+                // stash, a refusal (or a slider / the star's popup) puts the
+                // tile back; a partial sale re-derives as before.
+                if (queued >= held && queued > 0 && hadStash) {
+                    DiscardStash("sold");
+                } else if (queued <= 0 && UnstashTileHome()) {
+                    // back home, nothing else moved
+                } else {
+                    RequestRebuild();
+                }
             } else if (queued > 0 &&
                        !TryUseClickPartialRemove(key, obj, queued, /*drained=*/true)) {
                 RequestRebuild();
@@ -13329,10 +14043,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 RequestRebuild();
             } else if (a_held.quest) {
                 // Phase 7: quest items can't be discarded — cancel back to
-                // their spot (Rebuild restores the tile).
+                // their spot (★S2: one tile home; unproven re-derives).
                 Sfx::FailNote(Lang::T(Lang::Str::QuestItemLocked));
                 g_held.reset();
-                RequestRebuild();
+                if (!UnstashTileHome()) RequestRebuild();
             } else {
                 g_layout.erase(a_held.key);
                 if (a_held.isBag) {
@@ -13349,8 +14063,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         ResolveExitUnit(a_held.obj, a_held.uid, a_held.sig, a_held.count,
                                         a_held.fav ? a_held.count : 0, a_held.xlIdx));
                 }
+                // ★S2: the whole carry left for the world; the stash was its
+                // last trace. A bag drop reflows its contents -- that stays a
+                // rebuild (the contents' tiles all move); anything unstashed
+                // re-derives as before.
+                const bool wasBag = a_held.isBag;
+                const bool hadStash = g_stash && g_stash->key == a_held.key;
                 g_held.reset();
-                RequestRebuild();
+                if (!wasBag && hadStash) {
+                    DiscardStash("dropped to world");
+                } else {
+                    RequestRebuild();
+                }
             }
             return true;
         }
@@ -13493,11 +14217,17 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // evict oldest parked tiles until a_mask fits (FIFO, per spec)
         void TrashMakeRoomFor(const Mask& a_mask)
         {
+            bool evicted = false;
             while (!TrashHasRoomFor(a_mask) && !g_trashOrder.empty()) {
                 const std::string victim = g_trashOrder.front();
                 g_trashOrder.pop_front();
                 ConfirmTrashDelete(victim);
+                evicted = true;
             }
+            // ★S1 decline: an eviction takes a parked TILE off the display,
+            // and this can run mid-draw (the right-click park) -- the rebuild
+            // stays its display path. Rare: only a FULL bin evicts.
+            if (evicted) RequestRebuild();
         }
 
         // park a KEYED tile (whole-tile intake + the favorite-ask resume).
@@ -13540,7 +14270,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             g_trashOrder.push_back(a_key);
             g_openBags.erase(a_key);   // a parked (empty) bag closes its window
             if (g_sound && a_obj) g_sound(a_obj, false);
-            RequestRebuild();
+            // ★S1: one tile moves into the trash view. A DRAG brings a stash
+            // (the tile left the board at lift) and seats it directly; a
+            // right-click's tile is still standing on the board mid-draw, so
+            // its move is queued for FinishFrame. Any miss rebuilds.
+            if (g_stash && g_stash->key == a_key) {
+                const auto& le = g_layout[a_key];
+                if (!UnstashTileTo(kTrashKey, le.col, le.row, le.rot, a_count)) {
+                    RequestRebuild();
+                }
+            } else {
+                g_viewMoveQ.push_back({ a_key, kTrashKey, a_col, a_row });
+            }
         }
 
         // ---- F2: drop handlers ----
@@ -13552,7 +14293,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
             if (!TrashIntakeAllowed(a_held.obj, a_held.quest, a_held.key, a_held.isBag)) {
                 g_held.reset();   // blocked: snaps back (layout entry intact)
-                RequestRebuild();
+                if (!UnstashTileHome()) RequestRebuild();   // ★S1: one tile home
                 return true;
             }
             const int col = g_target.valid ? g_target.col : -1;
@@ -13563,7 +14304,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                a_held.xlIdx, a_held.uid, a_held.sig, a_held.rot };
                 Sfx::SelectOn();
                 g_held.reset();
-                RequestRebuild();
+                if (!UnstashTileHome()) RequestRebuild();   // ★S1: one tile home
                 return true;
             }
             TrashMakeRoomFor(a_held.mask);
@@ -13604,7 +14345,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 g_trashAsk = { true, a_it.obj, a_it.key, a_it.count, -1, -1,
                                le.xlIdx, a_it.uid, a_it.sig, a_it.rot };
                 Sfx::SelectOn();
-                RequestRebuild();
+                // ★S1: only a popup opened -- no tile moved, nothing to repaint
                 return true;
             }
             TrashMakeRoomFor(a_it.mask);
@@ -13915,6 +14656,30 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             SKSE::log::error("[ONEPATH] a synthetic carry survived its call "
                              "('{}') -- returned to its cell", key);
         }
+        // ★S1: the deferred lift-detach and the queued park/restore moves --
+        // BEFORE the drop resolution reads the board, so this frame's drop
+        // sees the same freed cells the rebuild used to free.
+        if (g_held && g_held->needsDetach) {
+            g_held->needsDetach = false;
+            if (!StashTileForCarry(g_held->key)) RequestRebuild();
+        }
+        if (g_wantTrashView) {
+            g_wantTrashView = false;
+            const bool have = std::any_of(g_views.begin(), g_views.end(),
+                [](const View& v) { return v.bagKey == kTrashKey; });
+            if (!have && g_trashOpen && !g_views.empty()) {
+                View tv;
+                tv.bagKey = kTrashKey;
+                tv.bagName = Lang::T(Lang::Str::TrashTitle);
+                tv.cols = kTrashCols;
+                tv.minRows = kTrashRows;
+                tv.maxRows = kTrashRows;
+                tv.rows = kTrashRows;
+                g_views.push_back(std::move(tv));
+                SKSE::log::info("[SPACE] trash view opened -- no rebuild");
+            }
+        }
+        RunQueuedViewMoves();
         if (g_held) {
             auto& held = *g_held;
             DrawHeldCursorIcon(held);
@@ -13986,7 +14751,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             CloseTrash();
         } else {
             g_trashOpen = true;
-            RequestRebuild();
+            // ★S1: opening the bin ALWAYS starts it empty (the closed-state
+            // reflow guarantees no parked entries survive a close), so the
+            // view is a fresh empty board -- appended at FinishFrame via the
+            // deferral flag, never mid-draw. One frame, same as the deferred
+            // rebuild this replaces.
+            g_wantTrashView = true;
             Sfx::BagOpen();
         }
     }
@@ -14470,6 +15240,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         g_layout.clear();
         g_openBags.clear();
         g_pendingEquip.clear();   // cross-frame set: must never outlive a load
+        // ★S1: the stash holds an Item with a live TESBoundObject* -- a load
+        // replaces the world under it (원칙 2), and a queued move names keys
+        // from the save being left. Both die at the boundary.
+        g_stash.reset();
+        g_viewMoveQ.clear();
+        g_wantTrashView = false;
         g_layoutLoaded = false;
         g_prevKeys.clear();
         // GI65: prevKeys is empty after a load, so the very next rebuild would

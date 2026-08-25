@@ -550,6 +550,12 @@ namespace FUI::Equip
                         // this check exists to catch -- one hand of a dual wield
                         // drawing nothing -- is about weapons.
                         if (obj->Is(RE::FormType::Ammo)) continue;
+                        // ★The SECOND RING is never engine-worn by design --
+                        // the carrier wears its effect (B4-4) -- so its slot
+                        // legitimately shows a unit the body list lacks.
+                        // Counting it cried "body wears 0 but doll shows 1"
+                        // five times in one test session, all false.
+                        if (DualRing::Second() == obj) continue;
                         auto* e = Grid::LiveEntryOf(player, obj);
                         int wornUnits = 0;
                         if (e && e->extraLists) {
@@ -907,7 +913,12 @@ namespace FUI::Equip
                         !ImGui::GetIO().WantTextInput) {
                         Grid::ToggleFavoriteUnit(eq->obj, eq->uid, eq->sig);
                         Sfx::Favorite();
-                        Grid::RequestRebuild();
+                        // ★S1: no rebuild -- the doll's own star reads
+                        // IsPoolStarWorn live every frame, and the grid
+                        // tiles' stars refresh in place when the engine
+                        // applies the toggle (ProcessFavorites). Measured
+                        // as the #4 rebuild source of the gate-1 session
+                        // (8 of 85) doing nothing the refresh does not.
                     }
                     // C: the same 3D view the grid offers. Vanilla files Item
                     // Zoom under the kItemMenu context, which every item screen
