@@ -671,42 +671,51 @@ namespace FUI::LootBarter
         // now, so a take of three out of ten leaves seven where they were --
         // and the pouch's gold and the bag's bundle are only handed back when the
         // cell actually empties, which is the moment the thing truly leaves.
+        ContLayout* BoardFor();   // defined beside the reconcile below
+
         void ConsumeActingSpot(RE::TESBoundObject* a_obj, int a_count)
         {
             if (g_actingSpot.empty()) return;
             std::vector<BundleItem> bundle;
-            if (auto* p = Partner()) {
-                if (const auto ci = g_contLayouts.find(p->GetFormID()); ci != g_contLayouts.end()) {
-                    // ★★(1.3.0-B) A TAKEN POUCH BRINGS ITS GOLD HOME. This erase
-                    // IS the take/buy path's slot retirement, and it is the only
-                    // place that knows exactly which slot leaves. The old hook
-                    // waited for the whole POOL to vanish from the board -- but
-                    // absent items KEEP their spot by design, so the common
-                    // single take never tripped it and the amount died with the
-                    // spot ("pouch returned but nothing was away"). Deposit
-                    // first, then retire.
-                    if (const auto si = ci->second.cells.find(g_actingSpot);
-                        si != ci->second.cells.end()) {
-                        si->second.count -= (std::max)(0, a_count);
-                        if (si->second.count > 0) {
-                            // part of the cell stayed: nothing retires, and the
-                            // acting key clears so the next click names its own
-                            g_actingSpot.clear();
-                            return;
-                        }
-                        if (si->second.gold > 0) {
-                            SKSE::log::info("[LOOT] pouch taken back with {} G ('{}')",
-                                si->second.gold, g_actingSpot);
-                            GoldCoins::GiveAwayGold(si->second.gold);
-                        }
-                        // ★(1.3.0-D) same retirement for a bag: its bundled
-                        // contents leave WITH it (queued below, once the spot
-                        // is gone and the acting key is cleared -- the takes
-                        // re-enter this function and must find it empty).
-                        bundle = std::move(si->second.bundle);
+            // ★THE BOARD THE PLAYER IS LOOKING AT, not the persistent book.
+            // This reached g_contLayouts[partner] directly -- right for loot
+            // and pickpocket, where that IS the board, and silently wrong in
+            // BARTER, whose shelf lives in g_barterBoard (SpotMemoryOn is
+            // false there). The clicked cell's retirement landed in a book
+            // the shelf never reads, the reconcile saw one unit too many
+            // and shrank FROM THE BACK -- so buying the front of three
+            // identical weapons always vanished the rear one (user report).
+            // BoardFor() is the one place that knows which book is current.
+            if (auto* cl = BoardFor()) {
+                // ★★(1.3.0-B) A TAKEN POUCH BRINGS ITS GOLD HOME. This erase
+                // IS the take/buy path's slot retirement, and it is the only
+                // place that knows exactly which slot leaves. The old hook
+                // waited for the whole POOL to vanish from the board -- but
+                // absent items KEEP their spot by design, so the common
+                // single take never tripped it and the amount died with the
+                // spot ("pouch returned but nothing was away"). Deposit
+                // first, then retire.
+                if (const auto si = cl->cells.find(g_actingSpot);
+                    si != cl->cells.end()) {
+                    si->second.count -= (std::max)(0, a_count);
+                    if (si->second.count > 0) {
+                        // part of the cell stayed: nothing retires, and the
+                        // acting key clears so the next click names its own
+                        g_actingSpot.clear();
+                        return;
                     }
-                    ci->second.cells.erase(g_actingSpot);
+                    if (si->second.gold > 0) {
+                        SKSE::log::info("[LOOT] pouch taken back with {} G ('{}')",
+                            si->second.gold, g_actingSpot);
+                        GoldCoins::GiveAwayGold(si->second.gold);
+                    }
+                    // ★(1.3.0-D) same retirement for a bag: its bundled
+                    // contents leave WITH it (queued below, once the spot
+                    // is gone and the acting key is cleared -- the takes
+                    // re-enter this function and must find it empty).
+                    bundle = std::move(si->second.bundle);
                 }
+                cl->cells.erase(g_actingSpot);
             }
             g_actingSpot.clear();
 
@@ -3358,18 +3367,67 @@ namespace
         if (!sd.onCell || !sd.occ || !GoldCoins::IsPouch(sd.occ->GetFormID())) {
             return 0;
         }
-        auto* p = Partner();
-        if (!p) return 0;
-        const auto ci = g_contLayouts.find(p->GetFormID());
-        if (ci == g_contLayouts.end()) return 0;
-        const auto si = ci->second.cells.find(sd.occSpotKey);
-        if (si == ci->second.cells.end()) return 0;
+        // BoardFor, not g_contLayouts directly -- loot mode makes them the
+        // same book today, but the barter mismatch (ConsumeActingSpot) came
+        // from exactly this shortcut drifting out of a mode it was safe in.
+        auto* cl = BoardFor();
+        if (!cl) return 0;
+        const auto si = cl->cells.find(sd.occSpotKey);
+        if (si == cl->cells.end()) return 0;
         const int room = GoldCoins::PouchCap() - si->second.gold;
         const int moved = (std::min)(a_value, room);
         if (moved <= 0) return 0;   // full: the coin keeps riding
         si->second.gold += moved;
         SKSE::log::info("[LOOT] deposited {} G into shelf pouch '{}' -> {}",
             moved, sd.occSpotKey, si->second.gold);
+        return moved;
+    }
+
+    int DepositHeldGoldIntoShelfPouch(const std::string& a_pouchKey)
+    {
+        if (!IsLootMode(g_mode)) return 0;
+        auto* cl = BoardFor();
+        auto* src = SourceRef();
+        if (!cl || !src || g_actingSpot.empty() || a_pouchKey == g_actingSpot) {
+            return 0;
+        }
+        const auto pi = cl->cells.find(a_pouchKey);
+        const auto gi = cl->cells.find(g_actingSpot);
+        if (pi == cl->cells.end() || gi == cl->cells.end()) return 0;
+        if (!GoldCoins::IsPouch(pi->second.form)) return 0;
+        auto* gobj = RE::TESForm::LookupByID<RE::TESBoundObject>(gi->second.form);
+        if (!gobj || !gobj->IsGold()) return 0;
+        const int room = GoldCoins::PouchCap() - pi->second.gold;
+        const int moved = (std::min)((std::max)(0, gi->second.count), room);
+        if (moved <= 0) return 0;   // full: the gold keeps riding
+
+        pi->second.gold += moved;
+        gi->second.count -= moved;
+        if (gi->second.count <= 0) {
+            cl->cells.erase(gi);
+            g_actingSpot.clear();   // the carried cell is spent
+        }
+        // The chest's PHYSICAL coins become the pouch's virtual ones -- the
+        // same lifecycle the pouch-leave op runs on the player (RemoveItem
+        // into nowhere; take-back / withdraw mints them back). The engine
+        // stack must fall by the same amount, or the reconcile re-mints a
+        // gold cell for coins the book no longer shows. Queued to the game
+        // thread (this runs in the render pass); NoteOut hides the amount
+        // from the walk meanwhile -- the transfer queue's own pattern.
+        NoteOut(gobj, 0, 0, moved);
+        const RE::FormID srcId = src->GetFormID();
+        const RE::FormID goldId = gobj->GetFormID();
+        SKSE::GetTaskInterface()->AddTask([srcId, goldId, moved]() {
+            auto* srcRef = RE::TESForm::LookupByID<RE::TESObjectREFR>(srcId);
+            auto* gold = RE::TESForm::LookupByID<RE::TESBoundObject>(goldId);
+            if (srcRef && gold) {
+                srcRef->RemoveItem(gold, moved, RE::ITEM_REMOVE_REASON::kRemove,
+                                   nullptr, nullptr);
+            }
+            if (gold) ClearOut(gold, 0, 0, moved);
+        });
+        SKSE::log::info("[LOOT] shelf gold -> shelf pouch: {} G into '{}' -> {}",
+            moved, a_pouchKey, pi->second.gold);
         return moved;
     }
 
@@ -4578,6 +4636,19 @@ namespace
                                 OpenSlider(it.obj, it.count, XferDir::kShelfSplit,
                                            it.spotKey, it.value, it.uid, it.sig,
                                            it.worn, false, it.xlIdx);
+                            } else if (it.obj->IsGold()) {
+                                // ★(PLAN_SPACE_AUTHORITY §7, user rule) a
+                                // right-click on a GOLD cell hauls THAT cell's
+                                // whole amount -- no quantity window. Three
+                                // thousands and a remainder are four clicks.
+                                // The acting spot pins the clicked cell, so
+                                // the amount that leaves is this tile's and no
+                                // sibling's; shift+left keeps the split slider
+                                // for choosing an amount. No fit gate: gold
+                                // occupies no cells (mirror), same exemption
+                                // the pickpocket branch states.
+                                g_actingSpot = it.spotKey;   // GI20
+                                RequestTake(it.obj, it.count, it.uid, it.sig, it.worn);
                             } else if (it.count > 1) {
                                 g_actingSpot = it.spotKey;   // GI20
                                 OpenSlider(it.obj, it.count, XferDir::kTake, {}, 0, it.uid, it.sig, it.worn);

@@ -197,6 +197,12 @@ namespace FUI::LootBarter
     // pouch / no room); the caller settles the player-side ledger.
     void DrawShelfPouch();
     int  DepositOnHoveredPouch(int a_value);
+    // ★(1.4.4) shelf-internal banking: the PARTNER-carried gold cell dropped
+    // on a shelf pouch cell deposits into it (it used to fall through to the
+    // rearrange grammar and SWAP). Moves the amount between the two cells'
+    // books and queues the matching engine debit; returns the amount moved
+    // (0 = pouch full / not applicable -- the caller keeps the carry).
+    int  DepositHeldGoldIntoShelfPouch(const std::string& a_pouchKey);
 
     // ★(1.3.3) A LIVING FOLLOWER'S PACK IS 10 x 8. Chests, corpses and
     // merchants are unbounded and always answer true; a companion answers
