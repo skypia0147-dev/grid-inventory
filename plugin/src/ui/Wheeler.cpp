@@ -346,6 +346,30 @@ namespace FUI::Wheeler
                     if (t == kEmptySlot) continue;
                     if (t < 0 || t >= n) ord[i] = kEmptySlot;   // tab is gone
                 }
+                // ★★A TAB SITS IN ONE PLACE. Nothing here can seat one twice --
+                // the pass below places each tab once, a drag swaps, and the
+                // remove-notice renumbers -- so a repeat means the arrangement
+                // arrived damaged, from a save or from a bug not yet found.
+                //
+                // It is worth healing rather than trusting, because of what a
+                // repeat DOES: the pass below seats a tab only if no slot
+                // mentions it and only where a slot is empty, so ten copies of
+                // tab 0 leave no empty place and every preset the player owns
+                // becomes unreachable. That is the reported shape exactly -- a
+                // wheel full of EQUIP with the bought preset nowhere on it, and
+                // no way out of it, because a wheel you cannot see a preset on
+                // is a wheel you cannot drag one off.
+                // ★The FIRST of each wins: whatever the player arranged, the
+                // earliest place is the one they are likeliest to recognise.
+                for (int i = 0; i < kSlots; ++i) {
+                    if (ord[i] == kEmptySlot) continue;
+                    for (int j = i + 1; j < kSlots; ++j) {
+                        if (ord[j] != ord[i]) continue;
+                        SKSE::log::warn("[WHEEL] tab {} sat in slots {} and {} -- "
+                                        "the later place is cleared", ord[i], i, j);
+                        ord[j] = kEmptySlot;
+                    }
+                }
                 // ...and seat whatever the arrangement does not mention yet, in
                 // the first free place, so a newly bought preset appears
                 // without disturbing anything already placed.
@@ -2672,6 +2696,17 @@ namespace FUI::Wheeler
     // ---- persistence ---------------------------------------------------------
     void SaveGame(SKSE::SerializationInterface* a_intfc)
     {
+        // ★★INITIALISE BEFORE WRITING. g_setOrder is a plain array: until
+        // ResetSetOrder has run it is all ZEROS, and zero is not "empty" here,
+        // it is TAB 0. Writing that state records ten copies of EQUIP into the
+        // save, and every read of that save afterwards believes it.
+        // ★Nothing can reach this today -- the revert callback resets before
+        // any save can happen -- and it is written down anyway, because the
+        // cost is one line and the failure it prevents is a save file that
+        // stays wrong. Every other reader of this array asks the same question
+        // first (TabOf, RebuildSetOrder, MoveSet); the writer was the one place
+        // that did not.
+        if (!g_setInit) ResetSetOrder();
         if (!a_intfc->OpenRecord(kRecordType, kVersion)) return;
         for (int w = 0; w < 2; ++w) {
             a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_order[w].size()));
@@ -3133,6 +3168,31 @@ namespace FUI::Wheeler
             Loadout::MarkActiveStale();
             CollectFavorites();   // the item group is whatever is starred right now
             RebuildSetOrder();    // ...and the set groups, whatever tabs exist
+            // ★PROBE (1.4.4): a report of the preset wheel coming up FULL of
+            // the EQUIP tab. Ten slots drawn means ten slots answered "filled",
+            // and every one of them wore the current-tick -- which can only
+            // mean every slot holds the same tab index. Nothing that writes
+            // this array can put a value in it twice: the rebuild seats each
+            // tab once, the drag swaps, and the remove-notice renumbers. So
+            // the array is asked what it actually holds, rather than reasoned
+            // about further.
+            {
+                std::string pre, cos;
+                for (int i = 0; i < kSlots; ++i) {
+                    const int p = g_setOrder[kPreset][i];
+                    const int c = g_setOrder[kCostume][i];
+                    pre += (p == kEmptySlot ? std::string("-") : std::to_string(p)) + " ";
+                    cos += (c == kEmptySlot ? std::string("-") : std::to_string(c)) + " ";
+                }
+                std::string names;
+                for (int t = 0; t < Loadout::Count(); ++t) {
+                    names += "[" + std::to_string(t) + "]'" + Loadout::Name(t) + "' ";
+                }
+                SKSE::log::info("[WHEEL] open: tabs={} active={} {}", Loadout::Count(),
+                                Loadout::Active(), names);
+                SKSE::log::info("[WHEEL] order preset = {}", pre);
+                SKSE::log::info("[WHEEL] order costume= {}", cos);
+            }
             // ★Belt and braces: CloseWheel already cleared these on the way
             // out, but an open that assumes the last close ran is an open that
             // trusts every future exit path to have been written correctly.
