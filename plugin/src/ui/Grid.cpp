@@ -9521,10 +9521,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                          Lotd::Status a_relic)
     {
         const std::uint8_t bits = a_haloBits & 0x3;
-        // ★A museum relic earns the wedge even with no rarity of its own: a
-        // plain book the player has already donated is exactly the case the
-        // grey below exists for.
-        if (!a_dl || (!bits && a_relic == Lotd::Status::kNotRelic)) return;
+        // ★An OWED relic earns the wedge with no rarity of its own; a donated
+        // one does not, and gets nothing here that it would not have had
+        // anyway. See the colour note below.
+        if (!a_dl || (!bits && a_relic != Lotd::Status::kUndonated)) return;
         const float cell = CellPx();
         const float d    = cell * kWedgeFrac;
         const float rim  = RimPx();
@@ -9543,17 +9543,33 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // "carry this home" is the only urgent thing about it. Once it is
         // donated the wedge goes BACK to its rarity -- there is nothing urgent
         // left, and hiding "unique" on 1273 weapons and armours forever would
-        // cost more than it buys. A donated item with no rarity of its own gets
-        // the grey, which reads as "already handed in, safe to sell".
+        // cost more than it buys.
+        //
+        // ★★★AND A DONATED RELIC WITH NO RARITY GETS NOTHING, which is a wedge
+        // this feature shipped with and then lost on purpose.
+        //
+        // It was grey, and read as "already handed in, safe to sell". Two
+        // things were wrong with that. A plain item that is NOT a relic is
+        // equally safe to sell and carries no mark, so the grey separated two
+        // states that lead to the same act; and a donated UNIQUE relic shows
+        // gold, so the reading was not even available in the case a player
+        // would most want it. The line above already says the real rule --
+        // once donated, the museum has no claim on the wedge -- and the grey
+        // was that rule failing to apply to the leftovers.
+        //
+        // It also got worse the better you played. Plain relics are the
+        // NUMEROUS kind (books, ingredients, oddments), so a full collection
+        // filled the board with a mark that asked for nothing, exactly when
+        // the purple ones were hardest to pick out.
+        //
         // The fact itself is never lost: the tooltip says it in every case.
+        // Now the wedge says one thing only -- the museum still wants this.
         constexpr ImU32 kUnique   = IM_COL32(232, 182, 74, 255);
         constexpr ImU32 kEnchant  = IM_COL32(79, 143, 240, 255);
         constexpr ImU32 kRelicOwe = IM_COL32(169, 123, 232, 255);   // #A97BE8
-        constexpr ImU32 kRelicHad = IM_COL32(107, 116, 128, 255);   // #6B7480
         const ImU32 col = (a_relic == Lotd::Status::kUndonated) ? kRelicOwe
                         : (bits & 0x2)                          ? kUnique
-                        : (bits & 0x1)                          ? kEnchant
-                                                                : kRelicHad;
+                                                                : kEnchant;
 
         // outer: the full wedge, in black. Both legs are d, so the top and the
         // right side are the same length — it is a right ISOSCELES triangle.
