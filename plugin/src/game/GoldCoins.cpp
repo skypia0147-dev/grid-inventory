@@ -1128,6 +1128,67 @@ namespace FUI::GoldCoins
                     }
                 }
             }
+            // ★An external DROP is a SPEND (shop, trainer, bounty, script) --
+            // the mirror image of `gain`, and until now nobody looked at it:
+            // walking gold is the residual of the one formula, so the whole
+            // payment silently came out of the auto tiles while every pinned
+            // purse stood protected. Measured (user shop test): three partial
+            // purses prepared, and a buy broke a full thousand instead.
+            //
+            // The BOARD rule says who pays -- partial tiles before full
+            // thousands, rear board position first within each group; the
+            // same order the auto decomposition and the STEP 3 trim follow.
+            // Auto tiles in the queue pay implicitly (reducing no pin leaves
+            // their share on walking, which already fell with the ledger), so
+            // only the pinned purses act. The pouch is not in the queue at
+            // all -- it stays the last-resort money it has always been.
+            const int spend = (g_lastLedger >= 0) ? (std::max)(0, g_lastLedger - pre)
+                                                  : 0;
+            if (spend > 0 && !g_pinned.empty()) {
+                const auto slots = Grid::CoinTilesByPosition();
+                std::vector<const Grid::CoinSlot*> order;
+                order.reserve(slots.size());
+                for (auto si = slots.rbegin(); si != slots.rend(); ++si) {
+                    if (si->value < kCoinCap) order.push_back(&*si);
+                }
+                for (auto si = slots.rbegin(); si != slots.rend(); ++si) {
+                    if (si->value >= kCoinCap) order.push_back(&*si);
+                }
+                int  left = spend;
+                bool pinsPaid = false;
+                for (const auto* s : order) {
+                    if (left <= 0) break;
+                    const auto pi = g_pinned.find(s->key);
+                    if (pi == g_pinned.end()) {
+                        // an auto tile: its share stays on walking gold, which
+                        // the decomposition takes remainder-first on its own
+                        left -= (std::min)(s->value, left);
+                        continue;
+                    }
+                    const int take = (std::min)(pi->second, left);
+                    left -= take;
+                    pinsPaid |= take > 0;
+                    if (take >= pi->second) {
+                        SKSE::log::info("[GOLD] spend {} G: purse '{}' emptied "
+                                        "(-{} G)", spend, pi->first, pi->second);
+                        // the cell dies with the purse -- a slot left behind
+                        // would rejoin the AUTO pool and hand its cell to
+                        // whatever amount the partition matches into it
+                        Grid::ForgetTile(pi->first);
+                        g_pinned.erase(pi);
+                    } else {
+                        pi->second -= take;
+                        SKSE::log::info("[GOLD] spend {} G: purse '{}' pays {} "
+                                        "-> {} G", spend, pi->first, take,
+                            pi->second);
+                    }
+                }
+                // ★A pin that paid within its own band moves no engine coin,
+                // so STEP 3's mirror sees nothing to change and asks for no
+                // redraw -- the tile would show the old amount until some
+                // unrelated rebuild. Ask here; the flag coalesces.
+                if (pinsPaid) Grid::RequestRebuild();
+            }
             // ★The promise expires. A request that was refused downstream, or
             // a transfer that simply never landed, must not leave walking gold
             // permanently inflated -- the board would show coins that are not
@@ -1182,17 +1243,57 @@ namespace FUI::GoldCoins
         }
 
         // G4: pinned purses can't outlast the ledger either — if gold was spent
-        // (shop/quest) below pouch+pinned, trim purses (highest map key first —
-        // effectively arbitrary) so walking never goes negative. Rare; keeps
-        // the mirror consistent.
+        // (shop/quest) below pouch+pinned, trim purses so walking never goes
+        // negative. Rare; keeps the mirror consistent.
+        // ★The trim ORDER is a rule now, not a map accident. It used to take
+        // the highest map key -- "effectively arbitrary", its own words --
+        // which looked at neither the amount nor the board. The auto tiles
+        // already have the rule the player expects (the remainder shrinks
+        // first, and the rear tiles absorb the spend), so the purses follow
+        // it: PARTIAL purses (< 1000) pay before full thousands, and within
+        // each group the rear-most board position pays first.
         {
-            int budget = total - PouchSum();   // gold available to pinned+walking
+            const int budget = total - PouchSum();   // gold available to pinned+walking
             int psum = PinnedSum();
-            while (psum > budget && !g_pinned.empty()) {
-                auto last = std::prev(g_pinned.end());
-                const int over = psum - budget;
-                if (last->second > over) { last->second -= over; psum -= over; }
-                else { psum -= last->second; g_pinned.erase(last); }
+            if (psum > budget && !g_pinned.empty()) {
+                std::vector<std::string> keys;
+                keys.reserve(g_pinned.size());
+                for (const auto& [k, v] : g_pinned) keys.push_back(k);
+                const auto byPos = Grid::OrderKeysByPosition(std::move(keys));
+                // back-to-front twice: partials first, then full thousands
+                std::vector<const std::string*> order;
+                order.reserve(byPos.size());
+                for (auto it = byPos.rbegin(); it != byPos.rend(); ++it) {
+                    if (const auto pi = g_pinned.find(*it);
+                        pi != g_pinned.end() && pi->second < kCoinCap) {
+                        order.push_back(&*it);
+                    }
+                }
+                for (auto it = byPos.rbegin(); it != byPos.rend(); ++it) {
+                    if (const auto pi = g_pinned.find(*it);
+                        pi != g_pinned.end() && pi->second >= kCoinCap) {
+                        order.push_back(&*it);
+                    }
+                }
+                for (const auto* k : order) {
+                    if (psum <= budget) break;
+                    const auto pi = g_pinned.find(*k);
+                    if (pi == g_pinned.end()) continue;
+                    const int over = psum - budget;
+                    if (pi->second > over) {
+                        pi->second -= over;
+                        psum -= over;
+                        SKSE::log::info("[GOLD] pinned trim: '{}' -{} -> {} G "
+                                        "(spend exceeded walking gold)",
+                            *k, over, pi->second);
+                    } else {
+                        psum -= pi->second;
+                        SKSE::log::info("[GOLD] pinned trim: '{}' emptied (-{} G, "
+                                        "spend exceeded walking gold)",
+                            *k, pi->second);
+                        g_pinned.erase(pi);
+                    }
+                }
             }
         }
 
