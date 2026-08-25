@@ -7709,9 +7709,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // The rebuild would claim a fresh tile of a filtered form into a held
         // typed bag; first-fitting it onto the main board here would diverge
         // and the next rebuild would visibly move it.
-        if (const auto& fl = BagFilter::FilterOf(obj);
-            !fl.empty() && g_typedBagsHeld.contains(fl)) {
-            return decline("typed bag would claim it");
+        // ★S4: the STACKABLE branch seats its mints in the typed bag itself
+        // now (below), so only GEAR still declines -- gear-shaped filtered
+        // forms are rare and their claim order is the rebuild's to keep.
+        const std::string typedFl = BagFilter::FilterOf(obj);
+        const bool typedHeld = !typedFl.empty() && g_typedBagsHeld.contains(typedFl);
+        if (typedHeld && cap <= 1) {
+            return decline("typed bag would claim it (gear)");
         }
         // ★The entry comes from GetInventory -- the same source the rebuild
         // walks. LiveEntryOf answers from the CHANGES list, and a PLAIN item
@@ -7876,6 +7880,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
             // plan every fill and mint before touching anything (rule 5)
             auto occ = MainViewOcc();
+            // ★S4: occupancy per HELD TYPED BAG, filled lazily -- a filtered
+            // form's fresh tiles seat where the rebuild's claim would put
+            // them, and a full bag bounces to main (decision 1).
+            std::map<std::string, std::vector<std::vector<bool>>> typedOcc;
             struct Fill { int idx; int add; };
             struct Mint { LayoutEntry le; int units; };
             std::vector<Fill> fills;
@@ -7968,6 +7976,27 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             hintTaken = true;
                         }
                     }
+                    // ★S4: the typed-bag seat comes FIRST for a filtered form
+                    // -- that is where the rebuild's claim would put it. Each
+                    // held bag of the filter is tried in view order; a full
+                    // one falls through, and no bag at all bounces to main.
+                    if (mp.le.col < 0 && typedHeld) {
+                        for (const auto& v : g_views) {
+                            if (v.accept != typedFl) continue;
+                            auto to = typedOcc.find(v.bagKey);
+                            if (to == typedOcc.end()) {
+                                to = typedOcc.emplace(v.bagKey, ViewOccOf(v)).first;
+                            }
+                            LayoutEntry seat;
+                            seat.uid = mp.le.uid;
+                            seat.sig = mp.le.sig;
+                            if (OccPlace(to->second, gdef, seat)) {
+                                mp.le = seat;
+                                mp.le.bag = v.bagKey;
+                                break;
+                            }
+                        }
+                    }
                     if (mp.le.col < 0 && !OccPlace(occ, gdef, mp.le)) {
                         return decline("no room (growth/spill)");
                     }
@@ -8003,7 +8032,20 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 mp.le.count = mp.units;
                 g_layout[key] = mp.le;
                 MakeDisplayTile(obj, entry, gdef, glow, key, mp.units, mp.le, -1);
-                mv.items.push_back(static_cast<int>(g_items.size()) - 1);
+                // ★S4: the seat's own view -- a typed-bag mint joins its bag
+                int mintVi = 0;
+                if (!mp.le.bag.empty()) {
+                    mintVi = -1;
+                    for (std::size_t vi2 = 0; vi2 < g_views.size(); ++vi2) {
+                        if (g_views[vi2].bagKey == mp.le.bag) {
+                            mintVi = static_cast<int>(vi2);
+                            break;
+                        }
+                    }
+                    if (mintVi < 0) { RequestRebuild(); return true; }
+                }
+                g_views[static_cast<std::size_t>(mintVi)].items.push_back(
+                    static_cast<int>(g_items.size()) - 1);
                 // ★★★AND IT IS NEW, SAID HERE. The mark used to be worked out
                 // only inside a full rebuild, by asking which keys were absent
                 // from g_prevKeys -- and this path mints a key without ever
@@ -8028,10 +8070,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // full rebuild finds it missing from g_prevKeys and marks it a
                 // second time -- which is the batch above, arriving late.
                 g_prevKeys.insert(key);
-                g_spaceUsed += MaskCells(g_items.back().mask.rows);
-                SKSE::log::info("[B3] ★stack mint '{}' x{} key '{}' at [{},{}] -- "
+                // ★S4: typed-bag cells never count toward the space figure
+                // (FinalizeRebuild's own rule)
+                if (mp.le.bag.empty()) {
+                    g_spaceUsed += MaskCells(g_items.back().mask.rows);
+                }
+                SKSE::log::info("[B3] ★stack mint '{}' x{} key '{}' at [{},{}]{} -- "
                                 "no rebuild",
-                    obj->GetName(), mp.units, key, mp.le.col, mp.le.row);
+                    obj->GetName(), mp.units, key, mp.le.col, mp.le.row,
+                    mp.le.bag.empty() ? "" : " (typed bag)");
             }
             g_liveObjs.insert(obj);
             MarkCapacityDirty();
@@ -12796,7 +12843,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 } else {
                     g_held.reset();   // window chrome: cancel back
                 }
-                RequestRebuild();
+                // ★S4: no tail rebuild. Every arm above moves PARTNER cells
+                // (or only the cursor), and the partner board re-derives from
+                // its own cell book every frame -- the player board did not
+                // change in any of them. Measured as the #3 rebuild source of
+                // the gate-1 session (8 of 85), repainting a board that was
+                // already right.
                 return true;
             }
             // Is the cursor over the player's own board at all? Everything
@@ -14616,13 +14668,33 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // could fire) hid a unit for the rest of the session (measured:
         // engine=2 worn=0 off=[equipping] drawn=1, held for good). The sweep
         // belongs to the frame, not to the rebuild that may never come.
+        // ★S4: a sweep releases suppression entries, and the units they hid
+        // need drawing again -- but the sweep KNOWS which forms those are, so
+        // it asks the per-form delta first and only an undeliverable form
+        // costs the full rebuild. Measured as the #2 rebuild source of the
+        // gate-1 session (12 of 85), each repainting the board for one form.
+        const auto releaseByForm = [](std::vector<std::string> a_bases) {
+            std::sort(a_bases.begin(), a_bases.end());
+            a_bases.erase(std::unique(a_bases.begin(), a_bases.end()),
+                          a_bases.end());
+            for (const auto& b : a_bases) {
+                auto* obj = ObjFromBaseKey(b);
+                if (!obj || !OnFormDelta(obj->GetFormID())) {
+                    RequestRebuild();
+                    return;
+                }
+            }
+        };
         if (!g_pendingEquip.empty()) {
             const auto quiet = std::chrono::steady_clock::now() - g_pendingEquipWhen;
             if (quiet > kPendingEquipTTL) {
                 SKSE::log::warn("[GRID] pending equip expired ({} units) -- releasing"
                                 " (frame sweep)", g_pendingEquip.size());
+                std::vector<std::string> bases;
+                bases.reserve(g_pendingEquip.size());
+                for (const auto& u : g_pendingEquip) bases.push_back(u.base);
                 g_pendingEquip.clear();
-                RequestRebuild();
+                releaseByForm(std::move(bases));
             } else if (quiet > kPendingEquipSettle && !g_held) {
                 // ★Prompt retirement for the TAIL of a click run. A LANDED
                 // record's job -- bridging the frames between the request and
@@ -14637,9 +14709,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // keep the full TTL -- their confirmation may still be coming.
                 // And no releases while the cursor carries: the rebuild this
                 // schedules would land mid-swap-window, the old blink.
+                std::vector<std::string> bases;
+                for (const auto& u : g_pendingEquip) {
+                    if (u.landed) bases.push_back(u.base);
+                }
                 if (std::erase_if(g_pendingEquip,
                                   [](const OffBoardUnit& u) { return u.landed; }) > 0) {
-                    RequestRebuild();
+                    releaseByForm(std::move(bases));   // ★S4: one form, not the board
                 }
             }
         }
