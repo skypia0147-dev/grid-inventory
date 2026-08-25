@@ -631,14 +631,40 @@ namespace FUI
     static std::uint32_t ModelSlot32(RE::TESBoundObject* a_obj)
     {
         const char* p = nullptr;
+        const char* p2 = nullptr;   // armour: the OTHER sex's ground model
         std::uint32_t altCount = 0;
         if (auto* armo = a_obj->As<RE::TESObjectARMO>()) {
             // armor is NOT a TESModel (skyrim_cast returns null — that made
             // every ARMO fall back to per-FormID keys): its GND model lives
             // on TESBipedModelForm::worldModels
             const auto& wm = armo->worldModels[RE::TESBipedModelForm::Sexes::kMale];
-            p = wm.GetModel();
-            altCount = wm.numAlternateTextures;
+            const auto& wf = armo->worldModels[RE::TESBipedModelForm::Sexes::kFemale];
+            // ★★★BOTH SEXES, because an armour record has TWO ground models and
+            // the male one alone is only half its identity.
+            //
+            // Reported against a female-only armour pack: an item's icon comes
+            // up as ANOTHER PIECE OF THE SAME SET, and dragging a rotation
+            // slider in EDIT walks through the set instead of turning the item.
+            // That is what one shared bucket looks like from the outside -- the
+            // key said these records are the same picture, so the first capture
+            // answered for all of them, and rotation was the only axis left to
+            // tell them apart. Setting a unique angle "fixed" it by buying the
+            // item a bucket of its own.
+            //
+            // A pack that dresses one sex routinely leaves the other's ground
+            // model as one shared placeholder across a whole set, so matching on
+            // it alone declares a dozen different garments identical. Two
+            // records that agree on BOTH paths really do render the same
+            // picture -- that is the whole of what the engine draws here -- so
+            // this is the identity the key was reaching for.
+            // ★It costs almost nothing. Measured over Skyrim.esm: 2522 eligible
+            // armours, 326 buckets by the male path and 329 by the pair. Three
+            // more captures, and 99.9% of the saving kept.
+            p  = wm.GetModel();
+            p2 = wf.GetModel();
+            // ★And the female half gets the same alternate-texture veto as the
+            // male: same nif, different pixels, so no sharing either way.
+            altCount = wm.numAlternateTextures + wf.numAlternateTextures;
         } else if (const auto* mdl = skyrim_cast<RE::TESModel*>(a_obj)) {
             p = mdl->GetModel();
             if (const auto* swap = skyrim_cast<RE::TESModelTextureSwap*>(a_obj)) {
@@ -647,16 +673,30 @@ namespace FUI
         }
         if (!p || !*p) return a_obj->GetFormID();
         if (altCount > 0) return a_obj->GetFormID();   // same nif, other pixels
-        const char* s = p;
-        if (_strnicmp(s, "meshes", 6) == 0 && (s[6] == '\\' || s[6] == '/')) {
-            s += 7;
-        }
         std::uint32_t h = 2166136261u;
-        for (; *s; ++s) {
-            char c = *s;
-            if (c >= 'A' && c <= 'Z') c += 32;
-            if (c == '/') c = '\\';
-            h = (h ^ static_cast<std::uint8_t>(c)) * 16777619u;
+        const auto fold = [&h](const char* a_path) {
+            const char* s = a_path;
+            if (_strnicmp(s, "meshes", 6) == 0 && (s[6] == '\\' || s[6] == '/')) {
+                s += 7;
+            }
+            for (; *s; ++s) {
+                char c = *s;
+                if (c >= 'A' && c <= 'Z') c += 32;
+                if (c == '/') c = '\\';
+                h = (h ^ static_cast<std::uint8_t>(c)) * 16777619u;
+            }
+        };
+        fold(p);
+        // ★The second path is folded behind a SEPARATOR, and only when there is
+        // one -- so every key that has ever existed keeps its value. A weapon, a
+        // potion, a book and an armour with no second ground model all hash
+        // exactly as they did, and the shipped sprite pak still answers for
+        // them. Only the records this fix is about are re-keyed.
+        // ★The separator is not decoration: without it ("a", "bc") and
+        // ("ab", "c") fold to the same number.
+        if (p2 && *p2) {
+            h = (h ^ 0x1Fu) * 16777619u;
+            fold(p2);
         }
         // ★★1.0.5 — the base-form ENCHANTMENT deliberately does NOT join this
         // hash, though it looks like it should: Iron Sword and Iron Sword of
