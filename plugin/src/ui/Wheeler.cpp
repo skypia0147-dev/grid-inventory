@@ -135,6 +135,8 @@ namespace FUI::Wheeler
         // ★On by default: the wheel is what this feature IS, and a player who
         // wants the vanilla screen back can say so once. See Wheeler.h.
         bool  g_enabled = true;
+        // ★Said once per stand-down -- see the probe in OnButton.
+        bool  g_saidPassing = false;
 
         // ---- the item group's contents -----------------------------------------
         // ★★★NO REGISTRATION STEP. The wheel reads the game's OWN favourites --
@@ -2842,6 +2844,7 @@ namespace FUI::Wheeler
     {
         if (g_enabled == a_on) return;
         g_enabled = a_on;
+        g_saidPassing = false;   // a fresh stand-down says its line again
         // ★Shut it if it happens to be up, through the SAME close every other
         // exit uses. This used to be a partial copy of that path -- with a
         // comment saying it was not -- and the copy was missing the drag state.
@@ -2914,13 +2917,39 @@ namespace FUI::Wheeler
     // favourites menu, where the revert power lives. Our wheel is built from
     // starred items, worn gear and loadout presets -- a beast has none of the
     // three -- so eating the key offered nothing and locked the player in the
-    // form (user report ⑬). The test is the RACE being unplayable, which is
-    // what a transformation IS, so modded forms ride the same answer.
+    // form (user report ⑬).
+    //
+    // ★★★ASKED OF THE ENGINE, NOT OF THE RACE, and that is the whole fix.
+    //
+    // This used to be "the race is unplayable", on the reasoning that an
+    // unplayable race is what a transformation IS. It is not. The vanilla
+    // VAMPIRE races are unplayable too -- measured in Skyrim.esm, all twelve
+    // of them, NordRaceVampire through BretonRaceChildVampire, Playable
+    // clear. So the moment a player caught vampirism the wheel stood down for
+    // good and the vanilla menu answered the key forever after. Reported as a
+    // conflict with a vampire overhaul; it was nothing of the kind, and a
+    // Live Another Life vampire start reproduced it with every vampire mod
+    // disabled.
+    //
+    // MenuControls carries the engine's own beast-form flag, and it exists for
+    // exactly this reason: to change what the menus do while transformed. It
+    // is the question this function was always trying to ask.
     bool YieldingToVanilla()
     {
+        if (auto* mc = RE::MenuControls::GetSingleton(); mc && mc->InBeastForm()) {
+            return true;
+        }
+        // ★A modded form that swaps the race without going through the engine's
+        // beast form still has to be caught, and the mark that separates one
+        // from a vampire is a FACE. A vampire keeps yours -- FaceGenHead is set
+        // on every vanilla vampire race -- while a beast wears something that
+        // is not a face at all, and the flag is clear on WerewolfBeastRace.
+        // Unplayable AND faceless is a transformation; unplayable with your own
+        // face is just you, changed.
         auto* p = RE::PlayerCharacter::GetSingleton();
         auto* race = p ? p->GetRace() : nullptr;
-        return race && !race->GetPlayable();
+        if (!race || race->GetPlayable()) return false;
+        return !race->data.flags.any(RE::RACE_DATA::Flag::kFaceGenHead);
     }
 
     bool SomethingElseOwnsTheKey(std::uint32_t a_pressed)
@@ -2941,10 +2970,17 @@ namespace FUI::Wheeler
                     fav = cm->GetMappedKey(ue->favorites, RE::INPUT_DEVICE::kKeyboard);
                 }
             }
+            // ★WHICH HALF fired, because the two mean different things: the
+            // engine's own flag is the answer for a vanilla transformation,
+            // and the faceless-race test is the guess made for a modded one.
+            // A yield reported by the guess on a race nobody expects is the
+            // line that will explain the next report of this.
+            auto* mc = RE::MenuControls::GetSingleton();
             SKSE::log::info("[WHEEL] yielding the favourites key -- "
-                            "transformed into '{}' (unplayable race); "
+                            "transformed into '{}' (engine beastForm={}); "
                             "favourites is bound to {:#04x}, pressed {:#04x}",
-                race->GetName() ? race->GetName() : "?", fav, a_pressed);
+                race->GetName() ? race->GetName() : "?",
+                (mc && mc->InBeastForm()) ? 1 : 0, fav, a_pressed);
             return true;
         }
         return false;
@@ -2956,7 +2992,26 @@ namespace FUI::Wheeler
         // ★★Off means CLAIMING NOTHING -- not "open but hidden". Every route in
         // has to fail here, including the capture path used to rebind, or the
         // wheel would still be eating keys for a menu that cannot appear.
-        if (!g_enabled) return false;
+        // ★PROBE: "the wheel is off and the vanilla menu does not come back"
+        // has two causes that look identical from outside -- the press never
+        // reached the game, or it did and the game declined to raise a menu.
+        // This line is the first half: it fires from OUR sink, before any
+        // decision, so seeing it with no [FAV] line beside it says the key
+        // arrived, we passed it on untouched, and the engine chose nothing.
+        // ★ONCE per stand-down, not once per press: a player who turns the
+        // wheel off stays off, and a line every time they reach for their
+        // favourites is a log that buries the rest of itself.
+        if (!g_enabled) {
+            if (!g_saidPassing && a_event->IsDown() && InCombo(
+                    a_event->GetDevice() == RE::INPUT_DEVICE::kGamepad,
+                    a_event->GetIDCode())) {
+                g_saidPassing = true;
+                SKSE::log::info("[WHEEL] favourites key {:#04x} seen while DISABLED "
+                                "-- passed to the engine untouched",
+                    a_event->GetIDCode());
+            }
+            return false;
+        }
         const auto dev = a_event->GetDevice();
         const auto id = a_event->GetIDCode();
 
