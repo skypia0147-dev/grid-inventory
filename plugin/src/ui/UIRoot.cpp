@@ -4197,6 +4197,28 @@ namespace FUI::UIRoot
         if (a_dl) a_dl->AddCallback(&MipSamplerCB, nullptr);
     }
 
+    void SyncDisplaySize()
+    {
+        // B11(P2): queried per frame — a once-cached size went stale after a
+        // borderless/fullscreen switch and desynced from OnShow's park math.
+        //
+        // ★★★AND IT OVERRULES THE WIN32 BACKEND, which is the whole point.
+        // ImGui_ImplWin32_NewFrame fills DisplaySize from the WINDOW's client
+        // rect, and the window is not the picture: SSE Display Tweaks'
+        // borderless upscale renders 1920x1080 into a 3840x2160 window, so the
+        // backend's answer was twice the render target. Reported against the
+        // quick wheel -- drawn at double size and pushed off the bottom right
+        // -- because the wheel builds its OWN ImGui frame and was the one that
+        // never overruled it. Hence a function: two frames, one answer.
+        // ★Must run AFTER the backend's NewFrame and BEFORE ImGui::NewFrame.
+        // Earlier and the backend overwrites it; later and the frame has
+        // already been laid out against the wrong size.
+        const auto screenSize = RE::BSGraphics::Renderer::GetScreenSize();
+        auto& io = ImGui::GetIO();
+        io.DisplaySize.x = static_cast<float>(screenSize.width);
+        io.DisplaySize.y = static_cast<float>(screenSize.height);
+    }
+
     bool IsConsoleOpen()
     {
         auto* ui = RE::UI::GetSingleton();
@@ -4271,11 +4293,7 @@ namespace FUI::UIRoot
         ImGui_ImplWin32_NewFrame();
 
         auto& io = ImGui::GetIO();
-        // B11(P2): queried per frame — a once-cached size went stale after a
-        // borderless/fullscreen switch and desynced from OnShow's park math
-        const auto screenSize = RE::BSGraphics::Renderer::GetScreenSize();
-        io.DisplaySize.x = static_cast<float>(screenSize.width);
-        io.DisplaySize.y = static_cast<float>(screenSize.height);
+        SyncDisplaySize();
         // ★★H′: THE text-size setting, applied to every string ImGui sizes.
         //
         // 1.92 rounds this product to whole pixels and then rasterises the

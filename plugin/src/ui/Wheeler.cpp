@@ -1865,6 +1865,14 @@ namespace FUI::Wheeler
                 if (!UIRoot::TryInitD3D()) return;
                 ImGui_ImplDX11_NewFrame();
                 ImGui_ImplWin32_NewFrame();
+                // ★★BETWEEN THE TWO NewFrames, and it has to be exactly here:
+                // the Win32 backend has just written the WINDOW's size, and
+                // ImGui::NewFrame is about to lay the frame out against it. A
+                // window is not the picture -- borderless upscale renders
+                // 1920x1080 into a 3840x2160 window -- and this wheel takes its
+                // whole scale from DisplaySize.y, so the window's answer drew
+                // it at double size, off the bottom right. Reported.
+                UIRoot::SyncDisplaySize();
                 ImGui::NewFrame();
                 // ★★This menu draws its OWN ImGui frame, so the mip sampler the
                 // inventory binds at the head of its background list never

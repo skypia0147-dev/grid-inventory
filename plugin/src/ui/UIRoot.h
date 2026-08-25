@@ -221,6 +221,11 @@ namespace FUI::UIRoot
     // Call it first in any independent frame.
     void UseMipSampler(ImDrawList* a_dl);
 
+    // ★Point ImGui at the RENDER TARGET rather than at the window. Call from
+    // every frame we build, between the backend's NewFrame and ImGui's -- see
+    // the note in UIRoot.cpp for what the window's own answer costs.
+    void SyncDisplaySize();
+
     // main.cpp installs these to keep legacy state (attack-input block) in sync
     void SetVisibilityCallbacks(std::function<void()> a_onShow, std::function<void()> a_onHide);
 
