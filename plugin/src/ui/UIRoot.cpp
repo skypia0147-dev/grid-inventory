@@ -1282,10 +1282,15 @@ namespace FUI::UIRoot
             static bool  s_held = false;
 
             float fs = s_held ? s_want : Theme::FontScale();
+            // ★NO "and the value moved" test here, and that is the fix for one:
+            // SettingSlider is already true only when something moved it, and
+            // adding `fs != s_want` compared the new value against a static
+            // that starts at 1.0 rather than at the setting. So the FIRST move
+            // to exactly 1.00 in a session was thrown away -- which is the
+            // right-click default, the one gesture most likely to land there.
             if (SettingSlider("##fontscale", &fs,
                               Theme::kMinFontScale, Theme::kMaxFontScale, a_c.trackW,
-                              1.0f, "%.2f", Theme::kFontScaleStep) &&
-                fs != s_want) {
+                              1.0f, "%.2f", Theme::kFontScaleStep)) {
                 s_want = fs;
                 s_held = true;
             }

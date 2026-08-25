@@ -558,10 +558,12 @@ namespace FUI::Grid
     // its own ground. It also costs two triangles.
     //
     // Drawn once per ITEM at the footprint's top-right, not per cell.
-    // ★a_relic (1.4.4) rides the same wedge: a relic still owed to the museum
-    // takes the colour outright, a donated one hands it back to the item's own
-    // rarity, and a donated item with no rarity gets the grey. Full reasoning
-    // at the implementation.
+    // ★a_relic (1.4.4) rides the same wedge, and says ONE thing: the museum
+    // still wants this. An owed relic takes the colour outright -- even with no
+    // rarity of its own -- and a donated one hands the wedge straight back to
+    // the item's own rarity, or to nothing at all if it has none. There is no
+    // "already donated" colour; that was tried and removed. Full reasoning at
+    // the implementation.
     void DrawRarityWedge(ImDrawList* a_dl, const ImVec2& a_boxMin,
                          const ImVec2& a_boxMax, std::uint8_t a_haloBits,
                          Lotd::Status a_relic);

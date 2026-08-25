@@ -272,9 +272,11 @@ namespace FUI
                 try { Theme::SetScaleSetting(std::stof(rest)); } catch (...) {}
                 continue;
             }
-            // ★The text-size multiplier. Read here rather than with the
-            // preset keys because the font atlas is baked from it at
-            // startup -- arriving late costs a rebake, not a wrong size.
+            // ★The text-size multiplier, beside the display scale it
+            // multiplies. Nothing is baked from it -- it is read every frame by
+            // style.FontScaleMain and by Theme::SnapPx -- so arriving late
+            // would cost nothing; it is here because this is where the other
+            // half of the same number lives.
             if (key == "!fontscale") {
                 try { Theme::SetFontScale(std::stof(rest)); } catch (...) {}
                 continue;
