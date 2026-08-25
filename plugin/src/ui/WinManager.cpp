@@ -272,6 +272,13 @@ namespace FUI
                 try { Theme::SetScaleSetting(std::stof(rest)); } catch (...) {}
                 continue;
             }
+            // ★The text-size multiplier. Read here rather than with the
+            // preset keys because the font atlas is baked from it at
+            // startup -- arriving late costs a rebake, not a wrong size.
+            if (key == "!fontscale") {
+                try { Theme::SetFontScale(std::stof(rest)); } catch (...) {}
+                continue;
+            }
             // ★1.0.5: global capture-lamp offset, "az, el" in degrees. Loaded
             // BEFORE any icon is asked for, because it is part of every cache
             // key — reading it late would serve one frame of icons keyed on the
@@ -589,6 +596,7 @@ namespace FUI
         out << "; 상인 옵션(무한 골드·전 품목 매입)은 함께 저장됩니다.\n";
         out << "; Merchant options (unlimited gold / buys anything) DO travel.\n";
         out << "!scale = " << Theme::ScaleSetting() << "\n";
+        out << "!fontscale = " << Theme::FontScale() << "\n";
         out << "!skin3 = " << Theme::SkinNameAt(Theme::SkinIndex()) << "\n";
         // ★★The capture light MUST travel with a preset, and not because it is
         // part of the look: the preset ships the author's icon pak, and every
@@ -664,6 +672,7 @@ namespace FUI
                     else if (key == "!cellscale") Theme::SetScaleSetting(   // old units
                                                       std::stof(rest) / Theme::kScaleBase);
                     else if (key == "!scale")     Theme::SetScaleSetting(std::stof(rest));
+                    else if (key == "!fontscale") Theme::SetFontScale(std::stof(rest));
                     else if (key == "!skin")      Theme::SetSkinLegacy(std::stoi(rest));
                     else if (key == "!skin2")     Theme::SetSkinLegacy2(std::stoi(rest));
                     else if (key == "!skin3")     Theme::SetSkinByName(rest.c_str());
@@ -810,6 +819,7 @@ namespace FUI
         // ★NOT in ExportPreset: a preset never carries window layout.
         out << "!uiscale = " << Theme::Scale() << "\n";
         out << "!scale = " << Theme::ScaleSetting() << "\n";
+        out << "!fontscale = " << Theme::FontScale() << "\n";
         out << "!skin3 = " << Theme::SkinNameAt(Theme::SkinIndex()) << "\n";
         out << "!lang = " << Lang::Id(Lang::Get()) << "\n";
         // Diagnostic / test switches survive a restart once turned on --
@@ -1343,10 +1353,12 @@ namespace FUI
         // title: tracked uppercase
         ImFont* font = ImGui::GetFont();
         // whole pixels only — a fractional size bakes its own face (rule 102)
-        // ★DESIGN UNITS. SnapPx applies the scale itself — passing
-        // titleSize*S asked for 24·S², which at 4K is a 54px name in a
-        // 51px bar (Theme::SnapAbs).
-        const float fontSize = Theme::SnapPx(sk.titleSize);
+        // ★DESIGN UNITS, applied by the helper — passing titleSize*S asked
+        // for 24·S², which at 4K is a 54px name in a 51px bar.
+        // ★★Theme::FontTitle, not SnapPx: the title is the one string the
+        // text-size setting leaves alone, because TitleBarH below it is
+        // layout and does not grow. The reason lives with the helper.
+        const float fontSize = Theme::FontTitle();
         const float spacing = sk.titleSpacing * S;
         // tornFrame: nudge the title in so it clears the ragged frame edge
         const float insX = Theme::FrameInsetX();

@@ -858,6 +858,9 @@ namespace FUI::Theme
         // ★The SETTING, not the board multiplier — 1.00 by default, and
         // kScaleBase (0.90) is what that 1.00 draws at. See Theme.h.
         float g_cellScale = kDefCellScale;
+        // ★The player's text-size multiplier, on top of the automatic Scale().
+        // 1.00 is exactly what shipped. See Theme.h for why it is separate.
+        float g_fontScale = 1.0f;
         // ★★The shipped default, NAMED. It was `= 3`, with a comment saying
         // "Parchment Crimson" -- and by then 3 was Fable Crimson. A number
         // cannot state which skin it means, so it stops being true the first
@@ -1076,6 +1079,21 @@ namespace FUI::Theme
         // typed into the box, or arriving from an older ini, could sit outside
         // what the control could ever show or take back.
         g_cellScale = (std::max)(kMinCellScale, (std::min)(kMaxCellScale, a_scale));
+    }
+
+    float FontScale() { return g_fontScale; }
+
+    bool SetFontScale(float a_scale)
+    {
+        const float v = (std::max)(kMinFontScale, (std::min)(kMaxFontScale, a_scale));
+        // ★The MOVED answer is the point: the atlas has to be re-baked when
+        // this changes and must NOT be re-baked when it does not. A slider
+        // being dragged sends a value every frame, and rebuilding the font
+        // atlas every frame would stall the render thread for as long as the
+        // player held the mouse down.
+        if (v == g_fontScale) return false;
+        g_fontScale = v;
+        return true;
     }
 
     // ---- skin ----------------------------------------------------------------
@@ -2183,7 +2201,17 @@ namespace FUI::Theme
         // ★Whole pixels. The atlas is baked at integer sizes, and asking for
         // 17.6 gets a scaled blit of the 18 — which is exactly the smearing
         // the bake was meant to avoid.
-        return (std::max)(1.0f, std::round(a_size * g_scale));
+        // ★★TWO scales, and they are different things. g_scale sizes the
+        // PANEL from the display; g_fontScale sizes what is written on it,
+        // and is the player's. It has to land HERE, not only on the baked
+        // atlas: every string that asks for an explicit size (values,
+        // captions, the stat column) goes straight to the draw list, where
+        // ImGui's own font scale never reaches it. Without this term the text
+        // -size setting moved the running text and left the numbers alone —
+        // and while a drag was in flight the two families sat at different
+        // sizes on top of each other, which is what a doubled, ghosted string
+        // actually was.
+        return (std::max)(1.0f, std::round(a_size * g_scale * g_fontScale));
     }
 
     float SnapAbs(float a_px)
@@ -2203,6 +2231,20 @@ namespace FUI::Theme
     float FontValue()   { return SnapPx(20.0f); }
     float FontBody()    { return SnapPx(17.0f); }
     float FontCaption() { return SnapPx(12.0f); }
+
+    // ★★The title follows the text-size setting like everything else, but it
+    // is the one string with a CEILING, and the ceiling is the bar it lives
+    // in: WinManager::TitleBarH is 34 design units of LAYOUT, and every
+    // window's height is measured against it. A 24px name grown to 38 in a
+    // bar that stayed 34 does not read as larger text, it reads as a name
+    // falling out of its bar.
+    // ★30 rather than 34: TitleBar centres the GLYPH BOX in the band, so this
+    // leaves 2px of band above and below. Titles are drawn uppercase, so the
+    // ink inside that box is cap-height and clears it with room to spare.
+    float FontTitle()
+    {
+        return (std::min)(SnapPx(S().titleSize), SnapAbs(30.0f * g_scale));
+    }
 
     ImU32 Rule()
     {
@@ -2612,7 +2654,7 @@ namespace FUI::Theme
     }
 
     bool ChromeSliderFloat(const char* a_id, float* a_v, float a_min, float a_max,
-                           float a_w, const char* a_fmt, float a_resetTo)
+                           float a_w, const char* a_fmt, float a_resetTo, float a_step)
     {
         auto* dl = ImGui::GetWindowDrawList();
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -2651,8 +2693,15 @@ namespace FUI::Theme
         // One step is a hundredth of a fine range, a tenth of a medium one, and
         // a whole unit once the range is wide enough that hundredths would take
         // all day (angles run -180..180).
+        // ★A caller may name its own, for a range where the derived step is
+        // too fine to do anything: the text size spans 0.75, so it took the
+        // hundredth — and a hundredth of it does not move the rendered size by
+        // a whole pixel, so most presses of the arrow visibly did nothing.
         const float span = a_max - a_min;
-        const float step = span >= 100.0f ? 1.0f : span >= 10.0f ? 0.1f : 0.01f;
+        const float step = a_step > 0.0f ? a_step
+                         : span >= 100.0f ? 1.0f
+                         : span >= 10.0f  ? 0.1f
+                                          : 0.01f;
         if (GaugeStep(p, a_w, h, a_id, *a_v, step, a_min, a_max)) ch = true;
         return ch;
     }

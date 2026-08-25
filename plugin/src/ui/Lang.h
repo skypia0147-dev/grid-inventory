@@ -34,6 +34,7 @@ namespace FUI::Lang
         X(Edit, "EDIT")                                                                                     \
         X(Settings, "SETTINGS")                                                                             \
         X(ScaleLabel, "SCALE")                                                                        \
+        X(FontScaleLabel, "TEXT SIZE")   /* player's font multiplier over the automatic scale */      \
         X(SkinLabel, "SKIN")                                                                                \
         X(LanguageLabel, "LANGUAGE")                                                                        \
         X(Gold, "GOLD")                                                                                     \

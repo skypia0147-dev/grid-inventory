@@ -433,9 +433,11 @@ namespace FUI::UIRoot
         // What remains below is observation only: counts of what actually
         // arrives. Liveness is a thing you measure, never a pointer you compare.
 
-        // fonts are BAKED at the current UI scale (bitmap-scaling hangul via
-        // FontGlobalScale mushes the strokes). While the slider drags we
-        // preview via FontGlobalScale ratio; on release the atlas rebakes.
+        // The atlas is built for the DISPLAY scale and for the glyph ranges
+        // the active language pack wants -- those two, and nothing else, are
+        // what this flag asks to be rebuilt. The player's text size is not in
+        // here: it rides on style.FontScaleMain and needs no rebuild at all
+        // (see BuildFonts).
         std::atomic<bool> g_fontsDirty = false;
         float             g_bakedScale = 1.0f;
 
@@ -512,6 +514,20 @@ namespace FUI::UIRoot
         // narrows that ratio and is the size the panel wanted anyway.
         constexpr float kBodyFont = 17.0f;
 
+        // ★★THE TEXT-SIZE SETTING IS NOT IN HERE, and that is measured, not
+        // preference. ImGui 1.92 sizes text as
+        //     style.FontSizeBase * style.FontScaleMain
+        // and FontSizeBase is seeded ONCE, from the first font's LegacySize:
+        //
+        //     if (g.Style.FontSizeBase <= 0.0f)                 // imgui.cpp
+        //         g.Style.FontSizeBase = font->LegacySize;
+        //
+        // -- so rebuilding the atlas at a bigger size does NOT resize a single
+        // string. It never did. Baking the player's setting in here would also
+        // mean that on the one startup where the ini loaded BEFORE the first
+        // bake, the seed carried the setting AND FontScaleMain multiplied it
+        // again. The bake carries the DISPLAY scale, which is what seeds a
+        // base; the player's multiplier rides on FontScaleMain, live.
         void BuildFonts()
         {
             auto& io = ImGui::GetIO();
@@ -1177,10 +1193,11 @@ namespace FUI::UIRoot
         // column beside each field. These rows have no width to spare, so the
         // help goes to the bottom bar, which already carries hover help.
         bool SettingSlider(const char* a_id, float* a_v, float a_lo, float a_hi,
-                           float a_w, float a_def, const char* a_fmt = "%.2f")
+                           float a_w, float a_def, const char* a_fmt = "%.2f",
+                           float a_snap = 0.0f)
         {
             const bool ch =
-                Theme::ChromeSliderFloat(a_id, a_v, a_lo, a_hi, a_w, a_fmt, a_def);
+                Theme::ChromeSliderFloat(a_id, a_v, a_lo, a_hi, a_w, a_fmt, a_def, a_snap);
             if (ImGui::IsItemHovered()) {
                 char buf[96];
                 std::snprintf(buf, sizeof(buf), "%s  %.2f",
@@ -1224,6 +1241,65 @@ namespace FUI::UIRoot
             if (ImGui::IsItemDeactivatedAfterEdit()) {
                 WinManager::GetSingleton()->Save();
                 Grid::RequestRebuild();   // cell size changes what fits per row
+            }
+        }
+
+        // TEXT SIZE — the automatic display scale is not a setting, and until
+        // now nothing was: a 4K player who found 17px too small had nowhere to
+        // go. This multiplies that automatic value, so 1.00 is exactly what
+        // shipped and the panel keeps sizing itself by resolution underneath.
+        //
+        // ★★A CONTROL MUST NOT MOVE WHILE A HAND IS ON IT. That is the whole
+        // reason this row defers, and it took three wrong theories to see it.
+        //
+        // This panel is made of the very text this row sizes. Applying the
+        // value live re-laid the panel out underneath itself: the caption and
+        // the SCALE row above grew taller, the window grew with them, and the
+        // slider slid DOWN out from under the cursor -- which is still holding
+        // the grab where the mouse is. Grab and track were then in two places,
+        // moving against each other, every frame. That is what looked like a
+        // doubled, ghosted image.
+        //
+        // ★The cell-size slider never did this and the difference is not the
+        // slider, it is what each one resizes: cells live on the BOARD window,
+        // so the panel holding that slider stays still. This one resizes the
+        // panel it is in.
+        // ★It also explains why bigger steps were WORSE rather than better:
+        // fewer reflows, but each one moved the control further.
+        //
+        // So the number follows the hand and the size follows the release.
+        // The arrows and the right-click default apply at once -- they are one
+        // change with nothing held down, so nothing slides anywhere.
+        void RowFontScale(const SettingsCtx& a_c)
+        {
+            SettingLabel(a_c, Lang::Str::FontScaleLabel);
+            RightAlign(a_c.trackW);
+
+            // ★s_held is set ONLY by this widget and cleared the moment the
+            // value lands, so a preset load — which writes the same setting
+            // from elsewhere — is never overwritten by a stale pending number.
+            static float s_want = 1.0f;
+            static bool  s_held = false;
+
+            float fs = s_held ? s_want : Theme::FontScale();
+            if (SettingSlider("##fontscale", &fs,
+                              Theme::kMinFontScale, Theme::kMaxFontScale, a_c.trackW,
+                              1.0f, "%.2f", Theme::kFontScaleStep) &&
+                fs != s_want) {
+                s_want = fs;
+                s_held = true;
+            }
+            // ★"Nothing is held" is asked of ImGui rather than of the slider:
+            // IsItemDeactivatedAfterEdit only answers for the drag, while the
+            // right-click default never activates the slider at all and the
+            // step arrows are their own items. One condition, all four ways.
+            if (s_held && !ImGui::IsAnyItemActive()) {
+                s_held = false;
+                // ★The write rides along: true means the value really moved,
+                // so this cannot put the ini through a save per frame.
+                if (Theme::SetFontScale(s_want)) {
+                    WinManager::GetSingleton()->Save();
+                }
             }
         }
 
@@ -1987,7 +2063,11 @@ namespace FUI::UIRoot
         // Favorites binding now, so the place to change it is the game's
         // controls -- a second, private binding for the same key would be a
         // setting that can disagree with the one the player already trusts.
-        constexpr SettingsRowFn kRowsGeneral[] = { RowCellScale, RowLanguage,
+        // ★TEXT SIZE sits right under SCALE: both answer "this is too small",
+        // and putting them together is what lets a player try one and then the
+        // other without hunting.
+        constexpr SettingsRowFn kRowsGeneral[] = { RowCellScale, RowFontScale,
+                                                   RowLanguage,
                                                    RowWheelEnable,
                                                    RowPreset, RowPresetExport };
         // ★SKIN leads DISPLAY rather than sitting in GENERAL: every row under
@@ -2048,6 +2128,7 @@ namespace FUI::UIRoot
             };
             const float labelW = (std::max)(84.0f * S, 32.0f * S + (std::max)({
                 lw(Lang::Str::ScaleLabel),
+                lw(Lang::Str::FontScaleLabel),
                 lw(Lang::Str::SkinLabel),
                 lw(Lang::Str::LanguageLabel),
                 lw(Lang::Str::PresetLabel),
@@ -2412,9 +2493,13 @@ namespace FUI::UIRoot
         // glyph and once to reserve the strip the drag zone must not cover.
         // Those two had drifted into a hardcoded 1.55 and a live
         // recomputation of the same thing.
+        // ★The ratio is no longer scale-free in BOTH terms, and that is the
+        // point: the title stays put while the body grows with the text-size
+        // setting, so the multiplier shrinks by exactly as much and the ✕
+        // lands at the same absolute size inside its unchanged bar.
         [[nodiscard]] float TitleCloseMul()
         {
-            return Theme::SnapPx(Theme::S().titleSize) /
+            return Theme::FontTitle() /
                    (std::max)(1.0f, ImGui::GetFontSize());
         }
 
@@ -3827,7 +3912,8 @@ namespace FUI::UIRoot
                 Theme::S().translucent ? center
                                        : ParkOnScreen(wm->MainCenter(center)));
 
-            // ini scale arrived after the init-time bake -> rebake once
+            // ini display scale arrived after the init-time bake -> rebake
+            // once. NOT the text size: that one never goes through the atlas.
             if (std::fabs(Theme::Scale() - g_bakedScale) > 0.005f) {
                 g_fontsDirty.store(true);
             }
@@ -4190,9 +4276,29 @@ namespace FUI::UIRoot
         const auto screenSize = RE::BSGraphics::Renderer::GetScreenSize();
         io.DisplaySize.x = static_cast<float>(screenSize.width);
         io.DisplaySize.y = static_cast<float>(screenSize.height);
-        // H′: crisp text at any scale — 1.0 when baked; a live bitmap-scale
-        // preview only while the slider is mid-drag
-        io.FontGlobalScale = Theme::Scale() / g_bakedScale;
+        // ★★H′: THE text-size setting, applied to every string ImGui sizes.
+        //
+        // 1.92 rounds this product to whole pixels and then rasterises the
+        // glyphs at that size on demand (ImFont::GetFontBaked), so the text is
+        // crisp at any setting and a drag only ever asks for the dozen-odd
+        // integer sizes the range contains. There is no atlas rebuild here and
+        // no bitmap blit -- the old comment about scaled hangul smearing
+        // belongs to the fixed-size atlas this predates.
+        //
+        // ★io.FontGlobalScale is the pre-1.92 spelling of this and is left at
+        // 1: imgui asserts if both are set, and only one of them should ever
+        // be the answer to "how big is the text".
+        // ★★The OTHER half of the setting is Theme::SnapPx, which carries it
+        // for the strings we size ourselves. Both are live, so they move
+        // together -- when only one of them moved, the panel drew itself at
+        // two sizes at once and the strings looked doubled.
+        ImGui::GetStyle().FontScaleMain = Theme::FontScale();
+        io.FontGlobalScale = 1.0f;
+        // the atlas still carries the DISPLAY scale, so a display change (and
+        // a language pack's glyph ranges) still asks for a rebuild
+        if (std::fabs(Theme::Scale() - g_bakedScale) > 0.005f) {
+            g_fontsDirty.store(true);
+        }
 
         MouseHandler();
         ScrollHandler();

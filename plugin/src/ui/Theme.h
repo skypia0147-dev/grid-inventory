@@ -196,6 +196,43 @@ namespace FUI::Theme
     [[nodiscard]] float ScaleSetting();
     void SetScaleSetting(float a_scale);
 
+    // ── text size, chosen by the player ────────────────────────────────────
+    // ★★★WHY THIS EXISTS SEPARATELY FROM Scale(). Scale() is decided by the
+    // display height and nothing else -- there has never been a way for a
+    // player to say "this text is too small for me". On a high-resolution
+    // screen that is a real complaint even after the automatic 1.5x, because
+    // how big 17px reads depends on the panel and how far away it is, not on
+    // its pixel count. Reported by more than one 4K user.
+    //
+    // It multiplies Scale() rather than replacing it, so the automatic sizing
+    // still does its job and this rides on top: 1.00 keeps exactly what
+    // shipped. It reaches every string in two places -- style.FontScaleMain
+    // for the ones ImGui sizes (tooltips, running text, stack counts) and
+    // SnapPx for the ones we size ourselves (values, captions) -- and needs no
+    // atlas rebuild at all: ImGui 1.92 rasterises each size on demand.
+    //
+    // ★Layout is NOT scaled by this. Rows grow because the text in them is
+    // taller, and windows measure their own content now, so they follow. The
+    // board's cell size has its own slider and stays where the player put it.
+    //
+    // ★★The value is NOT applied while the slider is held -- see RowFontScale.
+    // The settings panel is built out of the text this setting sizes, so
+    // applying it live re-laid that panel out and slid the slider out from
+    // under the cursor holding it. Deferring to the release is not a nicety
+    // here; it is the difference between a control and a moving target.
+    // ★kFontScaleStep is the ARROW step only -- the track stays continuous, so
+    // the size can land on any whole pixel. A hundredth (what the range would
+    // otherwise derive) does not move the rendered size at all, which is why
+    // the arrows read as dead before.
+    inline constexpr float kMinFontScale  = 0.85f;
+    inline constexpr float kMaxFontScale  = 1.60f;
+    inline constexpr float kFontScaleStep = 0.05f;
+    [[nodiscard]] float FontScale();
+    // Clamped to the range above. Returns true when the value actually moved --
+    // nothing has to be rebuilt when it does, so this is only worth asking to
+    // decide whether the change is worth PERSISTING.
+    bool SetFontScale(float a_scale);
+
     // ── GI59: glow + icon light are stored PER ICON STYLE ──────────────────
     // Slot 0 = realistic (3D captures), 1 = drawn (flat art). They need
     // different light, so each keeps its own numbers.
@@ -505,6 +542,9 @@ namespace FUI::Theme
     [[nodiscard]] float FontValue();    // numbers the eye seeks
     [[nodiscard]] float FontBody();     // labels, buttons, running text
     [[nodiscard]] float FontCaption();  // section headings, family names
+    // ★The window name. Display scale ONLY — see the note in Theme.cpp: its
+    // bar is layout, and the text-size setting moves type, not layout.
+    [[nodiscard]] float FontTitle();
 
     // Horizontal rules between stat blocks (and ImGui's own separators).
     // acc over a dark panel; over a LIGHT one acc is the darkest thing on
@@ -794,9 +834,13 @@ namespace FUI::Theme
     // no such gesture of its own, and the settings rows have no room for the
     // EDIT panel's "(def 1.00)" column — the caller puts the wording in the
     // bottom bar instead, so the affordance costs no pixels.
+    // ★a_step: what one press of the ◀ ▶ arrows moves the value by. 0 derives
+    // it from the range, which is right for every slider whose range is wide
+    // enough for a hundredth to mean something. The track itself is always
+    // continuous; this only sizes the arrows.
     bool ChromeSliderFloat(const char* a_id, float* a_v, float a_min, float a_max,
                            float a_w, const char* a_fmt = "%.2f",
-                           float a_def = -1.0f);
+                           float a_def = -1.0f, float a_step = 0.0f);
 
     // ★The defaults live HERE and the runtime values are initialised FROM
     // them, so "restore the default" and "what a fresh install had" cannot
