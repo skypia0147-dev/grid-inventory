@@ -911,7 +911,8 @@ namespace FUI::Equip
                     // pouches are pack tiles and have no biped slot to sit in)
                     if (ImGui::IsKeyPressed(ImGuiKey_F, false) &&
                         !ImGui::GetIO().WantTextInput) {
-                        Grid::ToggleFavoriteUnit(eq->obj, eq->uid, eq->sig);
+                        Grid::ToggleFavoriteUnit(eq->obj, eq->uid, eq->sig,
+                                                 eq->hand);
                         Sfx::Favorite();
                         // ★S1: no rebuild -- the doll's own star reads
                         // IsPoolStarWorn live every frame, and the grid

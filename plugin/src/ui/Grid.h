@@ -284,8 +284,15 @@ namespace FUI::Grid
     void ProcessFavorites();
     // Queue one unit's favourite toggle, named by uid+sig rather than by a
     // board position -- what the equipment doll and the accessory drawer have.
+    // The request is WORN by definition (that is the only unit those two
+    // show); the hand tells a copy in each fist apart.
     void ToggleFavoriteUnit(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
-                            std::uint16_t a_sig, int a_xlIdx = -1);
+                            std::uint16_t a_sig, int a_hand = 0);
+    // Retire a phantom {Hotkey}-only list left behind by the pre-fix doll
+    // favorite (one item, two lists, two tiles). Runs at menu open; the
+    // star moves back onto a real unit. See the definition for the full
+    // pathology.
+    void HealPhantomHotkeyLists();
     // ★B3: did a CLICK already take this form's tile off the board? The equip
     // event sink asks before deciding what a declined partial update means --
     // an equip from the wheel, a hotkey or a script has no click behind it and

@@ -215,6 +215,10 @@ namespace FUI
         // B4-2 observation: did the worn ledger stay in step with the engine
         // across the closed-menu stretch on events alone?
         FUI::WornLedger::Audit("menu-open");
+        // A save from before the doll-favorite fix can carry a phantom
+        // {Hotkey}-only list (one item drawn as two). Retired here, once
+        // per open, before the board reads the entry.
+        FUI::Grid::HealPhantomHotkeyLists();
         // ★B2 flushes on OPEN, not on close. Closing the menu right after a
         // request reported it outstanding at ONE frame old -- the confirmation
         // was simply still in flight. Waiting until the next open gives every

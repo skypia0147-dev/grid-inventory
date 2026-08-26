@@ -1479,6 +1479,15 @@ namespace FUI::Grid
             // list index -- a worn unit owns no cell, so there is no position
             // to record. ProcessFavorites falls back to the pool with this.
             std::uint16_t       sig = 0;
+            // ★★The doll's request names a unit ON THE BODY. Pool resolution
+            // refuses worn lists by design (a sale must never resolve to the
+            // hand), so without this flag the request fell through to
+            // SetFavorite(entry, nullptr) -- and with only the worn list in
+            // the entry, the engine minted a fresh {Hotkey} list: a phantom
+            // unit the board drew as a second, fully-charged copy of a
+            // once-fired weapon. The hand disambiguates a copy in each fist.
+            bool                worn = false;
+            int                 hand = 0;
         };
         std::vector<FavSync> g_favSync;
 
@@ -9031,10 +9040,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     // the entry shifts every time something is equipped. uid+sig names it
     // exactly, and ProcessFavorites resolves the pool from that.
     void ToggleFavoriteUnit(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
-                            std::uint16_t a_sig, int a_xlIdx)
+                            std::uint16_t a_sig, int a_hand)
     {
         if (!a_obj) return;
-        g_favSync.push_back({ a_obj, a_uid, a_xlIdx, a_sig });
+        g_favSync.push_back({ a_obj, a_uid, -1, a_sig, /*worn=*/true, a_hand });
     }
 
     void ProcessFavorites()
@@ -9078,6 +9087,22 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 };
 
                 auto* xl = ExtraForTile(entry, f.uid, f.xlIdx);
+                // ★★A DOLL REQUEST RESOLVES TO THE WORN LIST, and it must do
+                // so BEFORE the pool ask below. ExtraForPool refuses worn
+                // lists by design (that guard keeps a sale off the body), so
+                // a worn unit whose signature no spare shares -- an enchanted
+                // weapon with charge spent -- matched nothing, fell to
+                // SetFavorite(entry, nullptr), and the engine minted a fresh
+                // {Hotkey} list: a phantom unit with no charge extra, which
+                // the board drew as a second, FULL copy of the weapon, and
+                // dropping the pair could shed the real list's ExtraCharge
+                // (user report: favorite-while-worn + unequip duplicates).
+                // A hotkey ON the worn list is ordinary engine state -- the
+                // engine itself carries hotkeys onto worn lists at equip --
+                // and it is what vanilla's own menu does for an equipped item.
+                if (!xl && f.worn) {
+                    xl = WornExtraMatching(entry, f.uid, f.sig, f.hand);
+                }
                 // ★No position to resolve from (a doll or drawer slot): ask the
                 // pool by signature, which is the grain the star works at.
                 if (!xl && f.sig != 0) xl = ExtraForPool(entry, f.uid, f.sig);
@@ -9198,6 +9223,92 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // full rebuild this line used to ask for is gone. Runs on the Tick,
         // outside the draw, so mutating Item fields is safe.
         for (const auto& f : q) RefreshPoolFlagsFor(f.obj);
+    }
+
+    // ★A SAVE CAN ALREADY CARRY THE PHANTOM. Before the doll's favorite
+    // request learned to name the worn list (FavSync::worn), starring an
+    // equipped item whose signature no spare shared fell through to
+    // SetFavorite(entry, nullptr), and the engine minted a {Hotkey}-only
+    // list beside the real unit -- one item, two lists, two tiles, and a
+    // drop path that could shed the real list's ExtraCharge for good.
+    // The prevention above stops new ones; this retires the ones a save
+    // brought along. The tell is arithmetic, the same one the GI2 clamp
+    // warns on: the entry's lists claim more units than the entry holds,
+    // and one of the lists carries NOTHING but the hotkey. Removal goes
+    // through the engine (RemoveFavorite retires the emptied list), and
+    // the star the player set is put back on a real unit -- the worn
+    // list first, since favorite-while-worn is how the phantom was born.
+    void HealPhantomHotkeyLists()
+    {
+        auto* p = RE::PlayerCharacter::GetSingleton();
+        auto* changes = p ? p->GetInventoryChanges() : nullptr;
+        if (!p || !changes || !changes->entryList) return;
+        // counts come from the same walk the board trusts; the entries in
+        // changes->entryList only know their delta against the container
+        std::map<RE::TESBoundObject*, int> counts;
+        for (auto& [obj, pair] : p->GetInventory()) {
+            if (obj) counts[obj] = pair.first;
+        }
+        bool healed = false;
+        for (auto* entry : *changes->entryList) {
+            if (!entry || !entry->object || !entry->extraLists) continue;
+            const auto ci = counts.find(entry->object);
+            if (ci == counts.end() || ci->second <= 0) continue;
+            int                 listed  = 0;
+            RE::ExtraDataList*  phantom = nullptr;
+            RE::ExtraDataList*  worn    = nullptr;
+            RE::ExtraDataList*  spare   = nullptr;
+            bool                starredElsewhere = false;
+            for (auto* xl : *entry->extraLists) {
+                if (!xl) continue;
+                listed += (std::max)(1, xl->GetCount());
+                // "nothing but the hotkey": every extra on the list is the
+                // hotkey itself. A worn or renamed or counted list fails
+                // this by carrying its other extra, which is the point --
+                // those are real units.
+                bool onlyHotkey = xl->HasType<RE::ExtraHotkey>();
+                if (onlyHotkey) {
+                    for (const auto& x : *xl) {
+                        if (x.GetType() != RE::ExtraDataType::kHotkey) {
+                            onlyHotkey = false;
+                            break;
+                        }
+                    }
+                }
+                if (onlyHotkey) {
+                    // one phantom per pass; a second hotkey-only list still
+                    // holds a star but is no home for one -- never `spare`
+                    if (!phantom) phantom = xl;
+                    else starredElsewhere = true;
+                    continue;
+                }
+                if (xl->HasType<RE::ExtraWorn>() ||
+                    xl->HasType<RE::ExtraWornLeft>()) {
+                    if (!worn) worn = xl;
+                } else if (!spare) {
+                    spare = xl;
+                }
+                starredElsewhere =
+                    starredElsewhere || xl->HasType<RE::ExtraHotkey>();
+            }
+            // Real inconsistency only: a lone {Hotkey} list with the counts
+            // in agreement is an ordinary favorited plain unit. And never
+            // touch an entry whose only list IS the phantom -- with nothing
+            // to carry the unit, removing it would orphan the star's owner.
+            if (!phantom || listed <= ci->second || (!worn && !spare)) continue;
+            changes->RemoveFavorite(entry, phantom);
+            if (!starredElsewhere) {
+                auto* home = worn ? worn : spare;
+                home->Add(new RE::ExtraHotkey(RE::ExtraHotkey::Hotkey::kUnbound));
+            }
+            healed = true;
+            SKSE::log::info(
+                "[FAV] healed phantom hotkey list on '{}' (count {} < listed {},"
+                " star -> {})",
+                entry->object->GetName(), ci->second, listed,
+                starredElsewhere ? "already placed" : (worn ? "worn" : "spare"));
+        }
+        if (healed) RequestRebuild();
     }
 
     // GI36: resolve the sub-stack that is ACTUALLY leaving the bag, and drop its
