@@ -14537,6 +14537,36 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             return true;
         }
 
+        // ★(1.5.x) a player coin dropped on an open shelf-bag window (not on
+        // a pouch entry -- that row runs first): the physical Septims store
+        // into the container (StoreCoinValueTo, pin-home and record shrink
+        // included), and the bag window books them as a gold ENTRY so they
+        // arrive inside the bag instead of surfacing as a loose shelf cell.
+        bool GoldIntoShelfBag(Held& a_held)
+        {
+            if (a_held.coinValue <= 0) return false;
+            if (LootBarter::IsBundlePouchHovered()) return false;   // deposit row
+            if (!LootBarter::IsShelfBagHovered()) return false;
+            auto* dst = LootBarter::Partner();
+            if (!dst) return false;
+            const int moved = StoreCoinValueTo(dst, a_held);
+            if (moved <= 0) {
+                Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
+                return true;
+            }
+            LootBarter::IntakeGoldEntry(moved);
+            if (moved < a_held.coinValue) {
+                a_held.coinValue -= moved;
+                if (g_sound) g_sound(a_held.obj, false);
+                return true;
+            }
+            g_layout.erase(a_held.key);
+            if (g_sound) g_sound(a_held.obj, false);
+            g_held.reset();
+            RequestRebuild();
+            return true;
+        }
+
         struct DropRoute
         {
             DropWhere where;
@@ -14551,6 +14581,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         constexpr DropRoute kGoldFragRoutes[] = {
             // (1.5.x) hovered bundled pouch wins outright -- self-gating
             { DropWhere::kAlways, GoldOnBundlePouch },
+            { DropWhere::kAlways, GoldIntoShelfBag },   // (1.5.x) into an open bag
             { DropWhere::kTrashArea, GoldFragTrashBlock },   // F2: gold never parks
             { DropWhere::kEmptyCell, GoldFragOnEmptyCell },
             { DropWhere::kBlockerSingle, GoldFragOnBlocker },
@@ -14575,6 +14606,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // (1.5.x) a whole coin tile on a bundled pouch: same head row as
             // the fragment table (coinValue gates it -- inert for gear)
             { DropWhere::kAlways, GoldOnBundlePouch },
+            { DropWhere::kAlways, GoldIntoShelfBag },   // (1.5.x) into an open bag
             { DropWhere::kEquipSlot, WholeOnEquipSlot },
             { DropWhere::kTrashArea, WholeIntoTrash },   // F2 (falls through when
                                                          // repositioning INSIDE)

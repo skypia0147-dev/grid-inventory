@@ -226,6 +226,12 @@ namespace FUI::LootBarter
     // of DepositHeldGoldIntoShelfPouch): moves from the carried cell into
     // the entry's book and settles the engine stack itself.
     int  DepositHeldGoldIntoBundlePouch();
+    // ★(1.5.x) player gold dropped on an open shelf-bag window (not on a
+    // pouch): the bag window records the hovered square per frame; the Grid
+    // coin route stores the physical Septims into the container and books
+    // them here as a GOLD ENTRY of that bag. Returns the amount booked.
+    [[nodiscard]] bool IsShelfBagHovered();
+    int  IntakeGoldEntry(int a_amount);
 
     // ★(1.3.3) A LIVING FOLLOWER'S PACK IS 10 x 8. Chests, corpses and
     // merchants are unbounded and always answer true; a companion answers
