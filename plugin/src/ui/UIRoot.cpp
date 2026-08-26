@@ -650,6 +650,11 @@ namespace FUI::UIRoot
             // inherit and these two are pinned to physical buttons.
             kActRotL      = 1u << 10,
             kActRotR      = 1u << 11,
+            // ★LT's empty-cursor meaning. Both triggers used to carry the
+            // split/compare modifier; RT keeps it (one modifier is enough),
+            // and LT becomes the recharge key the board and the doll already
+            // listen for as T -- the one hover verb a pad had no way to say.
+            kActRecharge  = 1u << 12,
         };
 
         std::atomic<std::uint32_t> g_padRaw{ 0 };       // physical buttons held
@@ -752,6 +757,8 @@ namespace FUI::UIRoot
             if (edge(kActInspect))   io.AddKeyEvent(ImGuiKey_C, down(kActInspect));
             if (edge(kActRotL))      io.AddKeyEvent(ImGuiKey_A, down(kActRotL));
             if (edge(kActRotR))      io.AddKeyEvent(ImGuiKey_D, down(kActRotR));
+            // LT, empty cursor: the same T the recharge hover handlers read
+            if (edge(kActRecharge))  io.AddKeyEvent(ImGuiKey_T, down(kActRecharge));
             if (edge(kActSplit)) {
                 io.AddKeyEvent(ImGuiMod_Shift, down(kActSplit));
                 io.AddKeyEvent(ImGuiKey_LeftShift, down(kActSplit));
@@ -845,8 +852,12 @@ namespace FUI::UIRoot
             // ★Rotation is deliberately not looked up in ControlMap above:
             // there is no game action called "turn the thing you are holding",
             // so there would be nothing to ask for.
+            // ★★LT's empty-cursor half is RECHARGE now (user ask), not a
+            // second split modifier. RT alone carries split/compare -- the
+            // two never disagreed anyway, so nothing is lost -- and the
+            // labels below follow: kActSplit resolves to RT, recharge to LT.
             case K::kLeftTrigger:
-                return Grid::IsHolding() ? kActRotL : kActSplit;
+                return Grid::IsHolding() ? kActRotL : kActRecharge;
             case K::kRightTrigger:
                 return Grid::IsHolding() ? kActRotR : kActSplit;
             case K::kLeft:          return kActNudgeL;
@@ -861,7 +872,7 @@ namespace FUI::UIRoot
         // runs the binding lookup above (ControlMap + string compares) once per
         // button, so it is resolved on menu open and cached — KeyLabel() is
         // called every frame a tooltip is up.
-        const char* g_padLabel[8]{};   // indexed by Act
+        const char* g_padLabel[9]{};   // indexed by Act
         bool        g_padLabelReady = false;
 
         void ResolvePadLabels()
@@ -884,6 +895,9 @@ namespace FUI::UIRoot
                 // ★②: rotate has buttons now -- the triggers, while something
                 // is on the cursor -- so the prompts can name them.
                 kActRotL, kActRotR,
+                // LT's empty-cursor half; the loop resolves it naturally
+                // (ResolvePadLabels runs with an empty cursor).
+                kActRecharge,
             };
             static_assert(std::size(kWanted) == std::size(g_padLabel));
 
@@ -4099,8 +4113,8 @@ namespace FUI::UIRoot
         };
         const auto i = static_cast<std::size_t>(a_act);
         if (i >= std::size(kKeyboard)) return "";
-        // ★Past the pad table: recharge has no controller binding, so it always
-        // answers with its key rather than reading off the end of g_padLabel.
+        // (recharge used to stop at the keyboard here -- it rides LT now and
+        // reads off the pad table like everything else)
         if (i >= std::size(g_padLabel)) return kKeyboard[i];
         // Read-only on the render thread: the table is filled on the game
         // thread in OnShow, so nothing here touches ControlMap. An unresolved
