@@ -5149,6 +5149,16 @@ namespace
                                 // book's own grammar
                                 NoteShelfBookRead(it.obj, it.uid, it.sig,
                                                   it.spotKey);
+                            } else if (auto* sp = it.obj->As<RE::TESObjectBOOK>()
+                                                      ->GetSpell();
+                                       sp &&
+                                       RE::PlayerCharacter::GetSingleton() &&
+                                       RE::PlayerCharacter::GetSingleton()
+                                           ->HasSpell(sp)) {
+                                // ★(1.5.x) a tome whose spell is already known:
+                                // nothing to learn, so nothing is taken and
+                                // nothing happens (user rule) -- the round trip
+                                // used to strand the tome in the pack.
                             } else if (!Grid::CanFitNewItem(it.obj)) {
                                 Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
                             } else {
