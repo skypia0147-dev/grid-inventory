@@ -1312,6 +1312,13 @@ namespace FUI::Grid
                                            it.sig, it.col, it.row, it.rot & 3,
                                            it.glow, it.stolen, parent };
                 bi.id = bid;
+                // ★(1.5.x) a POUCH entry is stamped with ITS tile's amount,
+                // so the shelf claim can pick the exact parcel -- two
+                // same-form pouches in one store used to trade amounts
+                // (first-come parcels), which read as a position swap.
+                if (GoldCoins::IsPouch(bi.form)) {
+                    bi.wantGold = GoldCoins::PouchStoredOf(it.key);
+                }
                 manifest.push_back(std::move(bi));
             }
             }

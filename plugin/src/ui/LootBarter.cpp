@@ -4440,14 +4440,26 @@ namespace
 
             // ★(1.5.x) and the BUNDLED pouches claim theirs the same way. No
             // one-at-a-time here: a bag arrives with all of its pouches at
-            // once, and the parcels are form-tagged, so each entry simply
-            // takes the one addressed to it.
+            // once. An entry stamped with its tile's amount (wantGold) takes
+            // exactly THAT parcel -- two same-form pouches in one gesture
+            // used to trade amounts on first-come -- and only falls back to
+            // first-come on the grace's last breath, so money never strands.
             for (auto& [k, c] : a_cl.cells) {
                 for (auto& b : c.bundle) {
                     if (b.awaitGold <= 0) continue;
-                    if (const int g = GoldCoins::TakeAwayGold(b.form); g > 0) {
+                    int g = 0;
+                    if (b.wantGold > 0) {
+                        g = GoldCoins::TakeAwayParcelExact(b.form, b.wantGold);
+                        if (g <= 0 && b.awaitGold > 1) {
+                            --b.awaitGold;   // its own parcel is still on the way
+                            continue;
+                        }
+                    }
+                    if (g <= 0) g = GoldCoins::TakeAwayGold(b.form);
+                    if (g > 0) {
                         b.gold = (std::max)(0, b.gold) + g;
                         b.awaitGold = 0;
+                        b.wantGold = 0;
                         SKSE::log::info(
                             "[LOOT] bundled pouch holds {} G (bag '{}', late claim)",
                             g, k);

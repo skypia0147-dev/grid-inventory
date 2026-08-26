@@ -174,6 +174,11 @@ namespace FUI::LootBarter
         // Re-armed on load for pouch entries whose gold is still -1, which
         // is the whole v<15 migration -- their parcels are still away.
         int           awaitGold = 0;
+        // transient: the EXACT parcel this entry expects (stamped from its
+        // tile's amount at the manifest build). The claim matches on it
+        // first, so two same-form pouches stored in one gesture cannot
+        // trade amounts; 0 = no expectation (first-come, the old rule).
+        int           wantGold = 0;
     };
     // ★A fresh, never-reused name for a bundle entry. One counter for the
     // whole session rather than one per container: an entry that crosses from

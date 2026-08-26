@@ -120,6 +120,9 @@ namespace FUI::GoldCoins
     // it on the way out and gives it back on the way in, so the amount rides
     // with the pouch instead of hiding in a player-wide variable.
     [[nodiscard]] int TakeAwayGold(RE::FormID a_form = 0);
+    // ★(1.5.x) the exact away parcel (form + amount) for a claimant that
+    // knows what left with it; 0 = not (yet) away.
+    [[nodiscard]] int TakeAwayParcelExact(RE::FormID a_form, int a_amount);
     void GiveAwayGold(int a_amount, RE::FormID a_form = 0);
     // ★(1.5.x) the reverse of TakeAwayGold: a claimed amount goes back on
     // the away list. Used when a bundled pouch leaves its bag ONTO the

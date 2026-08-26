@@ -565,6 +565,22 @@ namespace FUI::GoldCoins
         return v;
     }
 
+    // ★(1.5.x) the exact away parcel (form + amount), for a claimant that
+    // knows precisely what left with it -- a bundle entry stamped at the
+    // manifest build. 0 = no such parcel (yet); the caller decides whether
+    // to wait or fall back to first-come.
+    int TakeAwayParcelExact(RE::FormID a_form, int a_amount)
+    {
+        if (a_amount <= 0) return 0;
+        const auto it = std::find_if(g_awayParcels.begin(), g_awayParcels.end(),
+            [&](const AwayParcel& pc) {
+                return pc.form == a_form && pc.amount == a_amount;
+            });
+        if (it == g_awayParcels.end()) return 0;
+        g_awayParcels.erase(it);
+        return a_amount;
+    }
+
     // ★(1.5.x) a claimed amount becomes an away parcel again -- the bundled
     // pouch stepping out of its bag onto the shelf, where the cell being
     // born will claim it back through TakeAwayGold above.
