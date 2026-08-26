@@ -5140,9 +5140,13 @@ namespace
                                 // you only meant to glance at sitting in the
                                 // pack. A spell tome is NOT this case -- reading
                                 // one destroys it, so it has to be ours first.
-                                Grid::RequestBookRead(bk, it.uid, it.sig);
-                                // ★(1.5.x) and the page offers E-take, the
-                                // world book's own grammar
+                                // ★(1.5.x) the SHELF page, not the inventory
+                                // read: the engine's Use needs the player's
+                                // own copy and raised no page for a book still
+                                // in the chest (the 8/24 rework's regression).
+                                Grid::RequestShelfBookPage(bk, it.uid, it.sig);
+                                // ...and the page offers E-take, the world
+                                // book's own grammar
                                 NoteShelfBookRead(it.obj, it.uid, it.sig,
                                                   it.spotKey);
                             } else if (!Grid::CanFitNewItem(it.obj)) {

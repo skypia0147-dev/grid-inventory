@@ -268,6 +268,10 @@ namespace FUI::Grid
     // inside the render pass. While it is up, UIRoot stands down completely
     // (no draw, no input) so the book is visible and closable.
     void RequestBookRead(RE::TESObjectBOOK* a_book, std::uint16_t a_uid, std::uint16_t a_sig);
+    // ★(1.5.x) a SHELF book (not owned): raise the page in place -- no
+    // engine Use, which needs the player's own copy.
+    void RequestShelfBookPage(RE::TESObjectBOOK* a_book, std::uint16_t a_uid,
+                              std::uint16_t a_sig);
     void ProcessBookRead();   // UIRoot::Tick
 
     // GI32: apply queued favourite toggles. MUST run on the game thread --

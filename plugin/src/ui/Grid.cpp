@@ -10639,6 +10639,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             std::uint16_t sig = 0;
         };
         std::optional<PendingRead> g_pendingRead;
+        // ★(1.5.x) a SHELF book's page (no owner involved) -- see
+        // RequestShelfBookPage
+        std::optional<PendingRead> g_pendingShelfPage;
         // ★A page still owed after the engine has read the book, settled one
         // tick later: a menu is raised through the UI queue, never
         // synchronously, so "did the engine open one?" cannot be asked now.
@@ -10714,6 +10717,19 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     {
         if (!a_book) return;
         g_pendingRead = PendingRead{ a_book->GetFormID(), a_uid, a_sig };
+    }
+
+    // ★(1.5.x) the SHELF read: a book the player does NOT own, read where it
+    // lies. The inventory path above hands the book to the engine's Use --
+    // which acts on the player's copy and, finding none, raised no page (the
+    // 8/24 rework broke the 1.3.0 shelf read this way). The page itself
+    // needs no owner: ShowBookPage raises TESBookReadEvent, so a skill book
+    // still teaches exactly as reading it in the world does.
+    void RequestShelfBookPage(RE::TESObjectBOOK* a_book, std::uint16_t a_uid,
+                              std::uint16_t a_sig)
+    {
+        if (!a_book) return;
+        g_pendingShelfPage = PendingRead{ a_book->GetFormID(), a_uid, a_sig };
     }
 
     // Raise the engine's page for a book we are only DISPLAYING. Handing it
@@ -10830,6 +10846,20 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             }
             SKSE::log::info("[BOOK] the engine raised no page -- showing it ourselves");
             ShowBookPage(book, req.uid, req.sig);
+            return;
+        }
+
+        // ---- ★(1.5.x) the shelf page: no owner, no engine Use -- the
+        // page IS the read (TESBookReadEvent rides it), same as the world's
+        if (g_pendingShelfPage) {
+            const auto sreq = *g_pendingShelfPage;
+            g_pendingShelfPage.reset();
+            auto* sbook = RE::TESForm::LookupByID<RE::TESObjectBOOK>(sreq.form);
+            auto* sui = RE::UI::GetSingleton();
+            if (sbook && sui && !sui->IsMenuOpen(RE::BookMenu::MENU_NAME)) {
+                SKSE::log::info("[BOOK] shelf read -- raising the page in place");
+                ShowBookPage(sbook, sreq.uid, sreq.sig);
+            }
             return;
         }
 
@@ -15708,6 +15738,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // from a load fires INTO THE NEW SESSION -- a page opening by itself,
         // or a UIRoot::Close nobody asked for.
         g_pendingRead.reset();
+        g_pendingShelfPage.reset();
         g_pageOwed.reset();
         g_pageOwedWait = 0;
         // ★And the two quiet ones: a click owed to a tile that no longer
