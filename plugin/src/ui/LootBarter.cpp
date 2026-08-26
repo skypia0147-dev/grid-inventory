@@ -3286,7 +3286,8 @@ namespace
         const float btnRow = 2.0f * btnW + 8.0f * S;
         char line[64];
         std::snprintf(line, sizeof(line), "%s: %d / %dG",
-            Lang::T(Lang::Str::StoredLabel), stored, GoldCoins::PouchCap());
+            Lang::T(Lang::Str::StoredLabel), stored,
+            GoldCoins::PouchCapOfForm(si->second.form));
         const float sliderW = 220.0f * S;
         const float contentW = (std::max)({ btnRow, sliderW,
             ImGui::CalcTextSize(line).x });
@@ -3373,7 +3374,7 @@ namespace
         if (!cl) return 0;
         const auto si = cl->cells.find(sd.occSpotKey);
         if (si == cl->cells.end()) return 0;
-        const int room = GoldCoins::PouchCap() - si->second.gold;
+        const int room = GoldCoins::PouchCapOfForm(si->second.form) - si->second.gold;
         const int moved = (std::min)(a_value, room);
         if (moved <= 0) return 0;   // full: the coin keeps riding
         si->second.gold += moved;
@@ -3396,7 +3397,7 @@ namespace
         if (!GoldCoins::IsPouch(pi->second.form)) return 0;
         auto* gobj = RE::TESForm::LookupByID<RE::TESBoundObject>(gi->second.form);
         if (!gobj || !gobj->IsGold()) return 0;
-        const int room = GoldCoins::PouchCap() - pi->second.gold;
+        const int room = GoldCoins::PouchCapOfForm(pi->second.form) - pi->second.gold;
         const int moved = (std::min)((std::max)(0, gi->second.count), room);
         if (moved <= 0) return 0;   // full: the gold keeps riding
 
@@ -4714,7 +4715,10 @@ namespace
                 const int shelfGold = GoldCoins::IsPouch(it.obj->GetFormID())
                                           ? ShelfGoldOf(it.spotKey) : 0;
                 if (shelfGold > 0) {
-                    if (auto* v = GoldCoins::PouchIconObjectFor(shelfGold)) cellIconObj = v;
+                    if (auto* v = GoldCoins::PouchIconObjectFor(shelfGold,
+                            GoldCoins::PouchCapOfForm(it.obj->GetFormID()))) {
+                        cellIconObj = v;
+                    }
                 }
                 const IconCache::Icon* cellIcon = cache->Get(cellIconObj);
                 if (!cellIcon) {

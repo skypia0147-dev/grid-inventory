@@ -46,6 +46,41 @@ namespace FUI::GoldCoins
         // slot is what "this pouch" means to the board (LayoutEntry::rot,
         // LayoutEntry::coin already say so).
         std::map<std::string, int> g_pouchStored;
+        // ★MULTI-POUCH: capacity is PER FORM. The shipped pouch seeds the map
+        // at InitForms; any other form answers through the def resolver
+        // ("pouchcap:N") and the answer is cached either way -- including the
+        // negative, so a hot IsPouch cannot re-resolve the same form twice.
+        std::map<RE::FormID, int>      g_pouchCaps;
+        std::function<int(RE::FormID)> g_pouchCapOf;
+        [[nodiscard]] int CapOfForm(RE::FormID a_id)
+        {
+            if (const auto it = g_pouchCaps.find(a_id); it != g_pouchCaps.end()) {
+                return it->second;
+            }
+            if (!g_pouchCapOf) return 0;   // defs not wired yet: no caching
+            const int c = (std::max)(0, g_pouchCapOf(a_id));
+            g_pouchCaps[a_id] = c;
+            return c;
+        }
+        // "plugin|0xID[#n]" -> FormID (0 = unparseable). The tile-key format
+        // Grid's FormKey writes; Dynamic| keys resolve by raw id.
+        [[nodiscard]] RE::FormID FormOfKey(const std::string& a_key)
+        {
+            const auto bar = a_key.find('|');
+            if (bar == std::string::npos || a_key.size() < bar + 4) return 0;
+            const auto id = static_cast<RE::FormID>(
+                std::strtoul(a_key.c_str() + bar + 3, nullptr, 16));
+            if (a_key.compare(0, bar, "Dynamic") == 0) return id;
+            auto* dh = RE::TESDataHandler::GetSingleton();
+            if (!dh) return 0;
+            auto* f = dh->LookupForm(id, std::string_view(a_key).substr(0, bar));
+            return f ? f->GetFormID() : 0;
+        }
+        [[nodiscard]] int CapOfKey(const std::string& a_key)
+        {
+            const int c = CapOfForm(FormOfKey(a_key));
+            return c > 0 ? c : kPouchCap;   // unknown records keep the builtin
+        }
         [[nodiscard]] int PouchSum()
         {
             int s = 0;
@@ -227,6 +262,7 @@ namespace FUI::GoldCoins
             g_coins[i] = dh->LookupForm<RE::TESObjectMISC>(0x800 + i, kPlugin);
         }
         g_pouch = dh->LookupForm<RE::TESObjectMISC>(0x804, kPlugin);
+        if (g_pouch) g_pouchCaps[g_pouch->GetFormID()] = kPouchCap;   // builtin
         g_pouchS = dh->LookupForm<RE::TESObjectMISC>(0x80C, kPlugin);
         g_pouchM = dh->LookupForm<RE::TESObjectMISC>(0x80D, kPlugin);
         g_pouchF = dh->LookupForm<RE::TESObjectMISC>(0x80E, kPlugin);
@@ -265,7 +301,8 @@ namespace FUI::GoldCoins
 
     bool IsPouch(RE::FormID a_id)
     {
-        return g_pouch && g_pouch->GetFormID() == a_id;
+        if (g_pouch && g_pouch->GetFormID() == a_id) return true;
+        return CapOfForm(a_id) > 0;   // ★multi-pouch: any def-declared pouch
     }
 
     const char* FallbackIconKey(RE::FormID a_id)
@@ -324,7 +361,7 @@ namespace FUI::GoldCoins
         const auto handTo = [&](const std::string& k) {
             if (it->second <= 0 || k == kReturnKey) return;
             int& held = g_pouchStored[k];
-            const int move = (std::min)(it->second, kPouchCap - held);
+            const int move = (std::min)(it->second, CapOfKey(k) - held);
             if (move <= 0) return;
             held += move;
             it->second -= move;
@@ -369,7 +406,7 @@ namespace FUI::GoldCoins
         g_pending.push_back({ LedgerOp::kPouchReturn, a_amount });
         {
             const int before = g_pouchStored[kReturnKey];
-            const int fits = (std::min)(before + a_amount, kPouchCap) - before;
+            const int fits = (std::min)(before + a_amount, MaxPouchCap()) - before;
             g_pouchStored[kReturnKey] = before + fits;
             // ★S-G: the part past the parking cap is tile-share -- mint it
             if (a_amount > fits) Grid::CoinIncome(a_amount - fits);
@@ -421,15 +458,32 @@ namespace FUI::GoldCoins
         return PouchIconObjectFor(PouchSum());
     }
 
-    RE::TESBoundObject* PouchIconObjectFor(int a_stored)
+    RE::TESBoundObject* PouchIconObjectFor(int a_stored, int a_cap)
     {
-        if (a_stored >= kPouchCap && g_pouchF) return g_pouchF;
+        if (a_cap <= 0) a_cap = kPouchCap;
+        if (a_stored >= a_cap && g_pouchF) return g_pouchF;
         if (a_stored >= 10 && g_pouchM) return g_pouchM;
         if (a_stored >= 3 && g_pouchS) return g_pouchS;
         return g_pouch;
     }
 
     int PouchCap() { return kPouchCap; }
+
+    int PouchCapOfForm(RE::FormID a_id) { return CapOfForm(a_id); }
+
+    int PouchCapOfKey(const std::string& a_tileKey) { return CapOfKey(a_tileKey); }
+
+    int MaxPouchCap()
+    {
+        int m = kPouchCap;
+        for (const auto& [id, c] : g_pouchCaps) m = (std::max)(m, c);
+        return m;
+    }
+
+    void SetPouchDefResolver(std::function<int(RE::FormID)> a_capOf)
+    {
+        g_pouchCapOf = std::move(a_capOf);
+    }
 
     RE::TESBoundObject* PouchForm() { return g_pouch; }
 
@@ -714,7 +768,7 @@ namespace FUI::GoldCoins
     {
         std::string best; int bv = -1;
         for (const auto& [k, v] : g_pouchStored) {
-            if (k == kReturnKey || v >= kPouchCap) continue;
+            if (k == kReturnKey || v >= CapOfKey(k)) continue;
             if (v > bv) { bv = v; best = k; }
         }
         if (best.empty()) best = Grid::AnyPouchTile();   // none holds gold yet
@@ -725,7 +779,7 @@ namespace FUI::GoldCoins
     {
         if (a_tileKey.empty()) return 0;
         int& held = g_pouchStored[a_tileKey];
-        const int room = kPouchCap - held;   // ★the cap is PER POUCH
+        const int room = CapOfKey(a_tileKey) - held;   // ★the cap is PER POUCH (and per FORM now)
         const int s = (std::min)({ a_value, room, WalkingGold() });
         if (s <= 0) { if (held == 0) g_pouchStored.erase(a_tileKey); return 0; }
         held += s;
@@ -836,7 +890,7 @@ namespace FUI::GoldCoins
         g_pending.push_back({ LedgerOp::kPouchReturn, g_awayGold });
         {
             const int before = g_pouchStored[kReturnKey];
-            const int fits = (std::min)(before + g_awayGold, kPouchCap) - before;
+            const int fits = (std::min)(before + g_awayGold, MaxPouchCap()) - before;
             g_pouchStored[kReturnKey] = before + fits;
             // ★S-G: "over-cap stays walking" became "over-cap is tiled now"
             if (g_awayGold > fits) Grid::CoinIncome(g_awayGold - fits);
@@ -1077,7 +1131,7 @@ namespace FUI::GoldCoins
                 const std::string key = FullestPouch();
                 if (!key.empty()) {
                     int& held = g_pouchStored[key];
-                    const int room = kPouchCap - held;
+                    const int room = CapOfKey(key) - held;
                     const int store = (std::min)(gain, room);
                     if (store > 0) {
                         held += store;
@@ -1142,7 +1196,7 @@ namespace FUI::GoldCoins
         // still claim. Trim the last key first, exactly as the pinned purses
         // below are trimmed.
         for (auto it = g_pouchStored.begin(); it != g_pouchStored.end();) {
-            if (it->second > kPouchCap) it->second = kPouchCap;
+            if (it->second > CapOfKey(it->first)) it->second = CapOfKey(it->first);
             if (it->second <= 0) it = g_pouchStored.erase(it); else ++it;
         }
         while (PouchSum() > total && !g_pouchStored.empty()) {
@@ -1296,7 +1350,7 @@ namespace FUI::GoldCoins
                 std::string  key;
                 std::int32_t val = 0;
                 if (!ReadStr(a_intfc, key) || !a_intfc->ReadRecordData(val)) break;
-                if (val > 0) g_pouchStored[key] = (std::min)(val, kPouchCap);
+                if (val > 0) g_pouchStored[key] = (std::min)(val, CapOfKey(key));
             }
         }
         g_dirty = true;

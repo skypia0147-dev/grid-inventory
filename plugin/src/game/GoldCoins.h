@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -34,7 +35,15 @@ namespace FUI::GoldCoins
     [[nodiscard]] const char* FallbackIconKey(RE::FormID a_id);
 
     [[nodiscard]] int PouchStored();   // 0..10000, cosave-persisted
-    [[nodiscard]] int PouchCap();      // 10000
+    // ★Multi-pouch ready: capacity is PER FORM now. The shipped pouch
+    // (0x804) is builtin at 10,000; any future pouch declares itself with
+    // "pouchcap:N" in its item def, discovered through the resolver main.cpp
+    // wires below. PouchCap() stays as the builtin/fallback figure.
+    [[nodiscard]] int PouchCap();                                   // builtin 10,000
+    [[nodiscard]] int PouchCapOfForm(RE::FormID a_id);              // 0 = not a pouch
+    [[nodiscard]] int PouchCapOfKey(const std::string& a_tileKey);  // fallback = builtin
+    [[nodiscard]] int MaxPouchCap();   // parking cap for gold awaiting a tile
+    void SetPouchDefResolver(std::function<int(RE::FormID)> a_capOf);
     [[nodiscard]] RE::TESBoundObject* PouchForm();
     // ★Is a pouch actually ON the player right now? StoreToPouch does NOT ask
     // -- it only weighs the value against the cap and the walking gold, which
@@ -93,7 +102,7 @@ namespace FUI::GoldCoins
     [[nodiscard]] int PouchStoredOf(const std::string& a_tileKey);
     // The icon band for an amount the CALLER knows -- a tile asks for its
     // own, a stored pouch asks for the one riding in the container spot.
-    [[nodiscard]] RE::TESBoundObject* PouchIconObjectFor(int a_stored);
+    [[nodiscard]] RE::TESBoundObject* PouchIconObjectFor(int a_stored, int a_cap = 0);
     // A pouch's gold with no tile to sit on yet: a save older than v6, or a
     // pouch that just walked back in. The grid calls this with the pouch
     // tiles it found, split into tiles born THIS rebuild (a_fresh -- the

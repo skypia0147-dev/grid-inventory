@@ -1976,6 +1976,14 @@ namespace
             [](RE::TESBoundObject* a_obj) -> FUI::IconDef { return DefFor(a_obj); });
         FUI::Grid::SetDefResolver(
             [](RE::TESBoundObject* a_obj) -> FUI::Grid::GridDef { return DefFor(a_obj); });
+        // ★Multi-pouch: a pouch's capacity comes from its item def
+        // ("pouchcap:N"), so a future pouch form is an ESP record plus one
+        // ini line -- no code. The builtin 0x804 stays seeded at 10,000.
+        FUI::GoldCoins::SetPouchDefResolver([](RE::FormID a_id) -> int {
+            auto* f = RE::TESForm::LookupByID(a_id);
+            auto* obj = f ? f->As<RE::TESBoundObject>() : nullptr;
+            return obj ? DefFor(obj).pouchCap : 0;
+        });
         FUI::Grid::SetGameCallbacks(
             [](RE::TESBoundObject* a_obj, bool a_up) {   // vanilla per-item sounds (I2)
                 if (auto* player = RE::PlayerCharacter::GetSingleton()) {

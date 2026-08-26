@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cmath>
 #include <cstdio>
@@ -62,6 +62,10 @@ namespace FUI
         // and has to keep behaving exactly as before.
         std::string accept;
         int   stack = 0;     // G3: per-item stack cap (0 = category default)
+        // ★Multi-pouch: this item is a GOLD POUCH holding up to N (0 = not a
+        // pouch). The shipped pouch (0x804) is builtin at 10,000; a future
+        // pouch form only needs an ESP record and a "pouchcap:N" here.
+        int   pouchCap = 0;
     };
 
     // the old per-module names — every one is THIS struct now. Kept so call
@@ -131,6 +135,7 @@ namespace FUI
             { "bw",    nullptr,         &ItemDef::bw,    1.0f,     16.0f,    0, DefRule::kBagBlock },
             { "bh",    nullptr,         &ItemDef::bh,    1.0f,     16.0f,    0, DefRule::kBagBlock },
             { "stack", nullptr,         &ItemDef::stack, 0.0f,     999.0f,   0, DefRule::kIfPositive },
+            { "pouchcap", nullptr,      &ItemDef::pouchCap, 0.0f,  1000000.0f, 0, DefRule::kIfPositive },
             { "fscale", &ItemDef::fscale, nullptr,        0.2f,     4.0f,     2, DefRule::kIfNotOne },
             { "frot",   &ItemDef::frot,   nullptr,       -180.0f,   180.0f,   0, DefRule::kIfNonZero },
             { "fx",     &ItemDef::fx,     nullptr,        -1.0f,    1.0f,     2, DefRule::kIfNonZero },

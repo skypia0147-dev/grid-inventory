@@ -2974,7 +2974,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // ★ITS OWN amount -- two pouches drew the same icon while
                     // this asked the player-wide total.
                     if (auto* v = GoldCoins::PouchIconObjectFor(
-                            GoldCoins::PouchStoredOf(it.key))) iconObj = v;
+                            GoldCoins::PouchStoredOf(it.key),
+                            GoldCoins::PouchCapOfKey(it.key))) iconObj = v;
                 }
                 const IconCache::Icon* iconPtr = cache->Get(iconObj);
                 if (iconObj != it.obj) {
@@ -11121,7 +11122,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // no way to learn the limit short of filling it.
             if (isPouch) {
                 ImGui::TextColored(Theme::TipHead(), "%s / %s G", Commas(a_coinValue).c_str(),
-                    Commas(GoldCoins::PouchCap()).c_str());
+                    Commas(GoldCoins::PouchCapOfForm(a_obj->GetFormID())).c_str());
             } else {
                 ImGui::TextColored(Theme::TipHead(), "%dG", a_coinValue);
             }
@@ -11868,7 +11869,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
         char line[64];
         std::snprintf(line, sizeof(line), "%s: %d / %dG",
-            Lang::T(Lang::Str::StoredLabel), stored, GoldCoins::PouchCap());
+            Lang::T(Lang::Str::StoredLabel), stored,
+            GoldCoins::PouchCapOfKey(g_pouchTile));
         const float sliderW = 220.0f * S;
         const float contentW = (std::max)({ btnRow, sliderW,
             ImGui::CalcTextSize(line).x });
@@ -12547,7 +12549,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 const int shelf = LootBarter::HeldShelfGold();
                 const int amount =
                     shelf >= 0 ? shelf : GoldCoins::PouchStoredOf(a_held.key);
-                if (auto* v = GoldCoins::PouchIconObjectFor(amount)) heldIconObj = v;
+                if (auto* v = GoldCoins::PouchIconObjectFor(amount,
+                        GoldCoins::PouchCapOfKey(a_held.key))) heldIconObj = v;
             }
             auto* hc = IconCache::GetSingleton();
             const IconCache::Icon* heldIcon = hc->Get(heldIconObj);
