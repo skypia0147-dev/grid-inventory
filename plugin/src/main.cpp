@@ -576,9 +576,10 @@ namespace
                     const bool left = a_event->oldContainer == 0x14;
                     const bool back = a_event->newContainer == 0x14;
                     if (left || back) {
-                        SKSE::GetTaskInterface()->AddTask([left]() {
-                            if (left) FUI::GoldCoins::OnPouchLeftPlayer();
-                            else      FUI::GoldCoins::OnPouchReturned();
+                        const RE::FormID pf = a_event->baseObj;   // ★which pouch
+                        SKSE::GetTaskInterface()->AddTask([left, pf]() {
+                            if (left) FUI::GoldCoins::OnPouchLeftPlayer(pf);
+                            else      FUI::GoldCoins::OnPouchReturned(pf);
                         });
                     }
                 }

@@ -707,7 +707,7 @@ namespace FUI::LootBarter
                     if (si->second.gold > 0) {
                         SKSE::log::info("[LOOT] pouch taken back with {} G ('{}')",
                             si->second.gold, g_actingSpot);
-                        GoldCoins::GiveAwayGold(si->second.gold);
+                        GoldCoins::GiveAwayGold(si->second.gold, si->second.form);
                     }
                     // ★(1.3.0-D) same retirement for a bag: its bundled
                     // contents leave WITH it (queued below, once the spot
@@ -3963,7 +3963,7 @@ namespace
                         // used to be three such doors and they disagreed.
                         nc.bundle = TakePendingBundle(nc.form);
                         if (GoldCoins::IsPouch(nc.form)) {
-                            nc.gold = GoldCoins::TakeAwayGold();
+                            nc.gold = GoldCoins::TakeAwayGold(nc.form);
                             if (nc.gold > 0) {
                                 SKSE::log::info("[LOOT] pouch shelved with {} G ('{}')",
                                                 nc.gold, k);
@@ -3991,7 +3991,7 @@ namespace
             // since only one thing can ride the cursor.
             for (auto& [k, c] : a_cl.cells) {
                 if (c.awaitGold <= 0) continue;
-                if (const int g = GoldCoins::TakeAwayGold(); g > 0) {
+                if (const int g = GoldCoins::TakeAwayGold(c.form); g > 0) {
                     c.gold += g;
                     c.awaitGold = 0;
                     SKSE::log::info("[LOOT] pouch shelved with {} G ('{}', late claim)",
@@ -4013,7 +4013,7 @@ namespace
                 if (it->second.gold > 0) {
                     SKSE::log::info("[LOOT] shelf cell dropped, {} G goes home ('{}')",
                                     it->second.gold, it->first);
-                    GoldCoins::GiveAwayGold(it->second.gold);
+                    GoldCoins::GiveAwayGold(it->second.gold, it->second.form);
                 }
                 it = a_cl.cells.erase(it);
             }
@@ -5518,7 +5518,7 @@ namespace
         // disagreed about which of them claimed the amount.
         c.bundle = TakePendingBundle(c.form);
         if (GoldCoins::IsPouch(c.form)) {
-            c.gold = GoldCoins::TakeAwayGold();
+            c.gold = GoldCoins::TakeAwayGold(c.form);
             // nothing parked yet: the pouch has not left the player. Wait for it.
             if (c.gold <= 0) c.awaitGold = 8;
         }

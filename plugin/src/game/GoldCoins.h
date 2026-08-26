@@ -119,8 +119,8 @@ namespace FUI::GoldCoins
     // A pouch's gold while the pouch is on a shelf: the container spot takes
     // it on the way out and gives it back on the way in, so the amount rides
     // with the pouch instead of hiding in a player-wide variable.
-    [[nodiscard]] int TakeAwayGold();
-    void GiveAwayGold(int a_amount);
+    [[nodiscard]] int TakeAwayGold(RE::FormID a_form = 0);
+    void GiveAwayGold(int a_amount, RE::FormID a_form = 0);
     // ★(1.3.2a) shelf-pouch banking: plain ledger credit/debit (no pouch
     // parking) -- the shelf spot is the book, these settle the engine gold.
     void CreditLedger(int a_amount);
@@ -158,7 +158,6 @@ namespace FUI::GoldCoins
     void WithdrawFrom(const std::string& a_tileKey, int a_value, bool a_sound = true);
     // pouch -> walking gold. a_sound=false when the caller immediately lifts
     // the amount onto the cursor (the pickup sound plays instead).
-    void Withdraw(int a_value, bool a_sound = true);
     // ★P2/3-5: hand gold to a CONTAINER -- a chest, a follower's pack --
     // instead of to the floor. The transfer runs on the Tick like every other
     // ledger op, because moving engine gold from the render pass is exactly the
@@ -191,8 +190,10 @@ namespace FUI::GoldCoins
     //  - everything else: the gold TRAVELS with the pouch (ledger debited);
     //    any pouch re-entering the inventory brings it back (credit).
     // Both are called from the container sink; ledger ops run on Tick.
-    void OnPouchLeftPlayer();
-    void OnPouchReturned();
+    void OnPouchLeftPlayer(RE::FormID a_form);
+    // ★multi-pouch: the returning FORM picks its own away parcel (same-form
+    // FIFO, oldest as the legacy fallback) and steers the tile claim.
+    void OnPouchReturned(RE::FormID a_form);
     // ★(1.3.0-C) The UI names WHICH pouch tile is about to leave (store /
     // sell / drop paths all know their tile; the engine event only knows the
     // form). One-shot: consumed by the next OnPouchLeftPlayer, cleared on
