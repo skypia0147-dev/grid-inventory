@@ -1365,9 +1365,19 @@ namespace FUI::Grid
         // a spell tome has none and is not. Two potions drunk out of a container
         // in a row took the game down inside DrawBagWindows every time, and
         // nothing else did.
-        // ★A small TTL in REBUILDS, not a one-shot: the take and the use land on
-        // different ticks, so the arrival can be seen by more than one rebuild.
-        std::map<RE::FormID, int>                      g_transientArrivals;
+        // ★A small TTL in FRAMES (it was rebuilds -- but S4 made rebuilds
+        // rare, and a lingering entry would swallow a real purchase of the
+        // same form later). The take and the use land on different ticks, so
+        // the entry has to outlive both; the sweep runs in CapacityTick.
+        // ★(1.5.x) `suppressed`: OnFormDelta swallowed a delta for this form
+        // (no tile minted -- the tome blink). If the unit is still there when
+        // the TTL runs out (the use was refused), one rebuild surfaces it.
+        struct TransientArrival
+        {
+            int  frames = 90;
+            bool suppressed = false;
+        };
+        std::map<RE::FormID, TransientArrival>         g_transientArrivals;
 
         // ★★★VALIDATING A POINTER WITHOUT TOUCHING IT.
         //
@@ -7447,9 +7457,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // with no stash declines into another rebuild, which is correct.
         g_stash.reset();
         g_viewMoveQ.clear();
-        for (auto ti = g_transientArrivals.begin(); ti != g_transientArrivals.end();) {
-            ti = (--ti->second <= 0) ? g_transientArrivals.erase(ti) : std::next(ti);
-        }
+        // (transient arrivals sweep by FRAME in CapacityTick now -- see the
+        // declaration)
         // ★g_typedBagFull is deliberately NOT cleared here. The fill loop reads
         // it EARLY in this rebuild and the bag placement writes it LATE, so
         // clearing at the top would guarantee the fill loop never sees a full
@@ -7660,6 +7669,19 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 a_form, a_why);
             return false;
         };
+        // ★(1.5.x) a unit that is only PASSING THROUGH (shelf use mode:
+        // taken and consumed in the same breath) mints no tile and asks for
+        // no rebuild -- the tome that blinked onto the board and died there
+        // was this. Both deltas (the arrival and the spend) fall inside the
+        // TTL and are swallowed as a pair; a unit the use REFUSED is
+        // surfaced by the TTL-expiry rebuild instead (see the sweep).
+        if (const auto ti = g_transientArrivals.find(a_form);
+            ti != g_transientArrivals.end()) {
+            ti->second.suppressed = true;
+            SKSE::log::info("[B3] partial add ({:08X}): in transit -- no tile",
+                            a_form);
+            return true;
+        }
         // ★★★THE HINT IS SPENT ON COMMIT, NOT WHILE PLANNING.
         //
         // This whole path is "all traces or none" -- it plans, and a single
@@ -10031,6 +10053,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || !player->Is3DLoaded()) return;
+
+        // ★(1.5.x) transient arrivals age by frame; one whose deltas were
+        // swallowed gets one rebuild at expiry, so a unit the use left
+        // behind after all still surfaces (and a stale entry can never
+        // swallow a later, real acquisition of the same form).
+        for (auto ti = g_transientArrivals.begin();
+             ti != g_transientArrivals.end();) {
+            if (--ti->second.frames <= 0) {
+                if (ti->second.suppressed) {
+                    MarkCapacityDirty();
+                    RequestRebuild();
+                }
+                ti = g_transientArrivals.erase(ti);
+            } else {
+                ++ti;
+            }
+        }
 
         if (g_capacityDirty) {
             g_capacityDirty = false;
@@ -15779,7 +15818,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
     void NoteTransientArrival(RE::FormID a_form)
     {
-        if (a_form) g_transientArrivals[a_form] = 3;   // rebuilds
+        if (a_form) g_transientArrivals[a_form] = TransientArrival{};
     }
 
     void NoteInventorySeen()
