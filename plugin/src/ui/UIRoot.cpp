@@ -4266,14 +4266,38 @@ namespace FUI::UIRoot
                 // mouse pointer, and the same hole belongs to any vanilla menu
                 // that opens over us.
                 SetGameCursorVisible(true);
-                // ★(1.5.x) a shelf read's page offers the world grammar:
-                // say so once, the way the world page says its "E) Take"
-                if (LootBarter::ShelfBookTakeArmed()) {
+            }
+            // ★(1.5.x) a shelf read's page offers the world grammar, and the
+            // page has to SAY so -- a HUD note is held back while a menu is
+            // up, so the chip is drawn by us, in a minimal ImGui frame that
+            // shows nothing else of ours. Our render runs at Present, which
+            // is what puts the chip OVER the engine's page.
+            if (LootBarter::ShelfBookTakeArmed()) {
+                if (g_fontsDirty.exchange(false)) BuildFonts();
+                ImGui_ImplDX11_NewFrame();
+                ImGui_ImplWin32_NewFrame();
+                ImGui::NewFrame();
+                {
+                    const float S = Theme::Scale();
                     char hint[64];
                     std::snprintf(hint, sizeof(hint), "E)  %s",
                                   Lang::T(Lang::Str::TakeLabel));
-                    Sfx::Notify(hint);
+                    const ImVec2 disp = ImGui::GetIO().DisplaySize;
+                    const ImVec2 ts = ImGui::CalcTextSize(hint);
+                    // beside the page's own bottom bar, centred
+                    const ImVec2 p(disp.x * 0.5f - ts.x * 0.5f,
+                                   disp.y - 96.0f * S);
+                    auto* fg = ImGui::GetForegroundDrawList();
+                    fg->AddRectFilled(
+                        ImVec2(p.x - 10.0f * S, p.y - 6.0f * S),
+                        ImVec2(p.x + ts.x + 10.0f * S, p.y + ts.y + 6.0f * S),
+                        IM_COL32(12, 12, 16, 190), 4.0f * S);
+                    fg->AddText(ImVec2(p.x + 1.0f, p.y + 1.0f),
+                                IM_COL32(0, 0, 0, 220), hint);
+                    fg->AddText(p, IM_COL32(235, 231, 220, 255), hint);
                 }
+                ImGui::Render();
+                ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
             }
             return;
         }
