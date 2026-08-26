@@ -1491,6 +1491,20 @@ namespace FUI::Grid
         };
         std::vector<FavSync> g_favSync;
 
+        // ★[FAV] TRIPWIRE (unconfirmed user sighting: "the star vanished
+        // after the charge drained", seen once, never reproduced). Every
+        // legitimate star removal has a witness that files the form here
+        // before the next rebuild -- a queued toggle (ProcessFavorites), an
+        // outbound unit (ResolveExitUnit, rule 58), the phantom heal. A form
+        // still IN the inventory whose last hotkey is gone with NO witness
+        // means something outside this plugin stripped it; the standing
+        // suspect is the engine's ExtraCharge writeback onto the worn list,
+        // which measurably rewrites that list during combat (three census
+        // relabels in one session). Cheap enough to stay on for good.
+        std::unordered_set<RE::FormID> g_starMemo;
+        std::unordered_set<RE::FormID> g_starChangeOk;
+        bool                           g_starMemoValid = false;
+
         // ★★★FORMS A CLICK ALREADY TOOK OFF THE BOARD, waiting for the engine's
         // equip event to catch up.
         //
@@ -4799,6 +4813,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     if (xl->HasType<RE::ExtraPoison>())          f += "POISON ";
                     if (xl->HasType<RE::ExtraSoul>())            f += "SOUL ";
                     if (xl->HasType<RE::ExtraTextDisplayData>()) f += "NAME ";
+                    // ★the star's seat, per list -- the vanishing-favorite
+                    // report (star gone after charge drain) needs to see
+                    // whether the engine's ExtraCharge writeback ever drops
+                    // the ExtraHotkey riding the same worn list
+                    if (xl->HasType<RE::ExtraHotkey>())          f += "HOT ";
                     if (xl->HasType<RE::ExtraWorn>())            f += "|worn ";
                     if (xl->HasType<RE::ExtraWornLeft>())        f += "|wornL ";
                     SKSE::log::info("[XL] {} [{}] sig {:04X} count {} : {}",
@@ -7369,6 +7388,44 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             for (const auto& liveIt : g_items) g_liveObjs.insert(liveIt.obj);
             SKSE::log::info("[GRID] rebuilt: {} items, {} views, gold {}",
                 g_items.size(), g_views.size(), g_gold);
+            // ★[FAV] tripwire (state and rationale at g_starMemo): diff the
+            // starred forms against the last rebuild. Only forms still in
+            // the inventory (g_values was just filled by this rebuild) can
+            // accuse anyone -- a star that left WITH its item is rule 58's
+            // ordinary business and its exit already filed a witness.
+            {
+                std::unordered_set<RE::FormID> now;
+                auto* wp = RE::PlayerCharacter::GetSingleton();
+                if (auto* ch = wp ? wp->GetInventoryChanges() : nullptr;
+                    ch && ch->entryList) {
+                    for (auto* e : *ch->entryList) {
+                        if (!e || !e->object || !e->extraLists) continue;
+                        for (auto* xl : *e->extraLists) {
+                            if (xl && xl->HasType<RE::ExtraHotkey>()) {
+                                now.insert(e->object->GetFormID());
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (g_starMemoValid) {
+                    for (const auto f : g_starMemo) {
+                        if (now.contains(f) || g_starChangeOk.contains(f) ||
+                            !g_values.contains(f)) {
+                            continue;
+                        }
+                        auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(f);
+                        SKSE::log::warn(
+                            "[FAV] ★star vanished off {:08X} '{}' with no toggle"
+                            " and no exit -- outside witness (engine charge"
+                            " writeback?)",
+                            f, obj ? obj->GetName() : "?");
+                    }
+                }
+                g_starMemo      = std::move(now);
+                g_starMemoValid = true;
+                g_starChangeOk.clear();
+            }
             // ★B5: rule 13's missed enforcement -- the sweep for forms this
             // walk never visited. A form whose entire presence is WORN has
             // zero board units, so the walk skips it and the ordinary prune
@@ -9055,6 +9112,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         auto* changes = p ? p->GetInventoryChanges() : nullptr;
         if (!changes || !changes->entryList) return;
         for (const auto& f : q) {
+            // tripwire witness: this form's star state is changing on purpose
+            if (f.obj) g_starChangeOk.insert(f.obj->GetFormID());
             for (auto* entry : *changes->entryList) {
                 if (!entry || entry->object != f.obj) continue;
                 const std::string base = FormKey(f.obj);
@@ -9302,6 +9361,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 home->Add(new RE::ExtraHotkey(RE::ExtraHotkey::Hotkey::kUnbound));
             }
             healed = true;
+            g_starChangeOk.insert(entry->object->GetFormID());   // tripwire witness
             SKSE::log::info(
                 "[FAV] healed phantom hotkey list on '{}' (count {} < listed {},"
                 " star -> {})",
@@ -9337,6 +9397,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     {
         auto* p = RE::PlayerCharacter::GetSingleton();
         if (!p || !a_obj) return nullptr;
+        // tripwire witness: rule 58 is about to take this form's star out
+        if (a_starred > 0) g_starChangeOk.insert(a_obj->GetFormID());
         auto* changes = p->GetInventoryChanges();
         auto* entry   = LiveEntry(p, a_obj);
         if (!entry) return nullptr;
@@ -15873,6 +15935,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         g_seenCount.clear();
         g_seenValid = false;
         g_suppressNew = true;
+        // [FAV] tripwire: the memo names the save being left
+        g_starMemo.clear();
+        g_starChangeOk.clear();
+        g_starMemoValid = false;
         g_capacityDirty = true;
         g_avResidueCleared = false;   // legacy CW cleanup is per-save
         ClearAllPendingRemoves();
