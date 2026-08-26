@@ -367,8 +367,13 @@ namespace FUI::GoldCoins
     {
         if (a_amount <= 0) return;
         g_pending.push_back({ LedgerOp::kPouchReturn, a_amount });
-        g_pouchStored[kReturnKey] =
-            (std::min)(g_pouchStored[kReturnKey] + a_amount, kPouchCap);
+        {
+            const int before = g_pouchStored[kReturnKey];
+            const int fits = (std::min)(before + a_amount, kPouchCap) - before;
+            g_pouchStored[kReturnKey] = before + fits;
+            // ★S-G: the part past the parking cap is tile-share -- mint it
+            if (a_amount > fits) Grid::CoinIncome(a_amount - fits);
+        }
         g_returnFreshGrace = 4;   // (1.3.0) the ARRIVING pouch's tile claims this
         g_dirty = true;
         SKSE::log::info("[GOLD] shelf handed back {} G -> waiting for a tile", a_amount);
@@ -798,6 +803,12 @@ namespace FUI::GoldCoins
         if (InSellContext()) {
             SKSE::log::info("[GOLD] pouch sold -> releasing {} G", carried);
             WithdrawFrom(key, carried);
+            // ★S-G: the released claim is tile-share now -- mint it at once.
+            // The mirror used to materialise "walking" gold here; without
+            // this the coins stayed invisible until the next menu-open
+            // census squared them (user report: sold pouch, gold unseen
+            // until the inventory was reopened).
+            Grid::CoinIncome(carried);
             return;
         }
 
@@ -823,8 +834,13 @@ namespace FUI::GoldCoins
         // away -> stored immediately; a kPouchReturn op credits the ledger on
         // Tick. Over-cap (multi-pouch merge) stays walking after the credit.
         g_pending.push_back({ LedgerOp::kPouchReturn, g_awayGold });
-        g_pouchStored[kReturnKey] =
-            (std::min)(g_pouchStored[kReturnKey] + g_awayGold, kPouchCap);
+        {
+            const int before = g_pouchStored[kReturnKey];
+            const int fits = (std::min)(before + g_awayGold, kPouchCap) - before;
+            g_pouchStored[kReturnKey] = before + fits;
+            // ★S-G: "over-cap stays walking" became "over-cap is tiled now"
+            if (g_awayGold > fits) Grid::CoinIncome(g_awayGold - fits);
+        }
         g_returnFreshGrace = 4;   // (1.3.0) the pouch that just walked in claims this
         g_awayGold = 0;
         g_dirty = true;
