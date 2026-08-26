@@ -245,6 +245,12 @@ namespace FUI::GoldCoins
         // the request -> Tick -> rebuild gap with room to spare.
         int g_returnFreshGrace = 0;
 
+        // ★(1.5.x) extra claim passes AFTER the grace before parked money
+        // that found no pouch gives up and mints as coins -- a late-born
+        // pouch tile (slow transfer, busy frame) must not lose its refill
+        // to an eager mint. Re-armed whenever money parks.
+        int g_parkMintDelay = 0;
+
         // auto-store: ledger snapshot of the PREVIOUS tick (after our own
         // ops). -1 = uninitialised (skip the first tick after load/new game
         // so the starting gold is NOT mistaken for a fresh pickup).
@@ -476,7 +482,34 @@ namespace FUI::GoldCoins
         }
         std::erase_if(g_returnPark, [](const auto& e) { return e.second <= 0; });
         if (leftOver) {
-            if (g_returnFreshGrace > 0) --g_returnFreshGrace;
+            if (g_returnFreshGrace > 0) {
+                --g_returnFreshGrace;
+            } else if (g_parkMintDelay > 0) {
+                --g_parkMintDelay;
+            } else {
+                // ★(1.5.x) the grace is spent and EVERY pouch has been
+                // offered the rest -- what none of them can hold comes back
+                // as visible coins instead of sitting in an invisible lot.
+                // (This is the old per-call cap's mint, moved to the one
+                // moment the claim has actually settled -- the cap itself
+                // spilled the SECOND of two same-form pouches coming home
+                // together, because it capped the bucket per form while two
+                // pouches' worth was legitimately on its way.)
+                int homeless = 0;
+                for (auto& [f, v] : g_returnPark) {
+                    homeless += v;
+                    v = 0;
+                }
+                std::erase_if(g_returnPark,
+                              [](const auto& e) { return e.second <= 0; });
+                if (homeless > 0) {
+                    SKSE::log::info(
+                        "[GOLD] {} G found no pouch -- minted as coins",
+                        homeless);
+                    Grid::CoinIncome(homeless);
+                    g_dirty = true;
+                }
+            }
         } else {
             g_returnFreshGrace = 0;
         }
@@ -517,16 +550,14 @@ namespace FUI::GoldCoins
     {
         if (a_amount <= 0) return;
         g_pending.push_back({ LedgerOp::kPouchReturn, a_amount });
-        {
-            const int capF = CapOfForm(a_form);
-            const int cap = capF > 0 ? capF : MaxPouchCap();
-            int& bucket = g_returnPark[a_form];
-            const int fits = (std::min)(bucket + a_amount, cap) - bucket;
-            bucket += fits;
-            // ★S-G: the part past the parking cap is tile-share -- mint it
-            if (a_amount > fits) Grid::CoinIncome(a_amount - fits);
-        }
+        // ★(1.5.x) UNCAPPED: a bag can bring several same-form pouches home
+        // in one gesture, and capping the bucket at ONE pouch's capacity
+        // spilled every pouch after the first into coin tiles. The claim
+        // hands out per-tile-capped amounts anyway, and whatever no pouch
+        // can hold mints once the grace settles (see ClaimReturned).
+        g_returnPark[a_form] += a_amount;
         g_returnFreshGrace = 4;   // (1.3.0) the ARRIVING pouch's tile claims this
+        g_parkMintDelay = 12;     // and the mint waits out a slow arrival
         g_dirty = true;
         SKSE::log::info("[GOLD] shelf handed back {} G -> waiting for a tile", a_amount);
     }
@@ -1043,16 +1074,11 @@ namespace FUI::GoldCoins
         g_awayParcels.erase(g_awayParcels.begin() + static_cast<std::ptrdiff_t>(pi));
         SKSE::log::info("[GOLD] pouch returned with {} G inside", amount);
         g_pending.push_back({ LedgerOp::kPouchReturn, amount });
-        {
-            const RE::FormID bform = pform != 0 ? pform : a_form;
-            const int capF = CapOfForm(bform);
-            const int cap = capF > 0 ? capF : MaxPouchCap();
-            int& bucket = g_returnPark[bform];
-            const int fits = (std::min)(bucket + amount, cap) - bucket;
-            bucket += fits;
-            if (amount > fits) Grid::CoinIncome(amount - fits);
-        }
+        // ★(1.5.x) uncapped, same reason as GiveAwayGold: several parcels
+        // can come home together, and the settle-time mint covers the rest
+        g_returnPark[pform != 0 ? pform : a_form] += amount;
         g_returnFreshGrace = 4;   // (1.3.0) the pouch that just walked in claims this
+        g_parkMintDelay = 12;     // and the mint waits out a slow arrival
         g_dirty = true;
     }
 
@@ -1610,6 +1636,7 @@ namespace FUI::GoldCoins
         g_returnPark.clear();
         g_leavingHint.clear();   // (1.3.0-C) a hint from the previous save is a lie
         g_returnFreshGrace = 0;  // (1.3.0) ...and so is a grace from one
+        g_parkMintDelay = 0;
         // per-save state: a new game must not inherit the last save's cycles,
         // or its first merchants look "already stocked" and skip a rotation
         g_vendorCycle.clear();

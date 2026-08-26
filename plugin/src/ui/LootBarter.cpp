@@ -3041,7 +3041,10 @@ namespace
                         // nested one be taken by right-click made this the one
                         // place the rule did not hold. Dragging it out still
                         // brings its whole branch.
-                        if (Grid::CanFitNewItem(s.obj)) {
+                        // ★(1.5.x) gold is exempt from the room check, the
+                        // partner board's own rule -- it merges into the
+                        // ledger and needs no square of its own
+                        if (s.obj->IsGold() || Grid::CanFitNewItem(s.obj)) {
                             // ★NOTED, NOT DONE. This loop draws as well as
                             // listens, and mutating the bundle inside it meant
                             // leaving early -- which skipped drawing every seat
@@ -3101,9 +3104,13 @@ namespace
                     dl->AddRectFilled(g0,
                         ImVec2(g0.x + hw * cell, g0.y + hh * cell), ghost);
                     // ★(1.5.x) the square, for the coin routes (player gold
-                    // stored INTO this bag lands here)
-                    g_hoverBundleSq = { p->GetFormID(), a_w.spot, root,
-                                        gc, gr, ok };
+                    // stored INTO this bag lands here). A TYPED bag records
+                    // nothing: the coin route would bypass its filter, and
+                    // gold does not answer to any collect type.
+                    if (bagDef.accept.empty()) {
+                        g_hoverBundleSq = { p->GetFormID(), a_w.spot, root,
+                                            gc, gr, ok };
+                    }
                 }
             }
         }
