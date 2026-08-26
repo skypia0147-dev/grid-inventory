@@ -661,6 +661,13 @@ namespace FUI::UIRoot
         std::atomic<float>         g_padScrollY{ 0.0f };  // right stick
         std::atomic<bool>          g_padActive{ false };  // a pad drives the UI
         ImVec2                     g_padCursor{ 0.0f, 0.0f };
+        // ★d-pad nudges accumulate here and are applied AFTER the frame's
+        // position source has spoken -- in ENGINE mode the engine's read
+        // overwrote g_padCursor every frame, so a nudge written directly
+        // into it never survived to a pos event (the d-pad "stopped
+        // working" for exactly the players whose engine drives the cursor).
+        float                      g_padNudgeX = 0.0f;
+        float                      g_padNudgeY = 0.0f;
 
         constexpr float kPadCursorSpeed = 1400.0f;   // px/s at full deflection
         constexpr float kPadScrollRate  = 26.0f;
@@ -757,15 +764,15 @@ namespace FUI::UIRoot
             if (edge(kActNudgeL)) {
                 if (down(kActNudgeL)) s_nudgeLKey = modal;
                 if (s_nudgeLKey) io.AddKeyEvent(ImGuiKey_LeftArrow, down(kActNudgeL));
-                else if (down(kActNudgeL)) g_padCursor.x -= step;
+                else if (down(kActNudgeL)) g_padNudgeX -= step;
             }
             if (edge(kActNudgeR)) {
                 if (down(kActNudgeR)) s_nudgeRKey = modal;
                 if (s_nudgeRKey) io.AddKeyEvent(ImGuiKey_RightArrow, down(kActNudgeR));
-                else if (down(kActNudgeR)) g_padCursor.x += step;
+                else if (down(kActNudgeR)) g_padNudgeX += step;
             }
-            if (edge(kActNudgeU) && down(kActNudgeU)) g_padCursor.y -= step;
-            if (edge(kActNudgeD) && down(kActNudgeD)) g_padCursor.y += step;
+            if (edge(kActNudgeU) && down(kActNudgeU)) g_padNudgeY -= step;
+            if (edge(kActNudgeD) && down(kActNudgeD)) g_padNudgeY += step;
 
             g_padPrev = now;
         }
@@ -1076,6 +1083,24 @@ namespace FUI::UIRoot
                     if (g_padCursorMode == PadCursorMode::kOwn && mc) {
                         mc->cursorPosX = g_padCursor.x;
                         mc->cursorPosY = g_padCursor.y;
+                    }
+                }
+                // ★the pending d-pad step lands on whatever drove the
+                // position this frame, and is pushed back into the engine's
+                // cursor so its next read keeps the step instead of undoing
+                // it. Our write must not read back as "the engine moved".
+                if (g_padNudgeX != 0.0f || g_padNudgeY != 0.0f) {
+                    g_padCursor.x = std::clamp(g_padCursor.x + g_padNudgeX,
+                                               0.0f, io.DisplaySize.x - 1.0f);
+                    g_padCursor.y = std::clamp(g_padCursor.y + g_padNudgeY,
+                                               0.0f, io.DisplaySize.y - 1.0f);
+                    g_padNudgeX = 0.0f;
+                    g_padNudgeY = 0.0f;
+                    if (mc) {
+                        mc->cursorPosX = g_padCursor.x;
+                        mc->cursorPosY = g_padCursor.y;
+                        g_engineLastX = mc->cursorPosX;
+                        g_engineLastY = mc->cursorPosY;
                     }
                 }
                 io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
