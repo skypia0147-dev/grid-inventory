@@ -108,6 +108,16 @@ namespace FUI::GoldCoins
             for (const auto& [k, v] : g_pouchStored) s += v;
             return s;
         }
+        [[nodiscard]] int CapOfKey(const std::string& a_key);   // fwd (below)
+        std::string FirstPouchTileWithRoom()
+        {
+            for (const auto& k : Grid::PouchTiles()) {
+                const auto it = g_pouchStored.find(k);
+                const int held = it == g_pouchStored.end() ? 0 : it->second;
+                if (held < CapOfKey(k)) return k;
+            }
+            return {};
+        }
         // The tile a keyless caller means: an engine event (a pouch left
         // the player) names no tile, so it acts on the fullest one.
         [[nodiscard]] std::string FullestPouch()
@@ -122,6 +132,10 @@ namespace FUI::GoldCoins
             }
             return best;
         }
+        // ★multi-pouch: the first BOARD pouch tile with room -- the
+        // fallback for a pouch that has never stored (no book entry), and
+        // room-aware so a full builtin cannot shadow an empty Large one.
+        [[nodiscard]] std::string FirstPouchTileWithRoom();
         bool                g_dirty = true;
         bool                g_applying = false;   // reentrancy guard (Tick)
 
@@ -532,8 +546,17 @@ namespace FUI::GoldCoins
     {
         // ★Asked from a click handler, so it may run before the forms resolve
         // and on a frame where the player is not there at all (main menu).
+        // ★multi-pouch: ANY pouch form counts. The builtin-only test made a
+        // right-click deposit dead while only a Large pouch was carried
+        // (user report) -- IsPouch is the one authority on pouch-ness.
         auto* p = RE::PlayerCharacter::GetSingleton();
-        return p && g_pouch && p->GetItemCount(g_pouch) > 0;
+        if (!p) return false;
+        if (g_pouch && p->GetItemCount(g_pouch) > 0) return true;
+        for (const auto& [obj, data] : p->GetInventory(
+                 [](RE::TESBoundObject& o) { return IsPouch(o.GetFormID()); })) {
+            if (data.first > 0) return true;
+        }
+        return false;
     }
 
     void SetBagWares(std::vector<BagWare> a_wares)
@@ -820,7 +843,7 @@ namespace FUI::GoldCoins
             if (k == kReturnKey || v >= CapOfKey(k)) continue;
             if (v > bv) { bv = v; best = k; }
         }
-        if (best.empty()) best = Grid::AnyPouchTile();   // none holds gold yet
+        if (best.empty()) best = FirstPouchTileWithRoom();   // none holds gold yet
         return best.empty() ? 0 : StoreToPouch(best, a_value);
     }
 
@@ -1176,8 +1199,11 @@ namespace FUI::GoldCoins
                 SKSE::log::info("[GOLD] {} G of the announced amount arrived "
                                 "({} still expected)", ours, g_expected);
             }
-            if (gain > 0 && CountOf(p, g_pouch) > 0) {
-                const std::string key = FullestPouch();
+            if (gain > 0 && PouchHeld()) {   // ★multi-pouch (user report)
+                std::string key = FullestPouch();
+                // a pouch that has never stored anything has no book entry --
+                // the board's own pouch tiles say it exists (room-aware)
+                if (key.empty()) key = FirstPouchTileWithRoom();
                 if (!key.empty()) {
                     int& held = g_pouchStored[key];
                     const int room = CapOfKey(key) - held;
