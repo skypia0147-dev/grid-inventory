@@ -195,6 +195,10 @@ namespace FUI::LootBarter
     // a real grid window over its bundle -- items draw at their anchors,
     // lift onto the cursor, and player items drop in. Top level (UIRoot).
     void DrawShelfBag();
+    // ★(1.5.0 audit) is the shelf bag ON this spot showing its window?
+    // The prompt bar's open/close verb for a partner bag cell asks here --
+    // the player-side open-bag book knows nothing about shelf windows.
+    [[nodiscard]] bool IsShelfBagOpen(std::string_view a_spotKey);
     // The active carry was lifted OUT of a shelf-bag bundle. Consuming it
     // (the take home, or a drop on the container board) removes the carried
     // units from the bundle -- which is what lets their engine item's cell

@@ -124,6 +124,10 @@ namespace FUI::Grid
                                   // steal / plant / withdraw / unequip
         bool canRecharge = false; // T feeds it a soul gem (enchanted weapon,
                                   // not already full, not the partner's)
+        // ★(1.5.0) shelf USE MODE: a container's book reads in place with
+        // Shift+right-click -- the bar says so while one is hovered
+        bool      canShelfUse = false;
+        Lang::Str useVerb{};
     };
     [[nodiscard]] HoverPrompt HoveredPrompt();
     void CancelHold();

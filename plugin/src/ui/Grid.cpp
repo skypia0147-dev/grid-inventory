@@ -305,6 +305,8 @@ namespace FUI::Grid
             bool      hasVerb = false;
             Lang::Str verb{};
             bool      canRecharge = false;   // (1.3.1) T, on an enchanted weapon
+            bool      canShelfUse = false;   // (1.5.0) Shift+RMB reads on the shelf
+            Lang::Str useVerb{};
         };
         HoverRec g_hoverPrompt;
 
@@ -4131,7 +4133,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         return { true, g_hoverPrompt.canSplit, g_hoverPrompt.canCompare,
                  true, g_hoverPrompt.canDrop, g_hoverPrompt.canFav,
                  g_hoverPrompt.hasVerb, g_hoverPrompt.verb,
-                 g_hoverPrompt.canRecharge };
+                 g_hoverPrompt.canRecharge,
+                 g_hoverPrompt.canShelfUse, g_hoverPrompt.useVerb };
     }
 
     bool IsPouchOpen() { return g_pouchOpen; }
@@ -11963,8 +11966,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             } else if (a_tile.parked) {
                 verb = Lang::Str::ActRestore;
             } else if (a_tile.isBag) {
-                verb = g_openBags.contains(std::string(a_tile.key))
-                     ? Lang::Str::ActCloseBag : Lang::Str::ActOpenBag;
+                // ★(1.5.0 audit) a SHELF bag's window book is LootBarter's,
+                // not g_openBags -- asking the wrong book said "open" over a
+                // bag whose window already was.
+                const bool open = a_tile.partner
+                    ? LootBarter::IsShelfBagOpen(a_tile.key)
+                    : g_openBags.contains(std::string(a_tile.key));
+                verb = open ? Lang::Str::ActCloseBag : Lang::Str::ActOpenBag;
             } else if (isPouch) {
                 verb = Lang::Str::ActWithdraw;
             } else if (g_trashOpen && !a_tile.partner && !a_tile.equipSlot &&
@@ -12048,12 +12056,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 !a_tile.partner && a_obj->Is(RE::FormType::Weapon) &&
                 UnitCharge(a_obj, scoped, a_tile.equipSlot, a_hand, rcCur, rcMax) &&
                 (rcMax - rcCur) >= 0.5f;
+            // ★(1.5.0) the shelf USE MODE hint: a container's book reads
+            // (a tome learns) in place on Shift+right-click -- the one verb
+            // of this board that no click could discover.
+            const bool shelfUse =
+                a_tile.partner && LootBarter::IsLootMode(mode) &&
+                a_obj->As<RE::TESObjectBOOK>() != nullptr;
+            const Lang::Str useVerb =
+                shelfUse && a_obj->As<RE::TESObjectBOOK>()->TeachesSpell()
+                    ? Lang::Str::ActLearn
+                    : Lang::Str::ActRead;
             g_hoverPrompt = { ImGui::GetFrameCount(), canSplit, canCompare,
                               !sideBoard && !quest,                    // canDrop
                               // ★the doll and the drawer star things now too;
                               // only a coin or the partner's shelf cannot.
                               !a_tile.partner && !isCoin && !isPouch,  // canFav
-                              hasVerb, verb, canRecharge };
+                              hasVerb, verb, canRecharge,
+                              shelfUse, useVerb };
         }
         const ImVec2 tipPos = ImGui::GetWindowPos();
         const ImVec2 tipSize = ImGui::GetWindowSize();

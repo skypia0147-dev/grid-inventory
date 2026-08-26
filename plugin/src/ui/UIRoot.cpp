@@ -3102,7 +3102,13 @@ namespace FUI::UIRoot
                     bits.insert(bits.begin() + 1, { K(Act::kRotateCW), T(S::ActRotate) });
                     bits[2].sep = true;   // divider after the rotate group
                 }
-            } else if (Grid::IsTrashOpen()) {
+            // ★(1.5.0 audit) HOVER OUTRANKS the trash's standing row. The verb
+            // resolver already answers "discard" over a board item and
+            // "restore" over a parked one while the bin is open -- but this
+            // branch sat ahead of the hover branch, so the bar kept promising
+            // "restore" over an item the click would BIN. The warning row
+            // stays for the idle bar.
+            } else if (Grid::IsTrashOpen() && !Grid::HoveredPrompt().active) {
                 warn = true;
                 bits = { { "", T(S::WarnTrashClose) },
                          { K(Act::kSecondary), T(S::ActRestore), true } };
@@ -3148,6 +3154,13 @@ namespace FUI::UIRoot
                 }
                 if (hp.hasVerb) {
                     bits.push_back({ K(Act::kSecondary), T(hp.verb) });
+                }
+                // ★(1.5.0) shelf USE MODE: a container's book reads (a tome
+                // learns) in place on Shift+right-click -- the one verb of
+                // that board no click could discover on its own
+                if (hp.canShelfUse) {
+                    bits.push_back({ K(Act::kSplit) + "+" + K(Act::kSecondary),
+                                     T(hp.useVerb) });
                 }
                 if (hp.canCompare) {
                     bits.push_back({ K(Act::kSplit), T(S::ActCompare), !bits.empty() });

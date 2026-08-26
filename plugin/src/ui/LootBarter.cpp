@@ -2523,6 +2523,14 @@ namespace
 
     bool IsBundleCarry() { return g_bundleCarry.active; }
 
+    bool IsShelfBagOpen(std::string_view a_spotKey)
+    {
+        for (const auto& w : g_shelfBags) {
+            if (w.bag == 0 && w.spot == a_spotKey) return true;
+        }
+        return false;
+    }
+
     bool ConsumeBundleCarry(RE::TESBoundObject* a_obj, int a_count, bool a_toPlayer)
     {
         if (!g_bundleCarry.active || !a_obj ||
@@ -4981,7 +4989,12 @@ namespace
                                               // signature is the only handle
                                               // the tooltip can resolve with.
                                               it.uid, it.xlIdx, it.sig, 0,
-                                              Grid::TileContext{ {}, false, false, true, false });
+                                              // ★(1.5.0 audit) the SPOT KEY
+                                              // rides along so the bag verb
+                                              // can ask whether its window is
+                                              // already open (IsShelfBagOpen)
+                                              Grid::TileContext{ it.spotKey,
+                                                  false, false, true, false });
                         // C: 3D view, same as the player's grid. Vanilla files
                         // Item Zoom under the kItemMenu context, which the
                         // container and barter screens share with the
