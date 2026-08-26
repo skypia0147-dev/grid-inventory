@@ -324,6 +324,16 @@ namespace FUI::Grid
         int  g_spaceUsed = 0;           // S2: cells occupied (main board + bags)
         int  g_spaceTotal = kCols * kMinRows;   // + every owned bag's grid
 
+        // ★W3: CARRY WEIGHT -> OWNED CELLS. External CW past the baseline
+        // converts to cells appended past the hard board (left-to-right in a
+        // partial row), and the crimson overload line becomes the stepped
+        // ownership boundary. Derived from the live AV every CapacityTick --
+        // nothing is saved. 0 per-cell = feature off.
+        int g_cwPerCell = 10;     // !cwcells: CW per cell
+        int g_cwBase = 300;       // baseline -- only CW above this converts
+        int g_cwMaxCells = 50;    // bonus cap
+        int g_cwBonusCells = 0;   // current, recomputed by CapacityTick
+
         bool g_pouchOpen = false;       // G2: coin-pouch withdraw window
         int  g_pouchSlider = 0;
         // ★WHICH pouch the window is drawing from. It used to need no such
@@ -2393,18 +2403,66 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
 
 
-        int PlaceItems(std::vector<Item*>& a_list, int a_cols, int a_minRows, int a_maxRows)
+        // ★W3: the ownership predicates. Rows below kMinRows are always the
+        // player's; carry-weight bonus cells extend ownership past the hard
+        // board, filling the next row left-to-right -- so the boundary is a
+        // step, and a footprint is owned only when EVERY occupied cell is.
+        [[nodiscard]] bool OwnedCellAt(int a_col, int a_row)
         {
+            if (a_row < kMinRows) return true;
+            const int full = g_cwBonusCells / kCols;
+            const int part = g_cwBonusCells % kCols;
+            if (a_row < kMinRows + full) return true;
+            return a_row == kMinRows + full && a_col < part;
+        }
+        [[nodiscard]] bool OwnedFootprint(int a_col, int a_row, const Mask& a_m)
+        {
+            for (int y = 0; y < a_m.h; ++y) {
+                for (int x = 0; x < a_m.w; ++x) {
+                    if (a_m.rows[y][x] && !OwnedCellAt(a_col + x, a_row + y)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        // rows needed to SHOW the owned region (a fresh unlock must be
+        // visible to drop into, not only reachable by overflow)
+        [[nodiscard]] int OwnedRowSpan()
+        {
+            return kMinRows + g_cwBonusCells / kCols +
+                   (g_cwBonusCells % kCols ? 1 : 0);
+        }
+
+        int PlaceItems(std::vector<Item*>& a_list, int a_cols, int a_minRows,
+                       int a_maxRows, int a_ownedExtra = 0)
+        {
+            // ★W3: a SIM caller (maxRows == minRows, the hard board) may own
+            // extra cells past it -- carry-weight bonus. The display caller
+            // (huge maxRows) is unlimited exactly as before.
+            const bool hard = a_maxRows <= a_minRows;
+            const int  exFull = a_ownedExtra / a_cols;
+            const int  exPart = a_ownedExtra % a_cols;
+            const int  limRows =
+                hard ? a_minRows + exFull + (exPart ? 1 : 0) : a_maxRows;
+            auto ownedSim = [&](int c, int r) {
+                if (!hard) return true;
+                if (r < a_minRows + exFull) return true;
+                return r == a_minRows + exFull && exPart > 0 && c < exPart;
+            };
             std::vector<std::vector<bool>> occ;
             auto ensureRow = [&](int r) {
                 while (static_cast<int>(occ.size()) <= r) occ.emplace_back(a_cols, false);
             };
             auto fits = [&](int c, int r, const Mask& m) {
-                if (r + m.h > a_maxRows) return false;
+                if (r + m.h > limRows) return false;
                 for (int y = 0; y < m.h; ++y) {
                     ensureRow(r + y);
                     for (int x = 0; x < m.w; ++x) {
-                        if (m.rows[y][x] && occ[r + y][c + x]) return false;
+                        if (m.rows[y][x] &&
+                            (occ[r + y][c + x] || !ownedSim(c + x, r + y))) {
+                            return false;
+                        }
                     }
                 }
                 return true;
@@ -2433,7 +2491,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 if (it->fixed) continue;
                 auto tryFit = [&](const Mask& m) {
                     if (m.w > a_cols) return false;
-                    for (int r = 0; r + m.h <= a_maxRows; ++r) {
+                    for (int r = 0; r + m.h <= limRows; ++r) {
                         for (int c = 0; c <= a_cols - m.w; ++c) {
                             if (fits(c, r, m)) {
                                 mark(c, r, m);
@@ -2523,15 +2581,43 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // flash and the gap are not the same cell, the bug is on screen.
             const float now = static_cast<float>(ImGui::GetTime());
 
-            // design pass F: overflow-zone marking — rows past the hard board
-            // are TEMPORARY (they collapse the moment space frees up). A
-            // crimson boundary line + faint tint says "this shelf is borrowed".
-            if (a_viewIdx == 0 && a_view.rows > kMinRows) {
-                const float oy = base.y + kMinRows * CellPx();
-                dl->AddRectFilled(ImVec2(base.x, oy),
-                    ImVec2(base.x + gridW, base.y + gridH), IM_COL32(204, 81, 72, 14));
-                dl->AddLine(ImVec2(base.x, oy), ImVec2(base.x + gridW, oy),
-                    IM_COL32(204, 81, 72, 200), 2.0f);
+            // design pass F: overflow-zone marking — rows past the OWNED
+            // region are TEMPORARY (they collapse the moment space frees up).
+            // A crimson boundary + faint tint says "this shelf is borrowed".
+            // ★W3: the boundary is the OWNERSHIP edge now -- carry-weight
+            // bonus cells push it down, and a partial row makes it a step.
+            {
+                const int  full = kMinRows + g_cwBonusCells / kCols;
+                const int  part = g_cwBonusCells % kCols;
+                const auto tintC = IM_COL32(204, 81, 72, 14);
+                const auto lineC = IM_COL32(204, 81, 72, 200);
+                if (a_viewIdx == 0 && a_view.rows > full) {
+                    const float cp = CellPx();
+                    const float yF = base.y + full * cp;
+                    if (part > 0) {
+                        const float xP = base.x + part * cp;
+                        // tint: the unowned tail of the partial row, then
+                        // everything below it
+                        dl->AddRectFilled(ImVec2(xP, yF),
+                            ImVec2(base.x + gridW, yF + cp), tintC);
+                        if (a_view.rows > full + 1) {
+                            dl->AddRectFilled(ImVec2(base.x, yF + cp),
+                                ImVec2(base.x + gridW, base.y + gridH), tintC);
+                        }
+                        // the step: under the owned cells, up, then across
+                        dl->AddLine(ImVec2(base.x, yF + cp), ImVec2(xP, yF + cp),
+                                    lineC, 2.0f);
+                        dl->AddLine(ImVec2(xP, yF + cp), ImVec2(xP, yF),
+                                    lineC, 2.0f);
+                        dl->AddLine(ImVec2(xP, yF), ImVec2(base.x + gridW, yF),
+                                    lineC, 2.0f);
+                    } else {
+                        dl->AddRectFilled(ImVec2(base.x, yF),
+                            ImVec2(base.x + gridW, base.y + gridH), tintC);
+                        dl->AddLine(ImVec2(base.x, yF),
+                            ImVec2(base.x + gridW, yF), lineC, 2.0f);
+                    }
+                }
             }
         }
 
@@ -5452,7 +5538,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 Item t = it;
                 if (t.def.bag != 0) a_out.bagKeys.insert(t.key);
                 // overflow-zone spots are TEMPORARY and never honoured
-                if (t.inBag.empty() && t.row >= kMinRows) {
+                // (★W3: the zone starts past the OWNED cells now)
+                if (t.inBag.empty() && t.col >= 0 && t.row >= 0 &&
+                    !OwnedFootprint(t.col, t.row, t.mask)) {
                     t.col = -1;
                     t.row = -1;
                 }
@@ -5579,10 +5667,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // than of a cache keyed by the tile's name.
             it.stolen = PoolIsStolen(a_entry, it.uid, it.sig);
             it.quest  = PoolIsQuest(a_entry, it.uid, it.sig);
-            // overflow-zone spots (rows past the hard board) are TEMPORARY
+            // overflow-zone spots (past the OWNED cells -- ★W3) are TEMPORARY
             // — never honour them, so the item first-fits back INTO the
             // board the moment space frees up and the extra rows collapse.
-            if (it.inBag.empty() && it.row >= kMinRows) { it.col = -1; it.row = -1; }
+            if (it.inBag.empty() && it.col >= 0 && it.row >= 0 &&
+                !OwnedFootprint(it.col, it.row, it.mask)) {
+                it.col = -1;
+                it.row = -1;
+            }
             // E3: bags live in main — except a parked (empty) bag in
             // the trash (F2 allows trashing an empty bag), and (E4b) a
             // bag stowed by hand inside a GENERAL bag. Anything else a
@@ -7005,7 +7097,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 std::vector<Item*> probe;
                 probe.reserve(mainList.size());
                 for (auto* it : mainList) probe.push_back(it);
-                PlaceItems(probe, kCols, kMinRows, kMinRows);   // hard board, no growth
+                PlaceItems(probe, kCols, kMinRows, kMinRows,
+                           g_cwBonusCells);   // hard board + CW bonus (W3)
                 for (auto* cand : probe) {
                     // real items only (dummies have no obj); coins keep the ledger
                     if (!(cand->obj && cand->overflow && cand->coinValue < 0)) continue;
@@ -7065,6 +7158,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             main.bagKey.clear();
             std::vector<Item*> mainPtrs = mainList;
             main.rows = PlaceItems(mainPtrs, kCols, kMinRows, 4096);
+            // ★W3: a fresh unlock is a place to drop into, so the owned
+            // region always shows even while empty
+            main.rows = (std::max)(main.rows, OwnedRowSpan());
             for (auto* it : mainPtrs) {
                 if (it->overflow || it->col < 0) continue;
                 main.items.push_back(static_cast<int>(it - g_items.data()));
@@ -7209,7 +7305,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // Growth rows are included in `used`, so it can exceed the total
             // while overloaded — e.g. 147 / 140.
             g_spaceUsed = 0;
-            g_spaceTotal = kCols * kMinRows;
+            g_spaceTotal = kCols * kMinRows + g_cwBonusCells;   // W3
             for (const auto& v : g_views) {
                 if (v.bagKey == kTrashKey) continue;
                 // ★Typed bags are excluded from BOTH halves. Their cells cannot
@@ -7910,7 +8006,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // figure, skipped by every draw loop, invisible until
                     // something else forced a full rebuild. Hand it over
                     // instead; declining is what this path is for.
-                    if (mp.le.bag.empty() && mp.le.row >= kMinRows) {
+                    if (mp.le.bag.empty() &&
+                        !OwnedFootprint(mp.le.col, mp.le.row,
+                            MaskOf(gdef, CanRotate(gdef) ? (mp.le.rot & 3) : 0))) {
                         return decline("landed in the growth zone");
                     }
                     mp.units = n;
@@ -8092,7 +8190,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             }
             // ★see the mint path: MakeDisplayTile blanks growth-row coordinates
             // and only the full rebuild puts them back.
-            if (le.bag.empty() && le.row >= kMinRows) {
+            if (le.bag.empty() &&
+                !OwnedFootprint(le.col, le.row,
+                    MaskOf(gdef, CanRotate(gdef) ? (le.rot & 3) : 0))) {
                 return decline("landed in the growth zone");
             }
             plan.push_back({ u, le });
@@ -8311,7 +8411,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 a_col = seat.col;
                 a_row = seat.row;
                 a_rot = seat.rot;
-                if (a_bag.empty() && a_row >= kMinRows) return false;   // growth zone
+                if (a_bag.empty() &&
+                    !OwnedFootprint(a_col, a_row,
+                        MaskOf(g_stash->def, a_rot & 3))) {
+                    return false;   // growth zone (past the owned cells -- W3)
+                }
                 PlaceTile(g_stash->key, a_col, a_row, a_bag, a_count, a_rot);
             }
             Item it = std::move(*g_stash);
@@ -8345,7 +8449,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             const auto li = g_layout.find(g_stash->key);
             if (li == g_layout.end() || li->second.col < 0) return false;
             // growth-zone spots are temporary (MakeDisplayTile's rule)
-            if (li->second.bag.empty() && li->second.row >= kMinRows) return false;
+            if (li->second.bag.empty() &&
+                !OwnedFootprint(li->second.col, li->second.row,
+                    MaskOf(g_stash->def, li->second.rot & 3))) {
+                return false;
+            }
             return UnstashTileTo(li->second.bag, li->second.col, li->second.row,
                                  li->second.rot, g_stash->count);
         }
@@ -8400,7 +8508,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 return false;    // no room in the destination view: rebuild
             }
             // main-view growth rows are the rebuild's business (its own rule)
-            if (a_bag.empty() && seat.row >= kMinRows) return false;
+            if (a_bag.empty() &&
+                !OwnedFootprint(seat.col, seat.row,
+                    MaskOf(it.def, seat.rot & 3))) {
+                return false;
+            }
             auto& src = g_views[static_cast<std::size_t>(svi)];
             std::erase(src.items, idx);
             dst.items.push_back(idx);
@@ -8530,7 +8642,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                          li->second.col, li->second.row, m)) {
                 return false;
             }
-            if (li->second.bag.empty() && li->second.row >= kMinRows) return false;
+            if (li->second.bag.empty() &&
+                !OwnedFootprint(li->second.col, li->second.row, m)) {
+                return false;
+            }
             std::uint8_t glow = 0;
             if (const auto* ef = obj->As<RE::TESEnchantableForm>();
                 ef && ef->formEnchanting) {
@@ -9438,7 +9553,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             probes[i].mask = MaskOf(aDef, probes[i].rot);
             list.push_back(&probes[i]);
         }
-        PlaceItems(list, kCols, kMinRows, kMinRows);   // HARD board, no growth
+        PlaceItems(list, kCols, kMinRows, kMinRows,
+               g_cwBonusCells);   // HARD board + CW bonus (W3)
 
         int fitTiles = 0;
         std::vector<Item*> leftover;
@@ -9511,7 +9627,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             if (it.inBag.empty()) list.push_back(&it);
         }
 
-        PlaceItems(list, kCols, kMinRows, kMinRows);   // hard board
+        PlaceItems(list, kCols, kMinRows, kMinRows,
+                   g_cwBonusCells);   // hard board + CW bonus (W3)
 
         for (const auto& it : ct.tiles) {
             if (it.key == targetKey) return it.overflow;
@@ -9560,7 +9677,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 }
             }
 
-            PlaceItems(list, kCols, kMinRows, kMinRows);   // hard board
+            PlaceItems(list, kCols, kMinRows, kMinRows,
+                       g_cwBonusCells);   // hard board + CW bonus (W3)
 
             // B: hard-board overflow drains into bag space, open or closed
             // (mirrors Rebuild's spill) — an item a bag can hold is NOT
@@ -9853,6 +9971,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         std::set<std::string> g_knownPouchTiles;
     }
 
+    // ★W3: settings + the live bonus (see CapacityTick for the measurement)
+    void SetCwCells(int a_perCell, int a_base, int a_maxCells)
+    {
+        g_cwPerCell = (std::max)(0, a_perCell);
+        g_cwBase = (std::max)(0, a_base);
+        g_cwMaxCells = std::clamp(a_maxCells, 0, 200);
+    }
+    int CwPerCell() { return g_cwPerCell; }
+    int CwBase() { return g_cwBase; }
+    int CwMaxCells() { return g_cwMaxCells; }
+    int CwBonusCells() { return g_cwBonusCells; }
+
     void ClaimIncomingPouchGold()
     {
         const auto tiles = PouchTiles();
@@ -9940,6 +10070,55 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             const bool has = player->HasSpell(g_abOver);
             if (g_overloaded && !has) player->AddSpell(g_abOver);
             else if (!g_overloaded && has) player->RemoveSpell(g_abOver);
+
+            // ★W3: carry weight -> owned cells. Subtract OUR two abilities'
+            // own CarryWeight magnitudes (read from the forms once -- the
+            // ESP may be edited) and the baseline; what remains is the
+            // world's bonus: perks, stones, enchantments, potions, stamina
+            // level-ups. Ability mode only -- the AV-steering fallback
+            // rewrites the total every frame and leaves nothing to measure.
+            if (g_cwPerCell > 0) {
+                static float s_boostMag = -1.0f;
+                static float s_overMag = 0.0f;
+                if (s_boostMag < 0.0f) {
+                    auto magOf = [](RE::SpellItem* a_sp) {
+                        float t = 0.0f;
+                        if (!a_sp) return t;
+                        for (auto* eff : a_sp->effects) {
+                            if (!eff || !eff->baseEffect) continue;
+                            const auto& d = eff->baseEffect->data;
+                            if (d.primaryAV != RE::ActorValue::kCarryWeight) {
+                                continue;
+                            }
+                            const float m = eff->effectItem.magnitude;
+                            t += d.flags.all(RE::EffectSetting::
+                                     EffectSettingData::Flag::kDetrimental)
+                                     ? -m : m;
+                        }
+                        return t;
+                    };
+                    s_boostMag = (std::max)(0.0f, magOf(g_abBoost));
+                    s_overMag = magOf(g_abOver);
+                }
+                float cw = avo->GetActorValue(RE::ActorValue::kCarryWeight);
+                if (player->HasSpell(g_abBoost)) cw -= s_boostMag;
+                if (player->HasSpell(g_abOver)) cw -= s_overMag;
+                const int ext = static_cast<int>(cw) - g_cwBase;
+                const int cells = std::clamp(
+                    ext > 0 ? ext / g_cwPerCell : 0, 0, g_cwMaxCells);
+                if (cells != g_cwBonusCells) {
+                    SKSE::log::info(
+                        "[GRID] carry-weight bonus: {} cell(s) ({:+} CW past "
+                        "the baseline)", cells, ext);
+                    g_cwBonusCells = cells;
+                    MarkCapacityDirty();
+                    RequestRebuild();
+                }
+            } else if (g_cwBonusCells != 0) {
+                g_cwBonusCells = 0;
+                MarkCapacityDirty();
+                RequestRebuild();
+            }
             return;
         }
 
@@ -15500,7 +15679,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         g_knownPouchTiles.clear();   // (1.3.0) tile keys from another save are lies
         g_overloaded = false;
         g_spaceUsed = 0;
-        g_spaceTotal = kCols * kMinRows;
+        g_spaceTotal = kCols * kMinRows + g_cwBonusCells;   // W3
         // F2: trash state is per-session — parked items simply reappear on
         // their boards after a load (the engine inventory was never touched)
         g_trashOpen = false;

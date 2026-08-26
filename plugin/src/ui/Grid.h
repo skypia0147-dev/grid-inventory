@@ -352,6 +352,14 @@ namespace FUI::Grid
     [[nodiscard]] bool IsOverloaded();   // S2 reads this for the crimson space value
     void MarkCapacityDirty();            // inventory/equip/loadout changed — recompute
     void CapacityTick();                 // per-frame: recompute when dirty + enforce CW
+    // ★W3: carry-weight bonus -> owned cells past the hard board. Settings
+    // (!cwcells = perCell, baseline, maxCells; perCell 0 = off) + the live
+    // bonus for the panel.
+    void SetCwCells(int a_perCell, int a_base, int a_maxCells);
+    [[nodiscard]] int CwPerCell();
+    [[nodiscard]] int CwBase();
+    [[nodiscard]] int CwMaxCells();
+    [[nodiscard]] int CwBonusCells();
 
     // S2: stats panel "Space X / Y" — used cells on the main board (from the
     // last Rebuild; can exceed the total while overloaded) and the hard cap.

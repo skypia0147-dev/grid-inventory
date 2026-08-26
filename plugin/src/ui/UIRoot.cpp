@@ -2428,7 +2428,13 @@ namespace FUI::UIRoot
 
             const bool over = Grid::IsOverloaded();
             const int used = Grid::SpaceUsed(), total = (std::max)(1, Grid::SpaceTotal());
-            std::snprintf(buf, sizeof(buf), "%d / %d", used, total);
+            // ★W3: carry-weight cells are part of the total -- say so, so a
+            // potion or a perk visibly moves this figure
+            if (const int cwb = Grid::CwBonusCells(); cwb > 0) {
+                std::snprintf(buf, sizeof(buf), "%d / %d (+%d)", used, total, cwb);
+            } else {
+                std::snprintf(buf, sizeof(buf), "%d / %d", used, total);
+            }
             const ImU32 spaceCol = over ? IM_COL32(204, 81, 72, 255) : hi;
             row(Lang::T(Lang::Str::StatSpace), buf, spaceCol);
 
