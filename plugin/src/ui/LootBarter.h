@@ -238,6 +238,16 @@ namespace FUI::LootBarter
     [[nodiscard]] bool IsShelfBagHovered();
     int  IntakeGoldEntry(int a_amount);
 
+    // ★(1.5.x) a book read OFF THE SHELF (shift+right-click) offers the
+    // world grammar: E takes it home while the page is up. The read branch
+    // notes the cell; the input sink asks Armed and flags the take (thread-
+    // safe); the render thread consumes the flag at the page-close edge.
+    void NoteShelfBookRead(RE::TESBoundObject* a_book, std::uint16_t a_uid,
+                           std::uint16_t a_sig, const std::string& a_spotKey);
+    [[nodiscard]] bool ShelfBookTakeArmed();
+    void FlagShelfBookTake();
+    void ProcessShelfBookTake();   // page-close edge (UIRoot::Render)
+
     // ★(1.3.3) A LIVING FOLLOWER'S PACK IS 10 x 8. Chests, corpses and
     // merchants are unbounded and always answer true; a companion answers
     // from THIS frame's placement (partial stacks count as room). Every

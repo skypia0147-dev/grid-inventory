@@ -626,6 +626,19 @@ namespace FUI::LootBarter
         };
         HoverBundleSquare g_hoverBundleSq;
 
+        // ★(1.5.x) a book read off the shelf: from the read click to the
+        // page-close edge -- the page offers the world's E-take meanwhile
+        struct ShelfBookRead
+        {
+            bool          active = false;
+            RE::FormID    form = 0;
+            std::uint16_t uid = 0;
+            std::uint16_t sig = 0;
+            std::string   spot;
+        };
+        ShelfBookRead     g_shelfBookRead;
+        std::atomic<bool> g_shelfBookTakeFlag{ false };
+
         // a carry lifted out of that window. The engine item stays put (it is
         // already in the container, hidden by the bundle) -- consuming the
         // carry (take home / drop on the shelf) is what removes the entry and
@@ -1077,6 +1090,8 @@ namespace FUI::LootBarter
         g_bagToCellId = 0;
         g_shelfBags.clear();   // (1.3.1) the shelf windows die with the session
         g_shelfPouchSpot.clear();
+        g_shelfBookRead = {};   // (1.5.x) a page left open dies with it too
+        g_shelfBookTakeFlag.store(false);
         g_bundleCarry = {};
         g_carryGlow = 0;
         g_carryStolen = false;   // ★its twin -- see the lift sites
@@ -3693,6 +3708,45 @@ namespace
         return moved;
     }
 
+    // ★(1.5.x) a book read off the shelf: the page offers the world's E-take.
+    // (state lives beside the other window state near g_shelfPouchSpot; the
+    // input sink writes only the atomic flag from its own thread, and the
+    // render thread does the take where every other transfer starts)
+    void NoteShelfBookRead(RE::TESBoundObject* a_book, std::uint16_t a_uid,
+                           std::uint16_t a_sig, const std::string& a_spotKey)
+    {
+        if (!a_book) return;
+        g_shelfBookRead = { true, a_book->GetFormID(), a_uid, a_sig, a_spotKey };
+        g_shelfBookTakeFlag.store(false);
+    }
+
+    bool ShelfBookTakeArmed()
+    {
+        return g_shelfBookRead.active && UIRoot::IsBookOpen();
+    }
+
+    void FlagShelfBookTake() { g_shelfBookTakeFlag.store(true); }
+
+    void ProcessShelfBookTake()
+    {
+        if (!g_shelfBookRead.active) return;
+        const ShelfBookRead req = g_shelfBookRead;
+        g_shelfBookRead = {};   // one page, one chance -- close clears it
+        if (!g_shelfBookTakeFlag.exchange(false)) return;
+        if (!IsLootMode(g_mode)) return;   // the session ended under the page
+        auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(req.form);
+        if (!obj) return;
+        if (!obj->As<RE::TESObjectBOOK>() || !Grid::CanFitNewItem(obj)) {
+            if (!Grid::CanFitNewItem(obj)) {
+                Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
+            }
+            return;
+        }
+        g_actingSpot = req.spot;   // GI20: the read cell is the one that leaves
+        RequestTake(obj, 1, req.uid, req.sig, false);
+        SKSE::log::info("[LOOT] book taken from the page (E)");
+    }
+
     // ★(1.5.x) the bundled twin. The bag window recorded which pouch entry
     // the carry is over this frame; the coin routes land here first.
     bool IsBundlePouchHovered() { return g_hoverBundlePouch.id != 0; }
@@ -5087,6 +5141,10 @@ namespace
                                 // pack. A spell tome is NOT this case -- reading
                                 // one destroys it, so it has to be ours first.
                                 Grid::RequestBookRead(bk, it.uid, it.sig);
+                                // ★(1.5.x) and the page offers E-take, the
+                                // world book's own grammar
+                                NoteShelfBookRead(it.obj, it.uid, it.sig,
+                                                  it.spotKey);
                             } else if (!Grid::CanFitNewItem(it.obj)) {
                                 Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
                             } else {

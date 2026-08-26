@@ -665,6 +665,38 @@ namespace
                 // Those hooks blank, call the original, and put the value back.
                 if (FUI::Wheeler::IsOpen()) continue;
 
+                // ★(1.5.x) a shelf-read book page is up: the player's ACTIVATE
+                // key takes the book home, the world page's own grammar. Only
+                // the atomic flag is written here (input thread); the take
+                // itself runs on the render thread at the page-close edge.
+                if (FUI::LootBarter::ShelfBookTakeArmed()) {
+                    if (auto* bt = e->AsButtonEvent(); bt && bt->IsDown()) {
+                        std::uint32_t want = 0;
+                        if (auto* cm = RE::ControlMap::GetSingleton()) {
+                            if (auto* ue = RE::UserEvents::GetSingleton()) {
+                                want = cm->GetMappedKey(ue->activate,
+                                                        e->GetDevice());
+                            }
+                        }
+                        // fallback: the keyboard default (E = 18)
+                        const bool hit =
+                            want != 0xFF && want != 0
+                                ? bt->GetIDCode() == want
+                                : (e->GetDevice() ==
+                                       RE::INPUT_DEVICE::kKeyboard &&
+                                   bt->GetIDCode() == 18);
+                        if (hit) {
+                            FUI::LootBarter::FlagShelfBookTake();
+                            if (auto* mq = RE::UIMessageQueue::GetSingleton()) {
+                                mq->AddMessage(RE::BookMenu::MENU_NAME,
+                                               RE::UI_MESSAGE_TYPE::kHide,
+                                               nullptr);
+                            }
+                            continue;
+                        }
+                    }
+                }
+
                 // A real mouse event hands the pointer back from the pad.
                 // This is the ONLY reliable signal — see UIRoot::NoteMouseInput.
                 if (e->GetDevice() == RE::INPUT_DEVICE::kMouse) {

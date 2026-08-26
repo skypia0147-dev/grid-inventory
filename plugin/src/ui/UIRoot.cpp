@@ -4266,12 +4266,24 @@ namespace FUI::UIRoot
                 // mouse pointer, and the same hole belongs to any vanilla menu
                 // that opens over us.
                 SetGameCursorVisible(true);
+                // ★(1.5.x) a shelf read's page offers the world grammar:
+                // say so once, the way the world page says its "E) Take"
+                if (LootBarter::ShelfBookTakeArmed()) {
+                    char hint[64];
+                    std::snprintf(hint, sizeof(hint), "E)  %s",
+                                  Lang::T(Lang::Str::TakeLabel));
+                    Sfx::Notify(hint);
+                }
             }
             return;
         }
         if (g_bookWasOpen) {
             // ★back to us: MouseHandler takes the cursor again from here on
             g_bookWasOpen = false;
+            // ★(1.5.x) the page just closed: if E flagged a shelf take while
+            // it was up, this is where the transfer starts (render thread,
+            // like every other request)
+            LootBarter::ProcessShelfBookTake();
         }
 
         // ★★The console just came up. Keys stop reaching us from this frame on
