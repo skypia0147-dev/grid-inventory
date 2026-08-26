@@ -1356,8 +1356,9 @@ namespace FUI::GoldCoins
                 const int cut = (std::min)(over, pi2->second);
                 over -= cut;
                 pi2->second -= cut;
-                SKSE::log::warn("[GOLD] pouch trim: '{}' -{} -> {} G (ledger "
-                                "below the pouch claims)", k, cut, pi2->second);
+                SKSE::log::info("[GOLD] pouch pays: '{}' -{} -> {} G (the "
+                                "spend reached past the tiles)", k, cut,
+                    pi2->second);
                 if (pi2->second <= 0) g_pouchStored.erase(pi2);
             }
         }

@@ -8590,8 +8590,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         MarkCapacityDirty();
         ++g_boardVersion;
         if (left > 0) {
-            SKSE::log::warn("[GOLD] spend exceeded the tiles by {} G -- the "
-                            "census squares it", left);
+            // Not a fault: a purchase priced past the tiles is PAID BY THE
+            // POUCHES (user-confirmed rule) -- the pouch trim in the same
+            // tick is that payment. Only a shortfall with no pouch to cover
+            // it is census territory.
+            SKSE::log::info("[GOLD] spend outruns the tiles by {} G -- the "
+                            "pouches pay the rest", left);
         }
     }
 
