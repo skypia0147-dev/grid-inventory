@@ -20,7 +20,7 @@ namespace FUI::GoldCoins
         constexpr const char*   kPlugin = "Grid Inventory.esp";
         constexpr RE::FormID    kGold001 = 0x0000000F;
         constexpr int           kPouchCap = 10000;
-        constexpr std::uint32_t kVersion = 7;   // v2:+world sacks v3:+away gold v4:+pinned purses v5:+vendor cycle v6:+per-tile pouches v7:+away parcels
+        constexpr std::uint32_t kVersion = 8;   // v2..v6 as before, v7:+away parcels, v8:+per-form return park
         // ★★Where a pouch's gold waits while no tile owns it: a save written
         // before v6 (one amount for the whole player) and a pouch that has
         // just walked back into the inventory both land here, and the first
@@ -120,9 +120,12 @@ namespace FUI::GoldCoins
             const int c = CapOfForm(FormOfKey(a_key));
             return c > 0 ? c : kPouchCap;   // unknown records keep the builtin
         }
+        [[nodiscard]] int ParkSumFwd();   // the per-form parking, below
         [[nodiscard]] int PouchSum()
         {
-            int s = 0;
+            // parked returns are still pouch claims -- the invariant
+            // (tiles == ledger - pouch) and the trims read them through here
+            int s = ParkSumFwd();
             for (const auto& [k, v] : g_pouchStored) s += v;
             return s;
         }
@@ -132,10 +135,8 @@ namespace FUI::GoldCoins
         {
             std::string best; int bv = -1;
             for (const auto& [k, v] : g_pouchStored) {
-                // ★(1.3.0) the reserved parking key is NOT a tile: treating
-                // it as "the fullest pouch" let auto-store feed the parking
-                // lot and let a departing pouch walk off with parked gold.
-                if (k == kReturnKey) continue;
+                // (the old reserved parking key lives in g_returnPark now --
+                // this map holds real tiles only)
                 if (v > bv) { bv = v; best = k; }
             }
             return best;
@@ -211,10 +212,22 @@ namespace FUI::GoldCoins
             }
             return 0;
         }
-        // ★the CLAIM preference: which form just came home (one-shot with
-        // the fresh-tile grace) -- ClaimReturned hands to same-form tiles
-        // first while it is set
-        RE::FormID g_returnFormHint = 0;
+        // ★PARKING, PER FORM: gold that came home before its tile did.
+        // The single "##pouch_incoming" slot merged simultaneous returns (a
+        // bag with two pouches inside) and the last hint won -- the Large
+        // pouch's 663 walked into the builtin while the builtin's 10,000
+        // walked into the Large (measured 12:44). A bucket per form; during
+        // the fresh-tile grace a tagged bucket is RESERVED for its own
+        // form's tiles, and the grace expiring opens it to anyone, so money
+        // can never strand. Form 0 = untagged (legacy saves).
+        std::map<RE::FormID, int> g_returnPark;
+        [[nodiscard]] int ParkSum()
+        {
+            int t = 0;
+            for (const auto& [f, v] : g_returnPark) t += v;
+            return t;
+        }
+        int ParkSumFwd() { return ParkSum(); }
 
         // ★(1.3.0-C) WHICH pouch tile the UI last committed to leave. The
         // container-change event only names the FORM, so OnPouchLeftPlayer
@@ -429,43 +442,43 @@ namespace FUI::GoldCoins
     void ClaimReturned(const std::vector<std::string>& a_fresh,
                        const std::vector<std::string>& a_known)
     {
-        const auto it = g_pouchStored.find(kReturnKey);
-        if (it == g_pouchStored.end()) return;
-        const auto handTo = [&](const std::string& k) {
-            if (it->second <= 0 || k == kReturnKey) return;
+        if (g_returnPark.empty()) return;
+        const bool graced = g_returnFreshGrace > 0;
+        const auto handTo = [&](int& a_bucket, const std::string& k) {
+            if (a_bucket <= 0) return;
             int& held = g_pouchStored[k];
-            const int move = (std::min)(it->second, CapOfKey(k) - held);
-            if (move <= 0) return;
+            const int move = (std::min)(a_bucket, CapOfKey(k) - held);
+            if (move <= 0) {
+                if (held == 0) g_pouchStored.erase(k);
+                return;
+            }
             held += move;
-            it->second -= move;
+            a_bucket -= move;
             SKSE::log::info("[GOLD] incoming {} G claimed by pouch '{}'", move, k);
             g_dirty = true;
         };
-        // ★multi-pouch: while a return's form is known, tiles of THAT form
-        // stand at the front of both queues -- the Large pouch's gold goes
-        // home to a Large pouch when one exists.
-        const auto ordered = [&](std::vector<std::string> a_keys) {
-            if (g_returnFormHint != 0) {
-                std::stable_partition(a_keys.begin(), a_keys.end(),
-                    [&](const std::string& k) {
-                        return FormOfKey(k) == g_returnFormHint;
-                    });
+        bool leftOver = false;
+        for (auto& [form, bucket] : g_returnPark) {
+            // ★during the grace a tagged bucket is RESERVED for its own
+            // form; afterwards any pouch may take it (money never strands)
+            const auto eligible = [&](const std::string& k) {
+                return !graced || form == 0 || FormOfKey(k) == form;
+            };
+            for (const auto& k : a_fresh) {
+                if (eligible(k)) handTo(bucket, k);
             }
-            return a_keys;
-        };
-        for (const auto& k : ordered(a_fresh)) handTo(k);
-        if (it->second > 0) {
-            if (g_returnFreshGrace > 0) {
-                --g_returnFreshGrace;
-            } else {
-                for (const auto& k : ordered(a_known)) handTo(k);
+            if (bucket > 0 && !graced) {
+                for (const auto& k : a_known) {
+                    if (eligible(k)) handTo(bucket, k);
+                }
             }
+            if (bucket > 0) leftOver = true;
+        }
+        std::erase_if(g_returnPark, [](const auto& e) { return e.second <= 0; });
+        if (leftOver) {
+            if (g_returnFreshGrace > 0) --g_returnFreshGrace;
         } else {
             g_returnFreshGrace = 0;
-        }
-        if (it->second <= 0) {
-            g_pouchStored.erase(kReturnKey);
-            g_returnFormHint = 0;   // claimed: the hint's job is done
         }
     }
 
@@ -493,12 +506,13 @@ namespace FUI::GoldCoins
     void GiveAwayGold(int a_amount, RE::FormID a_form)
     {
         if (a_amount <= 0) return;
-        if (a_form != 0) g_returnFormHint = a_form;   // ★same-form tiles first
         g_pending.push_back({ LedgerOp::kPouchReturn, a_amount });
         {
-            const int before = g_pouchStored[kReturnKey];
-            const int fits = (std::min)(before + a_amount, MaxPouchCap()) - before;
-            g_pouchStored[kReturnKey] = before + fits;
+            const int capF = CapOfForm(a_form);
+            const int cap = capF > 0 ? capF : MaxPouchCap();
+            int& bucket = g_returnPark[a_form];
+            const int fits = (std::min)(bucket + a_amount, cap) - bucket;
+            bucket += fits;
             // ★S-G: the part past the parking cap is tile-share -- mint it
             if (a_amount > fits) Grid::CoinIncome(a_amount - fits);
         }
@@ -993,7 +1007,12 @@ namespace FUI::GoldCoins
         // WalkingGold is unchanged this frame (stored and ledger fall together).
         SKSE::log::info("[GOLD] pouch '{}' left with {} G inside ({} pouch tile(s) left)",
             key, carried, g_pouchStored.size() - 1);
-        g_awayParcels.push_back({ a_form, carried });   // ★who left, with what
+        // ★the parcel's form is the DRAINED BOOK's own pouch -- the event's
+        // baseObj can disagree when a bag takes several pouches out in one
+        // gesture (the hint queue is one slot deep), and a mismatched pair
+        // is exactly the 663<->10,000 swap the bundle test measured.
+        const RE::FormID pf = FormOfKey(key);
+        g_awayParcels.push_back({ pf != 0 ? pf : a_form, carried });
         g_pending.push_back({ LedgerOp::kPouchLeave, carried });
         g_pouchStored.erase(key);
         g_dirty = true;
@@ -1015,15 +1034,15 @@ namespace FUI::GoldCoins
         SKSE::log::info("[GOLD] pouch returned with {} G inside", amount);
         g_pending.push_back({ LedgerOp::kPouchReturn, amount });
         {
-            const int capF = CapOfForm(pform != 0 ? pform : a_form);
+            const RE::FormID bform = pform != 0 ? pform : a_form;
+            const int capF = CapOfForm(bform);
             const int cap = capF > 0 ? capF : MaxPouchCap();
-            const int before = g_pouchStored[kReturnKey];
-            const int fits = (std::min)(before + amount, cap) - before;
-            g_pouchStored[kReturnKey] = before + fits;
+            int& bucket = g_returnPark[bform];
+            const int fits = (std::min)(bucket + amount, cap) - bucket;
+            bucket += fits;
             if (amount > fits) Grid::CoinIncome(amount - fits);
         }
         g_returnFreshGrace = 4;   // (1.3.0) the pouch that just walked in claims this
-        g_returnFormHint = a_form;   // ★same-form tiles claim first
         g_dirty = true;
     }
 
@@ -1332,7 +1351,18 @@ namespace FUI::GoldCoins
         // lesson, said again for pouches): the unclaimed PARKING float pays
         // first, then the LESS-FULL pouch, rear board position breaking
         // ties -- the same ladder every keyless coin rule walks.
-        if (PouchSum() > total && !g_pouchStored.empty()) {
+        if (PouchSum() > total) {
+            int over = PouchSum() - total;
+            // the unclaimed PARKING float pays first (any bucket)
+            for (auto pk = g_returnPark.begin();
+                 over > 0 && pk != g_returnPark.end();) {
+                const int cut = (std::min)(over, pk->second);
+                over -= cut;
+                pk->second -= cut;
+                SKSE::log::info("[GOLD] park pays: {} G (the spend reached "
+                                "past the tiles)", cut);
+                pk = pk->second <= 0 ? g_returnPark.erase(pk) : std::next(pk);
+            }
             std::vector<std::string> keys;
             keys.reserve(g_pouchStored.size());
             for (const auto& [k, v] : g_pouchStored) keys.push_back(k);
@@ -1342,13 +1372,10 @@ namespace FUI::GoldCoins
             for (const auto& k : byPos) rank[k] = r++;
             std::sort(keys.begin(), keys.end(),
                 [&](const std::string& a, const std::string& b) {
-                    const bool pa = a == kReturnKey, pb = b == kReturnKey;
-                    if (pa != pb) return pa;                    // the float pays first
                     const int va = g_pouchStored[a], vb = g_pouchStored[b];
                     if (va != vb) return va < vb;               // less-full first
                     return rank[a] > rank[b];                   // rear first
                 });
-            int over = PouchSum() - total;
             for (const auto& k : keys) {
                 if (over <= 0) break;
                 auto pi2 = g_pouchStored.find(k);
@@ -1426,6 +1453,12 @@ namespace FUI::GoldCoins
             a_intfc->WriteRecordData(static_cast<std::uint32_t>(a.form));
             a_intfc->WriteRecordData(static_cast<std::int32_t>(a.amount));
         }
+        // v8: the per-form return park (money home before its tile)
+        a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_returnPark.size()));
+        for (const auto& [f, v] : g_returnPark) {
+            a_intfc->WriteRecordData(static_cast<std::uint32_t>(f));
+            a_intfc->WriteRecordData(static_cast<std::int32_t>(v));
+        }
     }
 
     void LoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version)
@@ -1438,7 +1471,7 @@ namespace FUI::GoldCoins
             // so there is one path to test instead of two. From v6 the map at
             // the tail replaces it outright.
             const int one = static_cast<int>((std::min)(v, static_cast<std::uint32_t>(kPouchCap)));
-            if (a_version < 6 && one > 0) g_pouchStored[kReturnKey] = one;
+            if (a_version < 6 && one > 0) g_returnPark[0] = one;   // untagged
         }
         if (a_version >= 2) {
             std::uint32_t n = 0;
@@ -1518,7 +1551,12 @@ namespace FUI::GoldCoins
                 std::string  key;
                 std::int32_t val = 0;
                 if (!ReadStr(a_intfc, key) || !a_intfc->ReadRecordData(val)) break;
-                if (val > 0) g_pouchStored[key] = (std::min)(val, CapOfKey(key));
+                if (val <= 0) continue;
+                if (key == kReturnKey) {
+                    g_returnPark[0] += val;   // an old save's parked float
+                } else {
+                    g_pouchStored[key] = (std::min)(val, CapOfKey(key));
+                }
             }
         }
         if (a_version >= 7) {
@@ -1536,6 +1574,21 @@ namespace FUI::GoldCoins
                 if (amt > 0) g_awayParcels.push_back({ form, amt });
             }
         }
+        if (a_version >= 8) {
+            std::uint32_t n = 0;
+            if (!a_intfc->ReadRecordData(n)) return;
+            if (n > 4096) {
+                SKSE::log::error("[GOLD] GPCH park count {} rejected -- tail dropped", n);
+                return;
+            }
+            g_returnPark.clear();
+            for (std::uint32_t i = 0; i < n; ++i) {
+                std::uint32_t form = 0;
+                std::int32_t  amt = 0;
+                if (!a_intfc->ReadRecordData(form) || !a_intfc->ReadRecordData(amt)) break;
+                if (amt > 0) g_returnPark[form] += amt;
+            }
+        }
         g_dirty = true;
     }
 
@@ -1544,7 +1597,7 @@ namespace FUI::GoldCoins
         g_pouchStored.clear();
         g_sackRefs.clear();
         g_awayParcels.clear();
-        g_returnFormHint = 0;
+        g_returnPark.clear();
         g_leavingHint.clear();   // (1.3.0-C) a hint from the previous save is a lie
         g_returnFreshGrace = 0;  // (1.3.0) ...and so is a grace from one
         // per-save state: a new game must not inherit the last save's cycles,
