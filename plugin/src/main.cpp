@@ -1368,21 +1368,30 @@ namespace
         {
             constexpr std::string_view kOurs = "grid inventory.esp|";
             std::vector<FUI::GoldCoins::BagWare> wares;
+            std::vector<RE::TESBoundObject*>     pouchWares;   // ★multi-pouch
             int foreign = 0;
             for (const auto& [key, d] : g_itemDefs) {
-                if (!d.bag) continue;
+                if (!d.bag && d.pouchCap <= 0) continue;
                 std::string lower = key.substr(0, (std::min)(key.size(), kOurs.size()));
                 for (auto& c : lower) {
                     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 }
                 if (lower != kOurs) { ++foreign; continue; }
-                if (auto* obj = FormFromKey(key)) wares.push_back({ obj, d.accept });
+                auto* obj = FormFromKey(key);
+                if (!obj) continue;
+                if (d.bag) {
+                    wares.push_back({ obj, d.accept });
+                } else if (obj != FUI::GoldCoins::PouchForm()) {
+                    // a def-declared pouch (the builtin 0x804 places itself)
+                    pouchWares.push_back(obj);
+                }
             }
             if (foreign > 0) {
-                logger::info("[VENDOR] {} user-designated bag(s) from other plugins"
-                             " are NOT stocked (by design)", foreign);
+                logger::info("[VENDOR] {} user-designated bag(s)/pouch(es) from "
+                             "other plugins are NOT stocked (by design)", foreign);
             }
             FUI::GoldCoins::SetBagWares(std::move(wares));
+            FUI::GoldCoins::SetPouchWares(std::move(pouchWares));
         }
     }
 

@@ -2975,7 +2975,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // this asked the player-wide total.
                     if (auto* v = GoldCoins::PouchIconObjectFor(
                             GoldCoins::PouchStoredOf(it.key),
-                            GoldCoins::PouchCapOfKey(it.key))) iconObj = v;
+                            GoldCoins::PouchCapOfKey(it.key),
+                            it.obj->GetFormID())) iconObj = v;
                 }
                 const IconCache::Icon* iconPtr = cache->Get(iconObj);
                 if (iconObj != it.obj) {
@@ -12550,7 +12551,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 const int amount =
                     shelf >= 0 ? shelf : GoldCoins::PouchStoredOf(a_held.key);
                 if (auto* v = GoldCoins::PouchIconObjectFor(amount,
-                        GoldCoins::PouchCapOfKey(a_held.key))) heldIconObj = v;
+                        GoldCoins::PouchCapOfKey(a_held.key),
+                        a_held.obj ? a_held.obj->GetFormID() : 0)) {
+                    heldIconObj = v;
+                }
             }
             auto* hc = IconCache::GetSingleton();
             const IconCache::Icon* heldIcon = hc->Get(heldIconObj);

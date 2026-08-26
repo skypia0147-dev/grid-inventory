@@ -4716,7 +4716,8 @@ namespace
                                           ? ShelfGoldOf(it.spotKey) : 0;
                 if (shelfGold > 0) {
                     if (auto* v = GoldCoins::PouchIconObjectFor(shelfGold,
-                            GoldCoins::PouchCapOfForm(it.obj->GetFormID()))) {
+                            GoldCoins::PouchCapOfForm(it.obj->GetFormID()),
+                            it.obj->GetFormID())) {
                         cellIconObj = v;
                     }
                 }

@@ -52,6 +52,10 @@ namespace FUI::GoldCoins
         // negative, so a hot IsPouch cannot re-resolve the same form twice.
         std::map<RE::FormID, int>      g_pouchCaps;
         std::function<int(RE::FormID)> g_pouchCapOf;
+        // ★vendor stock, OUR esp only -- handed in from main.cpp's def loop
+        // exactly like the bag wares (the lazy cap cache above cannot
+        // enumerate pouches it has never been asked about)
+        std::vector<RE::TESBoundObject*> g_pouchWares;
         [[nodiscard]] int CapOfForm(RE::FormID a_id)
         {
             if (const auto it = g_pouchCaps.find(a_id); it != g_pouchCaps.end()) {
@@ -296,7 +300,8 @@ namespace FUI::GoldCoins
         for (auto* c : g_coins) {
             if (c && c->GetFormID() == a_id) return true;
         }
-        return g_pouch && g_pouch->GetFormID() == a_id;
+        if (g_pouch && g_pouch->GetFormID() == a_id) return true;
+        return CapOfForm(a_id) > 0;   // ★multi-pouch: same guards as the builtin
     }
 
     bool IsPouch(RE::FormID a_id)
@@ -336,6 +341,7 @@ namespace FUI::GoldCoins
                          g_sack, g_sackMed, g_sackSmall }) {
             if (p && p->GetFormID() == a_id) return "msc_coinpouch";
         }
+        if (CapOfForm(a_id) > 0) return "msc_coinpouch";   // ★multi-pouch
         return nullptr;
     }
 
@@ -458,8 +464,15 @@ namespace FUI::GoldCoins
         return PouchIconObjectFor(PouchSum());
     }
 
-    RE::TESBoundObject* PouchIconObjectFor(int a_stored, int a_cap)
+    RE::TESBoundObject* PouchIconObjectFor(int a_stored, int a_cap,
+                                           RE::FormID a_form)
     {
+        // ★The N/S/M/F variants are the BUILTIN pouch's own art. Any other
+        // pouch keeps its single model -- returning null leaves the caller's
+        // icon exactly as it was.
+        if (a_form != 0 && !(g_pouch && g_pouch->GetFormID() == a_form)) {
+            return nullptr;
+        }
         if (a_cap <= 0) a_cap = kPouchCap;
         if (a_stored >= a_cap && g_pouchF) return g_pouchF;
         if (a_stored >= 10 && g_pouchM) return g_pouchM;
@@ -478,6 +491,13 @@ namespace FUI::GoldCoins
         int m = kPouchCap;
         for (const auto& [id, c] : g_pouchCaps) m = (std::max)(m, c);
         return m;
+    }
+
+    void SetPouchWares(std::vector<RE::TESBoundObject*> a_wares)
+    {
+        g_pouchWares = std::move(a_wares);
+        // capacity for each ware resolves lazily through the def hook; the
+        // wares list only decides what a shopkeeper stocks
     }
 
     void SetPouchDefResolver(std::function<int(RE::FormID)> a_capOf)
@@ -576,6 +596,9 @@ namespace FUI::GoldCoins
                 if (w.obj) ours.insert(w.obj);
             }
             if (g_pouch) ours.insert(g_pouch);
+            for (auto* pw : g_pouchWares) {   // ★multi-pouch
+                if (pw) ours.insert(pw);
+            }
             for (const auto& [obj, data] : a_container->GetInventory()) {
                 if (data.first > 0 && ours.contains(obj)) ++oursInChest;
             }
@@ -618,6 +641,11 @@ namespace FUI::GoldCoins
 
         // the pouch is core kit, not a lucky find: general goods, every cycle
         if (isGeneral) place(g_pouch, "always");
+        // ★multi-pouch: def-declared pouches from OUR esp sell beside it --
+        // an upgrade you can walk in and buy, not a lucky find
+        if (isGeneral) {
+            for (auto* pw : g_pouchWares) place(pw, "pouch upgrade");
+        }
 
         // ---- typed bags: the shop that trades what the bag holds -----------
         // Guaranteed, not rotated. A player who walks to the alchemist for an

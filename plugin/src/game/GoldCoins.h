@@ -44,6 +44,9 @@ namespace FUI::GoldCoins
     [[nodiscard]] int PouchCapOfKey(const std::string& a_tileKey);  // fallback = builtin
     [[nodiscard]] int MaxPouchCap();   // parking cap for gold awaiting a tile
     void SetPouchDefResolver(std::function<int(RE::FormID)> a_capOf);
+    // ★multi-pouch vendor stock (OUR esp only), from main.cpp's def loop --
+    // the same contract SetBagWares keeps for bags.
+    void SetPouchWares(std::vector<RE::TESBoundObject*> a_wares);
     [[nodiscard]] RE::TESBoundObject* PouchForm();
     // ★Is a pouch actually ON the player right now? StoreToPouch does NOT ask
     // -- it only weighs the value against the cap and the walking gold, which
@@ -102,7 +105,8 @@ namespace FUI::GoldCoins
     [[nodiscard]] int PouchStoredOf(const std::string& a_tileKey);
     // The icon band for an amount the CALLER knows -- a tile asks for its
     // own, a stored pouch asks for the one riding in the container spot.
-    [[nodiscard]] RE::TESBoundObject* PouchIconObjectFor(int a_stored, int a_cap = 0);
+    [[nodiscard]] RE::TESBoundObject* PouchIconObjectFor(int a_stored, int a_cap = 0,
+                                                     RE::FormID a_form = 0);
     // A pouch's gold with no tile to sit on yet: a save older than v6, or a
     // pouch that just walked back in. The grid calls this with the pouch
     // tiles it found, split into tiles born THIS rebuild (a_fresh -- the
