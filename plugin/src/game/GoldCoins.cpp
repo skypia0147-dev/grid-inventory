@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -52,17 +53,33 @@ namespace FUI::GoldCoins
         // negative, so a hot IsPouch cannot re-resolve the same form twice.
         std::map<RE::FormID, int>      g_pouchCaps;
         std::function<int(RE::FormID)> g_pouchCapOf;
+        // ★The cache is written from whatever thread asks (IsPouch runs in
+        // the container sink), so it locks -- the old IsPouch was pure reads
+        // and needed nothing, but a cache is a write.
+        std::mutex                     g_pouchCapMtx;
         // ★vendor stock, OUR esp only -- handed in from main.cpp's def loop
         // exactly like the bag wares (the lazy cap cache above cannot
         // enumerate pouches it has never been asked about)
         std::vector<RE::TESBoundObject*> g_pouchWares;
         [[nodiscard]] int CapOfForm(RE::FormID a_id)
         {
-            if (const auto it = g_pouchCaps.find(a_id); it != g_pouchCaps.end()) {
-                return it->second;
+            {
+                std::lock_guard l(g_pouchCapMtx);
+                if (const auto it = g_pouchCaps.find(a_id); it != g_pouchCaps.end()) {
+                    return it->second;
+                }
             }
             if (!g_pouchCapOf) return 0;   // defs not wired yet: no caching
+            // ★re-entrancy breaker: if the resolver's road ever leads back
+            // here (DefFor's pouch sizing did exactly that -- the stack
+            // overflow of 2026-08-26), answer "not a pouch" instead of
+            // recursing; the outer call still caches the real answer.
+            static thread_local bool s_resolving = false;
+            if (s_resolving) return 0;
+            s_resolving = true;
             const int c = (std::max)(0, g_pouchCapOf(a_id));
+            s_resolving = false;
+            std::lock_guard l(g_pouchCapMtx);
             g_pouchCaps[a_id] = c;
             return c;
         }
@@ -266,7 +283,10 @@ namespace FUI::GoldCoins
             g_coins[i] = dh->LookupForm<RE::TESObjectMISC>(0x800 + i, kPlugin);
         }
         g_pouch = dh->LookupForm<RE::TESObjectMISC>(0x804, kPlugin);
-        if (g_pouch) g_pouchCaps[g_pouch->GetFormID()] = kPouchCap;   // builtin
+        if (g_pouch) {
+            std::lock_guard l(g_pouchCapMtx);
+            g_pouchCaps[g_pouch->GetFormID()] = kPouchCap;   // builtin
+        }
         g_pouchS = dh->LookupForm<RE::TESObjectMISC>(0x80C, kPlugin);
         g_pouchM = dh->LookupForm<RE::TESObjectMISC>(0x80D, kPlugin);
         g_pouchF = dh->LookupForm<RE::TESObjectMISC>(0x80E, kPlugin);
@@ -488,6 +508,7 @@ namespace FUI::GoldCoins
 
     int MaxPouchCap()
     {
+        std::lock_guard l(g_pouchCapMtx);
         int m = kPouchCap;
         for (const auto& [id, c] : g_pouchCaps) m = (std::max)(m, c);
         return m;

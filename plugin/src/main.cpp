@@ -1988,10 +1988,18 @@ namespace
         // ★Multi-pouch: a pouch's capacity comes from its item def
         // ("pouchcap:N"), so a future pouch form is an ESP record plus one
         // ini line -- no code. The builtin 0x804 stays seeded at 10,000.
+        // ★RAW MAP, NOT DefFor. DefFor's own fallback asks IsPouch (the
+        // builtin 2x2 sizing), and IsPouch asks this resolver -- routing the
+        // resolver back through DefFor closed that circle and the first
+        // IsCoinForm on any un-ini'd item recursed to a stack overflow
+        // (crash-2026-08-26-11-40-10). pouchcap only ever comes from an
+        // explicit ini entry, so the raw map is the complete answer.
         FUI::GoldCoins::SetPouchDefResolver([](RE::FormID a_id) -> int {
             auto* f = RE::TESForm::LookupByID(a_id);
             auto* obj = f ? f->As<RE::TESBoundObject>() : nullptr;
-            return obj ? DefFor(obj).pouchCap : 0;
+            if (!obj) return 0;
+            const auto it = g_itemDefs.find(FormKey(obj));
+            return it != g_itemDefs.end() ? it->second.pouchCap : 0;
         });
         FUI::Grid::SetGameCallbacks(
             [](RE::TESBoundObject* a_obj, bool a_up) {   // vanilla per-item sounds (I2)
