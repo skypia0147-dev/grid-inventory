@@ -6740,6 +6740,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             auto& le = g_layout[it->key];
                             le.bag = into;
                             if (tileOf[b.id].empty()) tileOf[b.id] = it->key;
+                            // ★(1.5.x) a POUCH entry's parked amount goes to
+                            // exactly THIS tile -- a wallet that travelled
+                            // keeps its own money (parcel matched by form +
+                            // amount; a miss falls back to the generic pass)
+                            if (b.gold > 0 &&
+                                GoldCoins::IsPouch(b.form)) {
+                                GoldCoins::ClaimParcelForTile(it->key, b.form,
+                                                              b.gold);
+                            }
                             if (anchorFree) {
                                 // ★★THE TILE, NOT ONLY THE LAYOUT. Writing the
                                 // layout alone was too late to matter: Item::col

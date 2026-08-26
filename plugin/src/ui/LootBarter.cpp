@@ -767,17 +767,18 @@ namespace FUI::LootBarter
 
             if (!bundle.empty() && a_obj) {
                 // ★(1.5.x) the pouches inside leave for the player too: their
-                // amounts park (per form) before the engine items travel, and
-                // the fresh player tiles claim them -- the cell's own give-back
-                // two screens up, applied to each bundled pouch. The manifest
-                // copy that rides to g_incomingBundles is zeroed so a refused
-                // take cannot double-credit through a later same-form bag.
+                // amounts park as PARCELS before the engine items travel, and
+                // the claim hands each parcel back -- to the exact tile the
+                // entry becomes when the manifest lands (ClaimIncomingBundles
+                // matches on this b.gold), else through the generic pass.
+                // The amount STAYS on the manifest copy for that match; it is
+                // harmless if stale, since the targeted claim only ever moves
+                // money that is actually parked.
                 for (auto& b : bundle) {
                     if (b.gold <= 0) continue;
                     SKSE::log::info(
                         "[LOOT] bundled pouch taken back with {} G", b.gold);
                     GoldCoins::GiveAwayGold(b.gold, b.form);
-                    b.gold = -1;
                     b.awaitGold = 0;
                 }
                 // bundles only ever ride LOOT-container spots, where the
@@ -2542,14 +2543,13 @@ namespace
                 auto branch = CutBranch(bundle, cid);
                 if (a_toPlayer) {
                     // ★(1.5.x) pouches inside the leaving branch: amounts park
-                    // for the player tiles (and the manifest copy is zeroed) --
-                    // the same give-back the bag-cell take does.
+                    // as parcels; the manifest keeps them for the exact-tile
+                    // claim -- the same give-back the bag-cell take does.
                     for (auto& b : branch) {
                         if (b.gold <= 0) continue;
                         SKSE::log::info(
                             "[LOOT] bundled pouch taken back with {} G", b.gold);
                         GoldCoins::GiveAwayGold(b.gold, b.form);
-                        b.gold = -1;
                         b.awaitGold = 0;
                     }
                     SendBranchHome(a_obj, std::move(branch));

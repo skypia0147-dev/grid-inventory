@@ -126,6 +126,12 @@ namespace FUI::GoldCoins
     // shelf -- the cell being born claims a parcel, so the bundle entry's
     // amount has to become one again first.
     void RestoreAwayParcel(RE::FormID a_form, int a_amount);
+    // ★(1.5.x) exact delivery for the bag flow: hand the parked parcel of
+    // exactly (form, amount) to the given pouch TILE -- a wallet that only
+    // travelled keeps its own amount. No-op when no such parcel waits (the
+    // generic ClaimReturned pass handles the rest). Returns what moved.
+    int ClaimParcelForTile(const std::string& a_tileKey, RE::FormID a_form,
+                           int a_amount);
     // ★(1.3.2a) shelf-pouch banking: plain ledger credit/debit (no pouch
     // parking) -- the shelf spot is the book, these settle the engine gold.
     void CreditLedger(int a_amount);
