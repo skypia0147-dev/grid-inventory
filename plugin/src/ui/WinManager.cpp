@@ -369,10 +369,11 @@ namespace FUI
                 Grid::SetRebuildTrace(rest == "1" || rest == "true");
                 continue;
             }
-            // ★W3: carry-weight bonus -> extra cells. Three values:
-            // CW per cell (0 = off), baseline, max bonus cells.
+            // ★W3: carry-weight bonus -> extra cells. Three values: CW per
+            // cell (0 = off), baseline (0 = auto: the race's own base), max
+            // bonus cells.
             if (key == "!cwcells") {
-                int v[3] = { 10, 300, 50 };
+                int v[3] = { 10, 0, 50 };
                 int n = 0;
                 std::istringstream vs(rest);
                 for (std::string tok; n < 3 && std::getline(vs, tok, ','); ++n) {
@@ -855,10 +856,10 @@ namespace FUI
         }
         if (Equip::DrawerOpen())   out << "!accdrawer = 1\n";
         if (Grid::RebuildTrace())  out << "!rbtrace = 1\n";
-        // Carry Weight bonus -> extra inventory cells (CW per cell, baseline, max cells; 0 = off)
-        // 소지 중량 보너스의 칸 환전 (칸당 CW, 기준선, 상한 / 첫 값 0 = 끔)
-        out << "; !cwcells = CW per cell (0 = off), baseline, max bonus cells\n";
-        out << "; !cwcells = 칸당 CW (0 = 끔), 기준선, 보너스 칸 상한\n";
+        // Carry Weight bonus -> extra inventory cells
+        // 소지 중량 보너스의 칸 환전
+        out << "; !cwcells = CW per cell (0 = off), baseline (0 = auto: race base), max bonus cells\n";
+        out << "; !cwcells = 칸당 CW (0 = 끔), 기준선 (0 = 자동: 종족 기본치), 보너스 칸 상한\n";
         out << "!cwcells = " << Grid::CwPerCell() << ", " << Grid::CwBase()
             << ", " << Grid::CwMaxCells() << "\n";
         out << "; !caplight = capture lamp offset in degrees (az, el)\n";

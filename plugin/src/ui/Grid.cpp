@@ -330,7 +330,10 @@ namespace FUI::Grid
         // ownership boundary. Derived from the live AV every CapacityTick --
         // nothing is saved. 0 per-cell = feature off.
         int g_cwPerCell = 10;     // !cwcells: CW per cell
-        int g_cwBase = 300;       // baseline -- only CW above this converts
+        // baseline -- only CW above this converts. 0 = AUTO: the player
+        // RACE's own baseCarryWeight, so an overhaul that changes the base
+        // (Requiem lines and the like) is tracked without any setting.
+        int g_cwBase = 0;
         int g_cwMaxCells = 50;    // bonus cap
         int g_cwBonusCells = 0;   // current, recomputed by CapacityTick
 
@@ -10148,7 +10151,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 float cw = avo->GetActorValue(RE::ActorValue::kCarryWeight);
                 if (player->HasSpell(g_abBoost)) cw -= s_boostMag;
                 if (player->HasSpell(g_abOver)) cw -= s_overMag;
-                const int ext = static_cast<int>(cw) - g_cwBase;
+                // ★baseline 0 = AUTO: the race's own base, so overhauls that
+                // rewrite it (race records) need no manual setting. Stamina
+                // level-ups grow the AV past the racial base and so still
+                // count as earned bonus.
+                int base = g_cwBase;
+                if (base <= 0) {
+                    auto* race = player->GetRace();
+                    base = race && race->data.baseCarryWeight > 0.0f
+                               ? static_cast<int>(race->data.baseCarryWeight)
+                               : 300;
+                }
+                const int ext = static_cast<int>(cw) - base;
                 const int cells = std::clamp(
                     ext > 0 ? ext / g_cwPerCell : 0, 0, g_cwMaxCells);
                 if (cells != g_cwBonusCells) {
