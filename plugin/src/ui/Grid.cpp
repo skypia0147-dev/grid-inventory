@@ -3999,7 +3999,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // full" signal is measured from its own kind overflowing).
                 const bool wrongKind = !a_view.accept.empty() && held.obj &&
                                        BagFilter::FilterOf(held.obj) != a_view.accept;
-                g_target.valid = !bagInBag && !wrongKind && sizeOk &&
+                // ★W3: on the MAIN board the footprint must be OWNED -- the
+                // unowned tail of a partial carry-weight row (and the growth
+                // zone below it) draws, but a hand drop there is refused, the
+                // same answer every queue verb gives. Red ghost says so.
+                const bool ownedOk = !a_view.bagKey.empty() ||
+                                     OwnedFootprint(col, row, held.mask);
+                g_target.valid = !bagInBag && !wrongKind && sizeOk && ownedOk &&
                                  g_target.blockers.empty();
 
                 // ghost: green = ok, red = badspot
