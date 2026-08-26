@@ -587,6 +587,23 @@ namespace FUI::LootBarter
         std::string g_shelfPouchSpot;
         RE::FormID  g_shelfPouchForm = 0;
         int         g_shelfPouchSlider = 0;
+        // ★(1.5.x) which BUNDLE ENTRY the window is banking on. 0 = the cell
+        // itself (the classic shelf pouch); an id names a pouch inside an
+        // open shelf-bag window. Only meaningful while the spot is set --
+        // every open site assigns it, so a stale value cannot act.
+        std::uint32_t g_shelfPouchBundle = 0;
+
+        // ★(1.5.x) the pouch entry the cursor is over while a carry rides,
+        // re-recorded by the bag window every frame it draws (cleared at the
+        // top of DrawShelfBag). The coin drop routes ask through
+        // IsBundlePouchHovered/DepositOnHoveredBundlePouch.
+        struct HoverBundlePouch
+        {
+            RE::FormID    cont = 0;
+            std::string   spot;
+            std::uint32_t id = 0;   // 0 = nothing hovered
+        };
+        HoverBundlePouch g_hoverBundlePouch;
 
         // a carry lifted out of that window. The engine item stays put (it is
         // already in the container, hidden by the bundle) -- consuming the
@@ -637,6 +654,14 @@ namespace FUI::LootBarter
                 if (it->bagForm != a_bagForm || it->cont != cont) continue;
                 auto v = std::move(it->items);
                 g_pendingBundles.erase(it);
+                // ★(1.5.x) a pouch riding in with the bag has its gold walking
+                // separately as an away parcel (OnPouchLeftPlayer fires when
+                // its engine item transfers). Arm the claim grace so the
+                // reconcile marries them -- but only for entries that have
+                // never claimed: a branch moved between bags keeps its amount.
+                for (auto& b : v) {
+                    if (b.gold < 0 && GoldCoins::IsPouch(b.form)) b.awaitGold = 8;
+                }
                 return v;
             }
             return {};
@@ -720,6 +745,20 @@ namespace FUI::LootBarter
             g_actingSpot.clear();
 
             if (!bundle.empty() && a_obj) {
+                // ★(1.5.x) the pouches inside leave for the player too: their
+                // amounts park (per form) before the engine items travel, and
+                // the fresh player tiles claim them -- the cell's own give-back
+                // two screens up, applied to each bundled pouch. The manifest
+                // copy that rides to g_incomingBundles is zeroed so a refused
+                // take cannot double-credit through a later same-form bag.
+                for (auto& b : bundle) {
+                    if (b.gold <= 0) continue;
+                    SKSE::log::info(
+                        "[LOOT] bundled pouch taken back with {} G", b.gold);
+                    GoldCoins::GiveAwayGold(b.gold, b.form);
+                    b.gold = -1;
+                    b.awaitGold = 0;
+                }
                 // bundles only ever ride LOOT-container spots, where the
                 // partner ref IS the source the takes will pull from
                 if (auto* src = Partner()) {
@@ -2393,6 +2432,22 @@ namespace
 
     int HeldShelfGold()
     {
+        // ★(1.5.x) a BUNDLE-carried pouch keeps its amount on its entry --
+        // the cursor ghost asks here too, so the band survives the lift
+        if (g_bundleCarry.active) {
+            const auto ci = g_contLayouts.find(g_bundleCarry.cont);
+            if (ci != g_contLayouts.end()) {
+                if (const auto si = ci->second.cells.find(g_bundleCarry.spot);
+                    si != ci->second.cells.end()) {
+                    for (const auto& b : si->second.bundle) {
+                        if (b.id == g_bundleCarry.id) {
+                            return (std::max)(-1, b.gold);
+                        }
+                    }
+                }
+            }
+            return -1;
+        }
         // only a partner-side carry has a reserved shelf slot to ask
         if (g_actingSpot.empty() || !Grid::HeldPartnerObject()) return -1;
         return ShelfGoldOf(g_actingSpot);
@@ -2456,6 +2511,17 @@ namespace
             if (Grid::ResolveDef(a_obj).bag != 0) {
                 auto branch = CutBranch(bundle, cid);
                 if (a_toPlayer) {
+                    // ★(1.5.x) pouches inside the leaving branch: amounts park
+                    // for the player tiles (and the manifest copy is zeroed) --
+                    // the same give-back the bag-cell take does.
+                    for (auto& b : branch) {
+                        if (b.gold <= 0) continue;
+                        SKSE::log::info(
+                            "[LOOT] bundled pouch taken back with {} G", b.gold);
+                        GoldCoins::GiveAwayGold(b.gold, b.form);
+                        b.gold = -1;
+                        b.awaitGold = 0;
+                    }
                     SendBranchHome(a_obj, std::move(branch));
                 } else if (!branch.empty()) {
                     // ★★ONTO THE SHELF, NOT HOME. Dropping a nested bag onto the
@@ -2478,7 +2544,27 @@ namespace
                 }
             } else {
                 it->count -= a_count;
-                if (it->count <= 0) bundle.erase(it);   // no survivors to repair
+                if (it->count <= 0) {
+                    // ★(1.5.x) a POUCH stepping out of its bag: the amount has
+                    // to move books before the entry dies. Home to the player
+                    // -> park it (the fresh tile claims); out onto the shelf ->
+                    // it becomes an away parcel again, which is exactly what
+                    // the cell being born will claim (the reconcile door).
+                    if (it->gold > 0) {
+                        if (a_toPlayer) {
+                            SKSE::log::info(
+                                "[LOOT] bundled pouch taken back with {} G",
+                                it->gold);
+                            GoldCoins::GiveAwayGold(it->gold, it->form);
+                        } else {
+                            SKSE::log::info(
+                                "[LOOT] bundled pouch steps onto the shelf "
+                                "with {} G", it->gold);
+                            GoldCoins::RestoreAwayParcel(it->form, it->gold);
+                        }
+                    }
+                    bundle.erase(it);   // no survivors to repair
+                }
             }
         }
         return true;
@@ -2768,10 +2854,19 @@ namespace
             const auto& b = bundle[s.idx];
             const ImVec2 p0(base.x + s.col * cell, base.y + s.row * cell);
             const float bw = s.w * cell, bh = s.h * cell;
-            const IconCache::Icon* icon = cache->Get(s.obj);
+            // ★(1.5.x) a bundled POUCH draws its own band, same as a shelf
+            // pouch cell -- the bare form's art reads "empty" whatever it holds
+            RE::TESBoundObject* iconObj = s.obj;
+            if (b.gold > 0) {
+                if (auto* v = GoldCoins::PouchIconObjectFor(b.gold,
+                        GoldCoins::PouchCapOfForm(b.form), b.form)) {
+                    iconObj = v;
+                }
+            }
+            const IconCache::Icon* icon = cache->Get(iconObj);
             if (!icon) {
-                cache->QueueCapture(s.obj);
-                icon = Fallback::Get(s.obj);
+                cache->QueueCapture(iconObj);
+                icon = Fallback::Get(iconObj);
             }
             if (icon && icon->srv) {
                 // contain-fit inside the UPRIGHT box (the sprite is not
@@ -2820,6 +2915,16 @@ namespace
                 std::snprintf(cnt, sizeof(cnt), "%d", b.count);
                 Grid::DrawCountBadge(dl, p0, cnt);
             }
+            // ★(1.5.x) while a carry rides, record the pouch entry under the
+            // cursor -- the coin drop routes deposit through this (the bag
+            // window has no cells for QueryStoreDrop to see)
+            if (Grid::IsHolding() && GoldCoins::IsPouch(b.form) &&
+                ImGui::IsWindowHovered(
+                    ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+                ImGui::IsMouseHoveringRect(p0, ImVec2(p0.x + bw, p0.y + bh),
+                                           false)) {
+                g_hoverBundlePouch = { p->GetFormID(), a_w.spot, b.id };
+            }
             if (!Grid::IsHolding()) {
                 char idbuf[24];
                 std::snprintf(idbuf, sizeof(idbuf), "##sbc%u", b.id);
@@ -2828,7 +2933,11 @@ namespace
                 if (ImGui::IsItemHovered() && !UIRoot::MouseInOverlay()) {
                     dl->AddRectFilled(p0, ImVec2(p0.x + bw, p0.y + bh),
                         Theme::Acc(0.10f));
-                    Grid::DrawItemTooltip(s.obj, b.count, -1, -1, false,
+                    // ★(1.5.x) a bundled pouch's tooltip prints its amount --
+                    // the same "N / cap G" line the shelf pouch cell shows
+                    const int tipGold = GoldCoins::IsPouch(b.form)
+                                            ? (std::max)(0, b.gold) : -1;
+                    Grid::DrawItemTooltip(s.obj, b.count, tipGold, -1, false,
                                           SourceRef(), Grid::ExtraScope::kAny,
                                           0, -1, 0, 0,
                                           Grid::TileContext{ {}, false, false, true, false });
@@ -2842,6 +2951,25 @@ namespace
                         g_carryStolen = b.stolen;
                         Grid::BeginPartnerCarry(s.obj, b.count, 0,
                                                 -1.0f, -1.0f, 0, -1, 0, s.rot);
+                    } else if (ImGui::IsItemClicked(ImGuiMouseButton_Right) &&
+                               GoldCoins::IsPouch(b.form)) {
+                        // ★(1.5.x) a bundled POUCH manages on right-click,
+                        // exactly like a shelf pouch cell: the withdraw window
+                        // opens over THIS entry's amount (never a take -- the
+                        // pouch leaves the bag by drag, like a bag does)
+                        if (g_shelfPouchSpot == a_w.spot &&
+                            g_shelfPouchBundle == b.id) {
+                            g_shelfPouchSpot.clear();
+                            g_shelfPouchBundle = 0;
+                            Sfx::SelectOff();
+                        } else {
+                            g_shelfPouchSpot = a_w.spot;
+                            g_shelfPouchBundle = b.id;
+                            g_shelfPouchForm = b.form;
+                            g_shelfPouchSlider =
+                                (std::max)(1, (std::max)(0, b.gold) / 2);
+                            Sfx::SelectOn();
+                        }
                     } else if (ImGui::IsItemClicked(ImGuiMouseButton_Right) &&
                                Grid::ResolveDef(s.obj).bag != 0) {
                         // ★★AND A BAG OPENS, which is what right-click on a bag
@@ -2977,19 +3105,19 @@ namespace
                                      g_bundleCarry.spot == a_w.spot &&
                                      g_bundleCarry.cont == p->GetFormID();
                 const RE::FormID hfid = hobj->GetFormID();
-                // eligibility: a rearrange is already inside; a shelf cell
-                // may not be a coin or a pouch (its gold lives on the SLOT this
-                // move would retire); a player item answers to
-                // HeldShelfStorable. Typed bags keep their filter -- a move
-                // from ANOTHER bag answers to it too.
+                // eligibility: a rearrange is already inside; a player item
+                // answers to HeldShelfStorable. Typed bags keep their filter
+                // -- a move from ANOTHER bag answers to it too.
                 // ★★A BAG MAY GO IN, which it could not while a bundle was one
                 // flat list -- "no nesting" was a statement about the data, not
-                // a rule anyone chose. The data is a tree now. What stays
-                // refused is a coin or a pouch: its gold lives on the SLOT this
-                // move would retire, so there is nowhere for the amount to go.
+                // a rule anyone chose. The data is a tree now.
+                // ★(1.5.x) AND A POUCH MAY GO IN: BundleItem::gold holds its
+                // amount now (the cell's gold rides along below). Plain coins
+                // stay out -- a coin cell has no entry grammar in a bag.
                 const bool intakeOk =
                     bundleRe ||
-                    (fromPartner ? !GoldCoins::IsCoinForm(hfid)
+                    (fromPartner ? (!GoldCoins::IsCoinForm(hfid) ||
+                                    GoldCoins::IsPouch(hfid))
                                  : Grid::HeldShelfStorable() != nullptr);
                 const bool filterOk = sameBag || bagDef.accept.empty() ||
                                       BagFilter::FilterOf(hobj) == bagDef.accept;
@@ -3135,12 +3263,19 @@ namespace
                             // It becomes B's branch here, every name intact.
                             std::vector<BundleItem> carried;
                             std::uint32_t cellName = 0;
+                            int cellGold = -1;    // ★(1.5.x) a pouch cell's book
+                            int cellAwait = 0;    // ...and its unclaimed grace
                             const std::string from = g_actingSpot;
                             if (!from.empty()) {
                                 if (const auto ai = a_cl.cells.find(from);
                                     ai != a_cl.cells.end()) {
                                     carried = std::move(ai->second.bundle);
                                     cellName = ai->second.bagId;
+                                    if (GoldCoins::IsPouch(ai->second.form)) {
+                                        cellGold =
+                                            (std::max)(0, ai->second.gold);
+                                        cellAwait = ai->second.awaitGold;
+                                    }
                                 }
                                 a_cl.cells.erase(from);
                                 g_actingSpot.clear();
@@ -3159,6 +3294,12 @@ namespace
                                            g_carryStolen,
                                            root };
                             ni.id = cellName != 0 ? cellName : NextBundleId();
+                            // ★(1.5.x) a pouch cell's gold becomes the
+                            // entry's -- the amount changes books, not owners.
+                            // A cell still waiting on its parcel hands the
+                            // wait over too.
+                            ni.gold = cellGold;
+                            ni.awaitGold = cellAwait;
                             const std::uint32_t nid = ni.id;
                             bundle.push_back(std::move(ni));
                             for (auto& b : carried) {
@@ -3193,9 +3334,14 @@ namespace
                             bool          st = false;
                             const bool heldBag = Grid::ResolveDef(hobj).bag != 0;
                             if (Grid::CommitHeldToShelfBag(f, cnt, sg, rt, gl, st)) {
-                                const std::uint32_t nid =
+                                auto& nb =
                                     AddBundle(bundle, { f, cnt, sg, dropC, dropR,
-                                                        rt, gl, st, root }).id;
+                                                        rt, gl, st, root });
+                                // ★(1.5.x) a player POUCH dropped in: its gold
+                                // walks separately (the sink parcels it when
+                                // the engine item transfers) -- arm the claim
+                                if (GoldCoins::IsPouch(f)) nb.awaitGold = 8;
+                                const std::uint32_t nid = nb.id;
                                 // ★★AND A BAG BRINGS ITS INSIDES. The commit
                                 // queues the contents' stores and parks their
                                 // manifest -- the same door a bag stored onto
@@ -3240,6 +3386,10 @@ namespace
 
     void DrawShelfBag()
     {
+        // ★(1.5.x) the hovered-pouch record lives one frame: whatever this
+        // pass draws re-records it. Cleared BEFORE the empty-out so closing
+        // the last window also drops the record.
+        g_hoverBundlePouch = {};
         if (g_shelfBags.empty()) return;
         if (!IsLootMode(g_mode)) { g_shelfBags.clear(); return; }
         auto* p = Partner();
@@ -3272,7 +3422,26 @@ namespace
             g_shelfPouchSpot.clear();
             return;
         }
-        const int stored = si->second.gold;
+        // ★(1.5.x) which book: the cell's own gold, or a bundled entry's.
+        // The entry is re-found every frame by its id -- a take, a move or a
+        // sale that removes it simply closes the window.
+        BundleItem* bentry = nullptr;
+        if (g_shelfPouchBundle != 0) {
+            const auto be = std::find_if(si->second.bundle.begin(),
+                si->second.bundle.end(), [&](const BundleItem& b) {
+                    return b.id == g_shelfPouchBundle;
+                });
+            if (be == si->second.bundle.end()) {   // the pouch left the bag
+                g_shelfPouchSpot.clear();
+                g_shelfPouchBundle = 0;
+                return;
+            }
+            bentry = &*be;
+        }
+        const RE::FormID bankForm =
+            bentry ? bentry->form : si->second.form;
+        const int stored =
+            bentry ? (std::max)(0, bentry->gold) : si->second.gold;
         if (g_shelfPouchSlider > stored) g_shelfPouchSlider = stored;
 
         auto* wm = WinManager::GetSingleton();
@@ -3287,7 +3456,7 @@ namespace
         char line[64];
         std::snprintf(line, sizeof(line), "%s: %d / %dG",
             Lang::T(Lang::Str::StoredLabel), stored,
-            GoldCoins::PouchCapOfForm(si->second.form));
+            GoldCoins::PouchCapOfForm(bankForm));
         const float sliderW = 220.0f * S;
         const float contentW = (std::max)({ btnRow, sliderW,
             ImGui::CalcTextSize(line).x });
@@ -3344,12 +3513,18 @@ namespace
         if (Sfx::Button(Lang::T(Lang::Str::Withdraw), ImVec2(btnW, 0)) ||
             (can && keyOk)) {
             const int v = g_shelfPouchSlider;
-            si->second.gold -= v;
+            // ★(1.5.x) the withdraw shrinks whichever book the window is on
+            if (bentry) {
+                bentry->gold = stored - v;
+            } else {
+                si->second.gold -= v;
+            }
             // the shelf's book shrinks; the ledger grows to match, and the
             // amount rides the cursor as a pinned purse (player grammar)
             GoldCoins::CreditLedger(v);
             Grid::CarryWithdrawnGold(v);
             g_shelfPouchSpot.clear();
+            g_shelfPouchBundle = 0;
             g_shelfPouchSlider = 0;
         }
         ImGui::EndDisabled();
@@ -3380,6 +3555,38 @@ namespace
         si->second.gold += moved;
         SKSE::log::info("[LOOT] deposited {} G into shelf pouch '{}' -> {}",
             moved, sd.occSpotKey, si->second.gold);
+        return moved;
+    }
+
+    // ★(1.5.x) the bundled twin. The bag window recorded which pouch entry
+    // the carry is over this frame; the coin routes land here first.
+    bool IsBundlePouchHovered() { return g_hoverBundlePouch.id != 0; }
+
+    int DepositOnHoveredBundlePouch(int a_value)
+    {
+        if (a_value <= 0 || !IsLootMode(g_mode) || g_hoverBundlePouch.id == 0) {
+            return 0;
+        }
+        const auto ci = g_contLayouts.find(g_hoverBundlePouch.cont);
+        if (ci == g_contLayouts.end()) return 0;
+        const auto si = ci->second.cells.find(g_hoverBundlePouch.spot);
+        if (si == ci->second.cells.end()) return 0;
+        const auto be = std::find_if(si->second.bundle.begin(),
+            si->second.bundle.end(), [&](const BundleItem& b) {
+                return b.id == g_hoverBundlePouch.id;
+            });
+        if (be == si->second.bundle.end() || !GoldCoins::IsPouch(be->form)) {
+            return 0;
+        }
+        const int held = (std::max)(0, be->gold);
+        const int room = GoldCoins::PouchCapOfForm(be->form) - held;
+        const int moved = (std::min)(a_value, room);
+        if (moved <= 0) return 0;   // full: the coin keeps riding
+        // (awaitGold deliberately untouched: a deposit racing the arrival
+        // claim must not strand the parcel that is still on its way)
+        be->gold = held + moved;
+        SKSE::log::info("[LOOT] deposited {} G into bundled pouch -> {}",
+            moved, be->gold);
         return moved;
     }
 
@@ -3428,6 +3635,59 @@ namespace
         });
         SKSE::log::info("[LOOT] shelf gold -> shelf pouch: {} G into '{}' -> {}",
             moved, a_pouchKey, pi->second.gold);
+        return moved;
+    }
+
+    // ★(1.5.x) shelf gold onto a pouch INSIDE an open shelf-bag window: the
+    // bundled twin of the deposit above -- the carried gold CELL's units
+    // become the entry's virtual amount, engine stack settled the same way.
+    int DepositHeldGoldIntoBundlePouch()
+    {
+        if (!IsLootMode(g_mode) || g_hoverBundlePouch.id == 0) return 0;
+        auto* cl = BoardFor();
+        auto* src = SourceRef();
+        if (!cl || !src || g_actingSpot.empty()) return 0;
+        const auto gi = cl->cells.find(g_actingSpot);
+        if (gi == cl->cells.end()) return 0;
+        auto* gobj = RE::TESForm::LookupByID<RE::TESBoundObject>(gi->second.form);
+        if (!gobj || !gobj->IsGold()) return 0;
+        const auto ci = g_contLayouts.find(g_hoverBundlePouch.cont);
+        if (ci == g_contLayouts.end()) return 0;
+        const auto si = ci->second.cells.find(g_hoverBundlePouch.spot);
+        if (si == ci->second.cells.end()) return 0;
+        const auto be = std::find_if(si->second.bundle.begin(),
+            si->second.bundle.end(), [&](const BundleItem& b) {
+                return b.id == g_hoverBundlePouch.id;
+            });
+        if (be == si->second.bundle.end() || !GoldCoins::IsPouch(be->form)) {
+            return 0;
+        }
+        const int held = (std::max)(0, be->gold);
+        const int room = GoldCoins::PouchCapOfForm(be->form) - held;
+        const int moved = (std::min)((std::max)(0, gi->second.count), room);
+        if (moved <= 0) return 0;   // full: the gold keeps riding
+
+        be->gold = held + moved;    // (awaitGold untouched -- see the coin route)
+        gi->second.count -= moved;
+        if (gi->second.count <= 0) {
+            cl->cells.erase(gi);
+            g_actingSpot.clear();   // the carried cell is spent
+        }
+        // same engine settle as the cell-to-cell deposit above
+        NoteOut(gobj, 0, 0, moved);
+        const RE::FormID srcId = src->GetFormID();
+        const RE::FormID goldId = gobj->GetFormID();
+        SKSE::GetTaskInterface()->AddTask([srcId, goldId, moved]() {
+            auto* srcRef = RE::TESForm::LookupByID<RE::TESObjectREFR>(srcId);
+            auto* gold = RE::TESForm::LookupByID<RE::TESBoundObject>(goldId);
+            if (srcRef && gold) {
+                srcRef->RemoveItem(gold, moved, RE::ITEM_REMOVE_REASON::kRemove,
+                                   nullptr, nullptr);
+            }
+            if (gold) ClearOut(gold, 0, 0, moved);
+        });
+        SKSE::log::info("[LOOT] shelf gold -> bundled pouch: {} G -> {}",
+            moved, be->gold);
         return moved;
     }
 
@@ -4002,6 +4262,25 @@ namespace
                 break;
             }
 
+            // ★(1.5.x) and the BUNDLED pouches claim theirs the same way. No
+            // one-at-a-time here: a bag arrives with all of its pouches at
+            // once, and the parcels are form-tagged, so each entry simply
+            // takes the one addressed to it.
+            for (auto& [k, c] : a_cl.cells) {
+                for (auto& b : c.bundle) {
+                    if (b.awaitGold <= 0) continue;
+                    if (const int g = GoldCoins::TakeAwayGold(b.form); g > 0) {
+                        b.gold = (std::max)(0, b.gold) + g;
+                        b.awaitGold = 0;
+                        SKSE::log::info(
+                            "[LOOT] bundled pouch holds {} G (bag '{}', late claim)",
+                            g, k);
+                    } else {
+                        --b.awaitGold;
+                    }
+                }
+            }
+
             // ---- 3. and only now, what is gone is gone ----
             // A cell whose pool the engine no longer reports, or that ended this
             // pass holding nothing. ★Same death rites as before: a pouch's money
@@ -4014,6 +4293,14 @@ namespace
                     SKSE::log::info("[LOOT] shelf cell dropped, {} G goes home ('{}')",
                                     it->second.gold, it->first);
                     GoldCoins::GiveAwayGold(it->second.gold, it->second.form);
+                }
+                // ★(1.5.x) same rites for the pouches bundled INSIDE it
+                for (const auto& b : it->second.bundle) {
+                    if (b.gold <= 0) continue;
+                    SKSE::log::info(
+                        "[LOOT] bundled pouch's {} G goes home (bag cell '{}' dropped)",
+                        b.gold, it->first);
+                    GoldCoins::GiveAwayGold(b.gold, b.form);
                 }
                 it = a_cl.cells.erase(it);
             }
@@ -4551,6 +4838,7 @@ namespace
                                 Sfx::SelectOff();
                             } else if (!it.spotKey.empty()) {
                                 g_shelfPouchSpot = it.spotKey;
+                                g_shelfPouchBundle = 0;   // (1.5.x) the cell itself
                                 g_shelfPouchForm = it.obj->GetFormID();
                                 g_shelfPouchSlider =
                                     (std::max)(1, ShelfGoldOf(it.spotKey) / 2);
@@ -5551,7 +5839,7 @@ namespace
     {
         constexpr std::uint32_t kContMaxStr = 512;
         constexpr std::uint32_t kContMaxEntries = 65536;
-        constexpr std::uint32_t kContCosaveVersion = 14;   // ★v14: the deposit ledger   // ★v13: a bag CELL's name   // ★v12: a bundle entry's NAME (id + parent id, replacing the index)   // v11: a bundle entry's parent (nested bags)   // v2: per-spot rotation  v3: a stored pouch's gold  v4: a stored bag's bundle  v5: bundle anchors  v6: bundle rotation  v7: bundle markers  v8: bundle stolen flag  v9: the spot's binding hints  v10: the cell owns form + count + xlIdx
+        constexpr std::uint32_t kContCosaveVersion = 15;   // ★v15: a bundled pouch's gold   // v14: the deposit ledger   // ★v13: a bag CELL's name   // ★v12: a bundle entry's NAME (id + parent id, replacing the index)   // v11: a bundle entry's parent (nested bags)   // v2: per-spot rotation  v3: a stored pouch's gold  v4: a stored bag's bundle  v5: bundle anchors  v6: bundle rotation  v7: bundle markers  v8: bundle stolen flag  v9: the spot's binding hints  v10: the cell owns form + count + xlIdx
 
         // ★v9 migration: before this, a spot's binding lived inside its KEY
         // ("form~B825!worn#1"). Read it back out and put it where it belongs.
@@ -5655,6 +5943,8 @@ namespace
                     // load for the one-pass migration off it.
                     a_intfc->WriteRecordData(b.id);
                     a_intfc->WriteRecordData(b.parent);
+                    // ★v15: a bundled pouch's gold (-1 = never claimed)
+                    a_intfc->WriteRecordData(static_cast<std::int32_t>(b.gold));
                 }
                 // ★v9: which unit this spot is showing. A hint, not a name:
                 // a stale one only weakens the next match, and the fallback
@@ -5781,6 +6071,12 @@ namespace
                         }
                         if (bid == 0) bid = NextBundleId();
                         idOf.push_back(bid);
+                        // ★v15: the entry's gold. Read BEFORE the resolve
+                        // branch so a dropped entry still consumes its bytes.
+                        std::int32_t bgold = -1;
+                        if (a_version >= 15) {
+                            if (!a_intfc->ReadRecordData(bgold)) return;
+                        }
                         // load-order shift: unresolvable contents are dropped
                         // (their engine items simply stay visible on the shelf)
                         RE::FormID rf = 0;
@@ -5789,6 +6085,13 @@ namespace
                                            static_cast<std::uint8_t>(bglow),
                                            bstolen != 0, bparent };
                             bi.id = bid;
+                            bi.gold = bgold;
+                            // ★v<15 migration (and any unclaimed entry): its
+                            // parcel is still on the away list -- re-arm the
+                            // claim grace so the reconcile marries them.
+                            if (bi.gold < 0 && GoldCoins::IsPouch(rf)) {
+                                bi.awaitGold = 8;
+                            }
                             bundle.push_back(std::move(bi));
                         }
                     }

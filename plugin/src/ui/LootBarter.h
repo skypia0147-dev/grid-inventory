@@ -163,6 +163,17 @@ namespace FUI::LootBarter
         //          inside the bag that owns the bundle.
         std::uint32_t parent = 0;
         std::uint32_t id = 0;
+        // ★(1.5.x) a bundled POUCH's stored amount (cosave v15) -- the
+        // nested twin of ContCell::gold, which is what gives a pouch inside
+        // a shelved bag the same banking a directly shelved one has. -1 =
+        // never claimed (an old save's entry, or a non-pouch); the claim
+        // grace below retries against the away parcels exactly as a cell's
+        // awaitGold does.
+        int           gold = -1;
+        // transient (NOT cosaved): reconcile passes left to claim a parcel.
+        // Re-armed on load for pouch entries whose gold is still -1, which
+        // is the whole v<15 migration -- their parcels are still away.
+        int           awaitGold = 0;
     };
     // ★A fresh, never-reused name for a bundle entry. One counter for the
     // whole session rather than one per container: an entry that crosses from
@@ -203,6 +214,18 @@ namespace FUI::LootBarter
     // books and queues the matching engine debit; returns the amount moved
     // (0 = pouch full / not applicable -- the caller keeps the carry).
     int  DepositHeldGoldIntoShelfPouch(const std::string& a_pouchKey);
+    // ★(1.5.x) the bundled twins: a pouch INSIDE an open shelf-bag window
+    // banks like a shelf pouch cell. The bag window records which pouch
+    // entry the cursor is over while a carry rides (per frame); the coin
+    // drop routes ask here first. Deposit writes the entry's own amount and
+    // returns what moved (0 = full / nothing hovered); the caller settles
+    // the player-side ledger, same contract as DepositOnHoveredPouch.
+    [[nodiscard]] bool IsBundlePouchHovered();
+    int  DepositOnHoveredBundlePouch(int a_value);
+    // ...and the PARTNER-carried gold cell dropped on one (the bundled twin
+    // of DepositHeldGoldIntoShelfPouch): moves from the carried cell into
+    // the entry's book and settles the engine stack itself.
+    int  DepositHeldGoldIntoBundlePouch();
 
     // ★(1.3.3) A LIVING FOLLOWER'S PACK IS 10 x 8. Chests, corpses and
     // merchants are unbounded and always answer true; a companion answers

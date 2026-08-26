@@ -496,6 +496,16 @@ namespace FUI::GoldCoins
         return v;
     }
 
+    // ★(1.5.x) a claimed amount becomes an away parcel again -- the bundled
+    // pouch stepping out of its bag onto the shelf, where the cell being
+    // born will claim it back through TakeAwayGold above.
+    void RestoreAwayParcel(RE::FormID a_form, int a_amount)
+    {
+        if (a_amount <= 0) return;
+        g_awayParcels.push_back({ a_form, a_amount });
+        g_dirty = true;
+    }
+
     // ★★CREDITED HERE, NOT HANDED TO AN EVENT. The first version parked the
     // amount in g_awayGold and left OnPouchReturned to pick it up -- but that
     // event fires on the ENGINE's container change, one whole frame before

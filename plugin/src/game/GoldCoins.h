@@ -121,6 +121,11 @@ namespace FUI::GoldCoins
     // with the pouch instead of hiding in a player-wide variable.
     [[nodiscard]] int TakeAwayGold(RE::FormID a_form = 0);
     void GiveAwayGold(int a_amount, RE::FormID a_form = 0);
+    // ★(1.5.x) the reverse of TakeAwayGold: a claimed amount goes back on
+    // the away list. Used when a bundled pouch leaves its bag ONTO the
+    // shelf -- the cell being born claims a parcel, so the bundle entry's
+    // amount has to become one again first.
+    void RestoreAwayParcel(RE::FormID a_form, int a_amount);
     // ★(1.3.2a) shelf-pouch banking: plain ledger credit/debit (no pouch
     // parking) -- the shelf spot is the book, these settle the engine gold.
     void CreditLedger(int a_amount);

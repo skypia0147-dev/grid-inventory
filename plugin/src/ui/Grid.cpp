@@ -12705,6 +12705,27 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
         bool DropPartnerHeld(Held& a_held)
         {
+            // ★(1.5.x) shelf gold dropped on a POUCH INSIDE AN OPEN SHELF-BAG
+            // WINDOW deposits into that entry -- the bag window is not the
+            // partner grid, so this has to be asked before the hover gate
+            // below. Whatever the pouch cannot hold keeps riding (coin-route
+            // grammar); a full pouch consumes the drop rather than falling
+            // through to the void.
+            if (a_held.obj && a_held.obj->IsGold() &&
+                !LootBarter::IsBundleCarry() &&
+                LootBarter::IsBundlePouchHovered()) {
+                const int moved = LootBarter::DepositHeldGoldIntoBundlePouch();
+                if (moved >= a_held.count) {
+                    if (g_sound) g_sound(a_held.obj, false);
+                    g_held.reset();
+                } else if (moved > 0) {
+                    a_held.count -= moved;
+                    if (g_sound) g_sound(a_held.obj, false);
+                } else {
+                    Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
+                }
+                return true;
+            }
             // F7 (kLoot/kSteal): dropping a partner-carried item back ON the
             // partner grid REARRANGES the container — empty cell = move, on
             // another item = swap (mirrors the player-grid grammar). Chrome
@@ -14484,6 +14505,38 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             return true;
         }
 
+        // ★(1.5.x) a coin dropped on a POUCH INSIDE AN OPEN SHELF-BAG WINDOW
+        // deposits into that entry -- the bundled twin of GoldOnPartnerPouch.
+        // The bag window records the hovered pouch entry per frame; this row
+        // self-gates on that record, so it sits at the head of both coin
+        // tables and is inert everywhere else. A full pouch keeps the carry
+        // riding (consuming the drop): falling through would reach the void
+        // row and drop the purse on the floor.
+        bool GoldOnBundlePouch(Held& a_held)
+        {
+            if (a_held.coinValue <= 0) return false;
+            if (!LootBarter::IsBundlePouchHovered()) return false;
+            const int moved =
+                LootBarter::DepositOnHoveredBundlePouch(a_held.coinValue);
+            if (moved <= 0) {
+                Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
+                return true;
+            }
+            GoldCoins::DebitLedger(moved);   // same settle as the cell route
+            const int rem = a_held.coinValue - moved;
+            if (rem > 0) {   // partial deposit keeps riding (S-G record shrinks)
+                SetCoinRecord(a_held.key, rem);
+                a_held.coinValue = rem;
+                if (g_sound) g_sound(a_held.obj, false);
+                return true;
+            }
+            g_layout.erase(a_held.key);
+            if (g_sound) g_sound(a_held.obj, false);
+            g_held.reset();
+            RequestRebuild();
+            return true;
+        }
+
         struct DropRoute
         {
             DropWhere where;
@@ -14496,6 +14549,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // gold fragment: priority mirrors the stack case; (6) chrome /
         // unresolved = keep carrying (no consuming row)
         constexpr DropRoute kGoldFragRoutes[] = {
+            // (1.5.x) hovered bundled pouch wins outright -- self-gating
+            { DropWhere::kAlways, GoldOnBundlePouch },
             { DropWhere::kTrashArea, GoldFragTrashBlock },   // F2: gold never parks
             { DropWhere::kEmptyCell, GoldFragOnEmptyCell },
             { DropWhere::kBlockerSingle, GoldFragOnBlocker },
@@ -14517,6 +14572,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             { DropWhere::kVoid, StackFragToVoid },
         };
         constexpr DropRoute kWholeTileRoutes[] = {
+            // (1.5.x) a whole coin tile on a bundled pouch: same head row as
+            // the fragment table (coinValue gates it -- inert for gear)
+            { DropWhere::kAlways, GoldOnBundlePouch },
             { DropWhere::kEquipSlot, WholeOnEquipSlot },
             { DropWhere::kTrashArea, WholeIntoTrash },   // F2 (falls through when
                                                          // repositioning INSIDE)
@@ -14983,13 +15041,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // now, and the commit below sends the bag's contents along with it.
         if (g_held->coinValue >= 0) return nullptr;   // coin tiles mirror the ledger
         const RE::FormID fid = g_held->obj->GetFormID();
-        // ★★AND NEITHER DOES A POUCH, for the same reason a shelf pouch may
-        // not go in: the amount hangs off a SLOT, and a bundle entry is not one.
-        // It was let through, and its gold had nowhere to be written down --
-        // the bag kept the pouch and the pouch came back empty. A bundle can
-        // hold a bag (it has a branch to put the contents in); it has nothing
-        // to hold a number, so the pouch stays on a board that does.
-        if (GoldCoins::IsCoinForm(fid)) return nullptr;
+        // ★(1.5.x) A POUCH MAY GO IN NOW. It was refused because a bundle
+        // entry had nothing to hold a number, so its gold had nowhere to be
+        // written down. BundleItem::gold exists (cosave v15) and the shelf
+        // reconcile claims the parcel into it, so a pouch banks inside a
+        // bag exactly as it does on a bare shelf cell. Plain coins stay
+        // out: a coin tile mirrors the ledger and never travels as an item.
+        if (GoldCoins::IsCoinForm(fid) && !GoldCoins::IsPouch(fid)) return nullptr;
         if (g_held->quest) return nullptr;   // Phase 7
         return g_held->obj;
     }
