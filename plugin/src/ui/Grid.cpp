@@ -1020,6 +1020,10 @@ namespace FUI::Grid
             return PoolPrefix(BaseKey(a_key), it->second.uid, it->second.sig);
         }
 
+        // fwd: the coin-record verb lives with its S0 siblings below, but the
+        // bag-store manifest walk (StoreBagContents) needs it first
+        void SetCoinRecord(const std::string& a_key, int a_value);
+
         std::string NextTileKey(const std::string& a_baseKey)
         {
             auto& layout = Layout();
@@ -1255,7 +1259,34 @@ namespace FUI::Grid
                 todo.pop_back();
             for (auto& it : g_items) {
                 if (it.inBag != bagKey || !it.obj) continue;
-                if (it.coinValue >= 0) continue;   // pinned purses stay home
+                if (it.coinValue >= 0) {
+                    // ★(1.5.x) GOLD RIDES IN THE BAG NOW (it used to stay
+                    // home and fall out of the store -- reported). A coin
+                    // tile is a ledger mirror with no engine item, so its
+                    // value stores into the container as physical Septims
+                    // and the manifest books a GOLD ENTRY at its anchor --
+                    // the same shape the open-bag window's intake makes.
+                    auto* dst = LootBarter::Partner();
+                    auto* vg = GoldCoins::VanillaGold();
+                    if (!dst || !vg || it.coinValue <= 0) continue;
+                    const int moved =
+                        GoldCoins::StoreToContainer(dst, it.coinValue);
+                    if (moved <= 0) continue;   // refused: the tile stays home
+                    LootBarter::NoteStoredUnits(vg, moved);
+                    if (moved < it.coinValue) {
+                        SetCoinRecord(it.key, it.coinValue - moved);
+                    } else {
+                        g_layout.erase(it.key);
+                    }
+                    LootBarter::BundleItem gbi{ vg->GetFormID(), moved, 0,
+                                                it.col, it.row, it.rot & 3,
+                                                0, false, parent };
+                    gbi.id = LootBarter::MintBundleId();
+                    manifest.push_back(std::move(gbi));
+                    SKSE::log::info("[GOLD] {} G rides in the stored bag",
+                                    moved);
+                    continue;
+                }
                 // ★the entry's name, minted before anything can refer to it
                 const std::uint32_t bid = LootBarter::MintBundleId();
                 if (it.def.bag != 0) {
@@ -6643,6 +6674,44 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     const std::string into =
                         b.parent == 0 ? bagKey : tileOf[b.parent];
                     if (into.empty()) continue;
+                    // ★(1.5.x) a GOLD entry has no engine tile to claim: the
+                    // Septims merged into the ledger on arrival (announced by
+                    // ExpectIncoming at the take, so no income mint doubled
+                    // them). Mint its coin record straight into the bag at
+                    // the anchor it was stored with.
+                    if (auto* vg = GoldCoins::VanillaGold();
+                        vg && b.form == vg->GetFormID()) {
+                        if (b.count > 0) {
+                            if (auto* cf = GoldCoins::CoinForTier(0)) {
+                                // capfuls, the income mint's own granularity;
+                                // the FIRST tile takes the stored anchor
+                                int  left = b.count;
+                                bool anchor = b.col >= 0 && b.row >= 0;
+                                while (left > 0) {
+                                    const int n =
+                                        (std::min)(GoldCoins::kCoinCap, left);
+                                    const std::string ck =
+                                        NextTileKey(FormKey(cf));
+                                    auto& le = g_layout[ck];
+                                    le.bag = into;
+                                    le.col = anchor ? b.col : -1;
+                                    le.row = anchor ? b.row : -1;
+                                    le.rot = anchor ? (b.rot & 3) : 0;
+                                    le.coin = n;
+                                    le.count = 1;
+                                    anchor = false;
+                                    left -= n;
+                                }
+                                MarkCapacityDirty();
+                                ++g_boardVersion;
+                                RequestRebuild();
+                                SKSE::log::info(
+                                    "[BAGCLAIM] {} G -> '{}' (gold entry)",
+                                    b.count, into);
+                            }
+                        }
+                        continue;
+                    }
                     int remaining = b.count;
                     // ★★AND THE ANCHOR COMES HOME WITH IT. The manifest has
                     // carried col/row since v5 and this routed the contents

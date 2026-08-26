@@ -541,7 +541,7 @@ namespace FUI::LootBarter
             if (!a_bag || a_branch.empty()) return;
             if (auto* src = SourceRef()) {
                 auto inv = src->GetInventory();
-                for (const auto& b : a_branch) {
+                for (auto& b : a_branch) {
                     auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(b.form);
                     if (!obj) continue;
                     int present = 0;
@@ -549,6 +549,12 @@ namespace FUI::LootBarter
                         present = ei->second.first;
                     }
                     const int take = (std::min)(b.count, present);
+                    // ★(1.5.x) gold: announce + clamp, same as the bag-cell
+                    // take (see ConsumeActingSpot) -- the claim mints it
+                    if (obj->IsGold()) {
+                        b.count = take;
+                        if (take > 0) GoldCoins::ExpectIncoming(take);
+                    }
                     if (take > 0) RequestTake(obj, take, 0, b.sig, false);
                 }
             }
@@ -778,7 +784,7 @@ namespace FUI::LootBarter
                 // partner ref IS the source the takes will pull from
                 if (auto* src = Partner()) {
                     auto inv = src->GetInventory();
-                    for (const auto& b : bundle) {
+                    for (auto& b : bundle) {
                         auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(b.form);
                         if (!obj) continue;
                         int present = 0;
@@ -788,6 +794,15 @@ namespace FUI::LootBarter
                         // the chest may have respawned some of it away: take
                         // what is actually there, silently drop the rest
                         const int take = (std::min)(b.count, present);
+                        // ★(1.5.x) a GOLD entry: the arriving Septims merge
+                        // straight into the ledger, and the claim will mint
+                        // its coin record in the bag -- announce the amount
+                        // so the income detector does not mint it TWICE, and
+                        // clamp the manifest to what actually travels.
+                        if (obj->IsGold()) {
+                            b.count = take;
+                            if (take > 0) GoldCoins::ExpectIncoming(take);
+                        }
                         if (take <= 0) continue;
                         RequestTake(obj, take, 0, b.sig, false);
                     }
