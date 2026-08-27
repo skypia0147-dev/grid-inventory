@@ -279,6 +279,12 @@ The same notes are in that folder's `_README.txt`.
 ## Good to know
 
 - **Opening the inventory pauses the game** (conflicts with Skyrim Souls RE).
+- **Spell tome learning is incompatible with book-reading overhauls (Book 'em
+  and the like)** — Skyrim's in-menu reading is not a callable API, so this
+  mod teaches and consumes tomes directly; an overhaul's hooks (unconsumed
+  tomes, study sessions) never see our screen. Regular books, notes, scrolls
+  and Elder Scrolls go through the engine's own doors and are unaffected, and
+  any book read in the world works with overhauls as normal.
 - **The weight limit is retired by raising carry weight enormously** — weight
   management mods lose their point. The effect removes itself on uninstall.
 - ⚠️ **A filled Coin Pouch left in a respawning container is lost with its gold.**
