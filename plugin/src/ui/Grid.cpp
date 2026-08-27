@@ -10296,37 +10296,52 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             else if (!g_overloaded && has) player->RemoveSpell(g_abOver);
 
             // ★W3: carry weight -> owned cells. Subtract OUR two abilities'
-            // own CarryWeight magnitudes (read from the forms once -- the
-            // ESP may be edited) and the baseline; what remains is the
-            // world's bonus: perks, stones, enchantments, potions, stamina
-            // level-ups. Ability mode only -- the AV-steering fallback
-            // rewrites the total every frame and leaves nothing to measure.
+            // contribution and the baseline; what remains is the world's
+            // bonus: perks, stones, enchantments, potions, stamina level-ups.
+            // Ability mode only -- the AV-steering fallback rewrites the
+            // total every frame and leaves nothing to measure.
+            //
+            // ★★★BY ACTIVE EFFECT, NOT BY HasSpell. HasSpell flips the moment
+            // AddSpell/RemoveSpell is called, but the AV moves a frame later,
+            // when the effect actually LANDS -- and in that gap the overload
+            // debuff's ±1,000,000 read as "the world's bonus". Fifty phantom
+            // cells appeared, the bigger board was no longer overloaded, the
+            // debuff came off, the cells vanished, the board was overloaded
+            // again: a per-frame flip-flop the user saw as the overload
+            // markers "ghosting" (each screenshot caught one clean state --
+            // the ghost was temporal, two states alternating at frame rate)
+            // and as the vanilla slowdown never engaging (the debuff never
+            // lived longer than a frame). The active-effect list cannot
+            // race: an effect is applied to it and to the AV in the same
+            // step, so the subtraction and the reading always agree.
             if (g_cwPerCell > 0) {
-                static float s_boostMag = -1.0f;
-                static float s_overMag = 0.0f;
-                if (s_boostMag < 0.0f) {
-                    auto magOf = [](RE::SpellItem* a_sp) {
-                        float t = 0.0f;
-                        if (!a_sp) return t;
-                        for (auto* eff : a_sp->effects) {
-                            if (!eff || !eff->baseEffect) continue;
-                            const auto& d = eff->baseEffect->data;
-                            if (d.primaryAV != RE::ActorValue::kCarryWeight) {
+                float ours = 0.0f;
+                if (auto* mt = player->AsMagicTarget()) {
+                    if (auto* list = mt->GetActiveEffectList()) {
+                        for (auto* ae : *list) {
+                            if (!ae || (ae->spell != g_abBoost &&
+                                        ae->spell != g_abOver)) {
                                 continue;
                             }
-                            const float m = eff->effectItem.magnitude;
-                            t += d.flags.all(RE::EffectSetting::
-                                     EffectSettingData::Flag::kDetrimental)
-                                     ? -m : m;
+                            if (ae->flags.any(RE::ActiveEffect::Flag::kInactive,
+                                              RE::ActiveEffect::Flag::kDispelled)) {
+                                continue;
+                            }
+                            const auto* eff = ae->effect;
+                            if (!eff || !eff->baseEffect ||
+                                eff->baseEffect->data.primaryAV !=
+                                    RE::ActorValue::kCarryWeight) {
+                                continue;
+                            }
+                            ours += eff->baseEffect->data.flags.all(
+                                        RE::EffectSetting::EffectSettingData::
+                                            Flag::kDetrimental)
+                                        ? -ae->magnitude
+                                        : ae->magnitude;
                         }
-                        return t;
-                    };
-                    s_boostMag = (std::max)(0.0f, magOf(g_abBoost));
-                    s_overMag = magOf(g_abOver);
+                    }
                 }
-                float cw = avo->GetActorValue(RE::ActorValue::kCarryWeight);
-                if (player->HasSpell(g_abBoost)) cw -= s_boostMag;
-                if (player->HasSpell(g_abOver)) cw -= s_overMag;
+                float cw = avo->GetActorValue(RE::ActorValue::kCarryWeight) - ours;
                 // ★baseline 0 = AUTO: the race's own base, so overhauls that
                 // rewrite it (race records) need no manual setting. Stamina
                 // level-ups grow the AV past the racial base and so still
