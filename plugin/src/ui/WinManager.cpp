@@ -340,6 +340,14 @@ namespace FUI
                 Census::SetEnabled(rest == "1" || rest == "true");
                 continue;
             }
+            // Post-load icon warm-up (first-open latency). ON by default;
+            // this is the escape hatch for machines where any background
+            // I/O after a load is unwelcome ("!warmicons = 0").
+            if (key == "!warmicons") {
+                IconCache::GetSingleton()->SetWarmEnabled(
+                    rest == "1" || rest == "true");
+                continue;
+            }
             // Carrier biped slot pin (editor 44..60) -- see DualRing.h. A
             // modlist fact, so it is the player's line to write.
             if (key == "!ring2slot") {
@@ -848,6 +856,7 @@ namespace FUI
         // an ordinary install still carries no line.
         if (!Census::Enabled())    out << "!census = 0\n";
         if (!Ledger::Enabled())    out << "!ledger = 0\n";
+        if (!IconCache::GetSingleton()->WarmEnabled()) out << "!warmicons = 0\n";
         if (DualRing::SlotOverride() >= 0) {
             out << "!ring2slot = " << DualRing::SlotOverride() << "\n";
         }

@@ -144,6 +144,24 @@ namespace FUI
         // costs nothing and says which threads meet here.
         mutable std::atomic<int> m_tick{ 0 };
 
+        // ---- post-load warm-up (first-open latency) ------------------------
+        // Queue forms whose PAK sprite should be made resident before the
+        // first menu open. Serviced from TrimToBudget -- the once-a-tick spot
+        // that already owns m_icons outside the draw -- at a deliberately
+        // gentle rate: a short grace after the load (the load spike is the
+        // worst moment to add I/O on a slow machine), then at most
+        // kWarmPerTick pak restores per tick. Pak reads ONLY, never a
+        // capture: warm-up must be safe with no menu and no engine scene.
+        // Forms are kept as FormIDs (원칙 2) and re-resolved at service time.
+        void QueueWarm(std::vector<RE::FormID> a_forms);
+        void SetWarmEnabled(bool a_on) { m_warmEnabled = a_on; }
+        [[nodiscard]] bool WarmEnabled() const { return m_warmEnabled; }
+        // Widen the refill allowance for the next a_frames ticks. Called at
+        // menu open: a screenful of pak sprites lands during the open
+        // transition (already a covered moment) instead of trickling in at
+        // kRefillPerFrame and reading as pop-in.
+        void Burst(int a_frames) { m_burstFrames = (std::max)(m_burstFrames, a_frames); }
+
         [[nodiscard]] bool        IsBusy() const { return m_pendingBusy || !m_queue.empty(); }
         [[nodiscard]] const Icon* Get(RE::TESBoundObject* a_obj) const;   // resolves def internally
         [[nodiscard]] size_t      CachedCount() const { return m_icons.size(); }
@@ -301,6 +319,15 @@ namespace FUI
         // is touched, so filling a miss is not a change the caller can see.
         bool LoadFromDisk(std::uint64_t a_key) const;
         mutable int m_refillLeft = kRefillPerFrame;   // reset each TrimToBudget
+
+        // warm-up state (see QueueWarm)
+        std::deque<RE::FormID> m_warmQueue;
+        int                    m_warmDelay = 0;
+        int                    m_burstFrames = 0;
+        bool                   m_warmEnabled = true;
+        static constexpr int kWarmDelayTicks = 300;   // ~5s past the load
+        static constexpr int kWarmPerTick    = 2;     // pak restores per tick
+        static constexpr int kBurstRefill    = 128;   // open-transition allowance
         static void SaveToDisk(std::uint64_t a_key, int a_w, int a_h, std::uint32_t a_fmt,
                                const std::vector<std::uint8_t>& a_pixels);
 

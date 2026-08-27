@@ -3959,6 +3959,13 @@ namespace FUI::UIRoot
         // this is the reading that matters -- kPostLoadGame fires before the 3D
         // is back, so the report there cannot see what the body actually built.
         g_menuOpenSfx = 10;   // clear of the open transition (3 was too early)
+        // ★Open-transition BURST: for the next few ticks the icon cache may
+        // restore a screenful of pak sprites at once instead of 8 per frame.
+        // The open is already a covered moment (menu fade), so the batch is
+        // invisible where the trickle read as pop-in -- and a CONTAINER
+        // session benefits most, since a chest's contents are exactly the
+        // sprites the player is least likely to have resident.
+        IconCache::GetSingleton()->Burst(4);
         // Re-ask the engine which button carries what: the player may have
         // rebound the controls since the last time the menu was up. Done HERE,
         // on the game thread, so the render thread only ever reads the result.

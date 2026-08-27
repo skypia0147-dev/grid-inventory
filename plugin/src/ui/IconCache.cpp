@@ -3038,6 +3038,9 @@ namespace FUI
         m_pending = Pending{};
         m_queue.clear();
         m_queued.clear();
+        // the warm queue names the save being left; kPostLoadGame refills it
+        m_warmQueue.clear();
+        m_warmDelay = 0;
         // ★★★AND EVERY OTHER PLACE A FORM POINTER SLEEPS. The note above got
         // m_pending right and stopped there. A load destroys and remints every
         // dynamic form (0xFF...): a potion the player brewed, a weapon they
@@ -3066,13 +3069,61 @@ namespace FUI
         return n;
     }
 
+    void IconCache::QueueWarm(std::vector<RE::FormID> a_forms)
+    {
+        if (!m_warmEnabled || a_forms.empty()) return;
+        m_warmQueue.assign(a_forms.begin(), a_forms.end());
+        m_warmDelay = kWarmDelayTicks;
+        SKSE::log::info("[ICONS] warm-up queued: {} form(s), starting in ~{}s",
+            m_warmQueue.size(), kWarmDelayTicks / 60);
+    }
+
     void IconCache::TrimToBudget()
     {
         // The refill allowance is per FRAME, and this is the once-a-frame
         // place that runs outside the draw. Reset it here so the two can
         // never drift apart. Same for the clock the ages are measured on.
-        m_refillLeft = kRefillPerFrame;
+        // ★A menu-open BURST widens it for a few ticks: the open transition
+        // is already a covered moment, so a screenful of pak loads there is
+        // invisible, while the same loads trickled at 8/frame read as
+        // pop-in (user report: first open "느리다").
+        if (m_burstFrames > 0) {
+            --m_burstFrames;
+            m_refillLeft = kBurstRefill;
+        } else {
+            m_refillLeft = kRefillPerFrame;
+        }
         const int now = m_tick.fetch_add(1, std::memory_order_relaxed) + 1;
+
+        // ---- post-load warm-up: make the pak sprites the player is carrying
+        // resident BEFORE the first open asks for them. Gentle by design for
+        // slow machines: waits out the load spike, then at most kWarmPerTick
+        // pak restores per tick (two small reads + uploads), pak-only -- a
+        // form with no pak entry is simply dropped; the capture pipeline
+        // remains the menu's business. Runs here because this is the one
+        // per-tick spot that already owns m_icons outside the draw.
+        if (!m_warmQueue.empty() && m_warmEnabled && m_style != Style::kFlat) {
+            if (m_warmDelay > 0) {
+                --m_warmDelay;
+            } else {
+                int loaded = 0, seen = 0;
+                while (!m_warmQueue.empty() && loaded < kWarmPerTick &&
+                       seen < kWarmPerTick * 4) {
+                    ++seen;
+                    const RE::FormID id = m_warmQueue.front();
+                    m_warmQueue.pop_front();
+                    auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(id);
+                    if (!obj) continue;
+                    const std::uint64_t key = KeyFor(obj, ResolveDef(obj));
+                    if (m_icons.contains(key) || m_failed.contains(key)) continue;
+                    if (LoadFromDisk(key)) ++loaded;
+                }
+                if (m_warmQueue.empty()) {
+                    SKSE::log::info("[ICONS] warm-up done ({} resident)",
+                        m_icons.size());
+                }
+            }
+        }
 
         std::uint64_t total = VramBytes();
         if (total <= kVramBudget) return;

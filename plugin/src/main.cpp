@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <unordered_map>
@@ -2237,10 +2238,37 @@ namespace
 
         FUI::UIRoot::SetVisibilityCallbacks(
             []() {   // menu shown
-                LoadCategoryDefs();   // hot-reload category defaults (H7)
-                LoadItemDefs();       // hot-reload user overrides (same as legacy path)
-                LoadUniqueDefs();     // ...and the unique declarations beside them
-                LoadFlatIconDefs();   // hot-reload IconStudio's drawn-icon edits
+                // ★Hot-reload BY TIMESTAMP. These four parses ran on every
+                // open -- ~5,000 override lines re-read to produce the same
+                // tables -- because hot reload was implemented as "always
+                // reload". The reload's PURPOSE is picking up edits, and an
+                // edit is visible in the file's write time, so unchanged
+                // files now skip the parse (measured ~20-30ms per open).
+                // The editor's own saves bump the timestamp like any external
+                // edit, so nothing about the reload story changes.
+                namespace fs = std::filesystem;
+                static const char* kWatched[] = { kCatsPath, kDefsPath,
+                                                  kUniquePath, kFlatPath };
+                static fs::file_time_type s_seen[4]{};
+                static bool s_first = true;
+                bool changed = s_first;
+                s_first = false;
+                for (int i = 0; i < 4; ++i) {
+                    std::error_code ec;
+                    const auto t = fs::last_write_time(kWatched[i], ec);
+                    // a missing file reads as epoch -- still a comparable
+                    // value, so deleting or restoring an ini counts as a change
+                    if (t != s_seen[i]) {
+                        s_seen[i] = t;
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    LoadCategoryDefs();   // hot-reload category defaults (H7)
+                    LoadItemDefs();       // hot-reload user overrides (same as legacy path)
+                    LoadUniqueDefs();     // ...and the unique declarations beside them
+                    LoadFlatIconDefs();   // hot-reload IconStudio's drawn-icon edits
+                }
                 // typed bags phase 0: classify what the player is carrying and
                 // write the tally out. ONCE per session — this is an
                 // observation, not a feature, and it must not cost anything on
@@ -2382,6 +2410,19 @@ namespace
             // ⓛ probe: the museum index. Deferred like the rest -- the display
             // references have to exist before their state means anything.
             SKSE::GetTaskInterface()->AddTask([]() { FUI::Lotd::Rebuild(); });
+            // ★Icon warm-up: hand the icon cache the forms the player is
+            // carrying so their pak sprites go resident BEFORE the first
+            // open. The cache itself paces the work (grace period + a couple
+            // of reads per tick) -- see IconCache::QueueWarm.
+            SKSE::GetTaskInterface()->AddTask([]() {
+                auto* p = RE::PlayerCharacter::GetSingleton();
+                if (!p) return;
+                std::vector<RE::FormID> forms;
+                for (auto& [obj, pair] : p->GetInventory()) {
+                    if (obj && pair.first > 0) forms.push_back(obj->GetFormID());
+                }
+                FUI::IconCache::GetSingleton()->QueueWarm(std::move(forms));
+            });
             break;
         }
     }
