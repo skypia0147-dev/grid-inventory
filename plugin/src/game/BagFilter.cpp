@@ -10,10 +10,12 @@ namespace FUI::BagFilter
     {
         constexpr const char* kIniPath = "Data/SKSE/Plugins/GridInventory_bagfilters.ini";
 
-        // PLAN_TYPED_BAGS.md §1. Four of the six resolve off the record TYPE via
-        // the category, so they are exact for any mod's content. Only ore and
-        // hide lean on keywords — merchants need those keywords too, so mod
-        // authors do attach them, but that is the half that can miss.
+        // PLAN_TYPED_BAGS.md §1, PLAN_BOOK_BAG.md. Five of the seven resolve off
+        // the record TYPE via the category (book joined as the seventh -- all
+        // five of its categories are record-type driven), so they are exact for
+        // any mod's content. Only ore and hide lean on keywords — merchants
+        // need those keywords too, so mod authors do attach them, but that is
+        // the half that can miss.
         // `vendor:` names the keyword that identifies WHO SELLS this bag —
         // ★the merchant who trades the things the bag holds. Deriving the shop
         // from the filter means no merchant table to maintain and mod-added
@@ -26,6 +28,7 @@ potion  = cat:potion, cat:poison, vendor:VendorItemPotion
 key     = cat:key, kwd:VendorItemKey, frm:Skyrim.esm|0x00000A, vendor:VendorItemClutter
 ore     = cat:misc_ore, cat:misc_ingot, vendor:VendorItemOreIngot
 hide    = cat:misc_hide, kwd:VendorItemAnimalPart, vendor:VendorItemAnimalHide
+book    = cat:book, cat:book_note, cat:book_skill, cat:book_spell, cat:scroll, vendor:VendorItemClutter
 )";
         // ★The ore pouch names BOTH ore categories. Splitting misc_ingot out of
         // misc_ore silently narrowed this rule — the pouch kept its name and
