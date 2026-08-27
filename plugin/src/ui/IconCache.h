@@ -325,7 +325,13 @@ namespace FUI
         int                    m_warmDelay = 0;
         int                    m_burstFrames = 0;
         bool                   m_warmEnabled = true;
-        static constexpr int kWarmDelayTicks = 300;   // ~5s past the load
+        // ~3s at 60fps. TICKS, not seconds, on purpose: a slower machine
+        // ticks slower, so the machines the grace protects wait LONGER in
+        // real time (30fps = ~6s) while a fast one starts sooner -- the
+        // adaptation comes free. Was 5s nominal; measured, the player can
+        // reach the inventory in ~3.3s after a load, and the warm work is
+        // two small reads a tick, so meeting them earlier costs nothing.
+        static constexpr int kWarmDelayTicks = 180;
         static constexpr int kWarmPerTick    = 2;     // pak restores per tick
         static constexpr int kBurstRefill    = 128;   // open-transition allowance
         static void SaveToDisk(std::uint64_t a_key, int a_w, int a_h, std::uint32_t a_fmt,
