@@ -10290,10 +10290,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     SKSE::log::info("[GRID] cleared legacy CW modifier ({:+.0f})", t);
                 }
             }
-            if (!player->HasSpell(g_abBoost)) player->AddSpell(g_abBoost);
-            const bool has = player->HasSpell(g_abOver);
-            if (g_overloaded && !has) player->AddSpell(g_abOver);
-            else if (!g_overloaded && has) player->RemoveSpell(g_abOver);
+            // (the ability toggles moved BELOW the measurement -- see there)
 
             // ★W3: carry weight -> owned cells. Subtract OUR two abilities'
             // contribution and the baseline; what remains is the world's
@@ -10354,21 +10351,41 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                : 300;
                 }
                 const int ext = static_cast<int>(cw) - base;
-                const int cells = std::clamp(
-                    ext > 0 ? ext / g_cwPerCell : 0, 0, g_cwMaxCells);
-                if (cells != g_cwBonusCells) {
-                    SKSE::log::info(
-                        "[GRID] carry-weight bonus: {} cell(s) ({:+} CW past "
-                        "the baseline)", cells, ext);
-                    g_cwBonusCells = cells;
-                    MarkCapacityDirty();
-                    RequestRebuild();
+                // ★★A reading taken while an ability toggle is still landing
+                // inside the engine is garbage ON THE SCALE OF THE ABILITIES
+                // (±1,000,000) -- the second face of the flip-flop: even the
+                // active-effect walk read a transition frame, because the
+                // engine dispels and re-applies ability effects across an
+                // AddSpell and the list disagrees with the AV mid-step. No
+                // legitimate bonus is within two orders of that scale, so a
+                // reading out of range keeps the last good answer instead of
+                // minting fifty phantom cells out of a frame boundary.
+                if (std::abs(ext) <= 100000) {
+                    const int cells = std::clamp(
+                        ext > 0 ? ext / g_cwPerCell : 0, 0, g_cwMaxCells);
+                    if (cells != g_cwBonusCells) {
+                        SKSE::log::info(
+                            "[GRID] carry-weight bonus: {} cell(s) ({:+} CW past "
+                            "the baseline)", cells, ext);
+                        g_cwBonusCells = cells;
+                        MarkCapacityDirty();
+                        RequestRebuild();
+                    }
                 }
             } else if (g_cwBonusCells != 0) {
                 g_cwBonusCells = 0;
                 MarkCapacityDirty();
                 RequestRebuild();
             }
+
+            // ★The toggles run AFTER the measurement, so every reading is at
+            // least one full tick away from the last toggle -- the engine has
+            // had a frame to finish applying or removing the effect before
+            // anyone reads the AV against the list again.
+            if (!player->HasSpell(g_abBoost)) player->AddSpell(g_abBoost);
+            const bool has = player->HasSpell(g_abOver);
+            if (g_overloaded && !has) player->AddSpell(g_abOver);
+            else if (!g_overloaded && has) player->RemoveSpell(g_abOver);
             return;
         }
 
