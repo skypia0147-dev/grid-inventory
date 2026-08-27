@@ -3574,22 +3574,24 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                 GoldCoins::DropAsGold(it.coinValue);
                                 g_layout.erase(it.key);   // free THIS slot; rebuild re-maps survivors by position
                                 RequestRebuild();
+                            } else if (it.count > 1) {
+                                // ★(1.5.x stack flow) A STACK ASKS HOW MANY.
+                                // R dropped exactly one unit per press, which
+                                // is right for the gesture and useless for a
+                                // pile of ninety-eight arrows -- and it was
+                                // the one place in this UI where the answer
+                                // had to be spammed rather than given. The
+                                // window starts at 1 (the old meaning, one
+                                // Enter away) and MAX empties the cell.
+                                // ★Deliberately the OPPOSITE direction from
+                                // take and store, which lost their windows in
+                                // the same pass: those only move a thing, and
+                                // a wrong whole-cell move is undone with one
+                                // more click. Dropping scatters.
+                                LootBarter::OpenSlider(it.obj, it.count,
+                                    LootBarter::XferDir::kDrop, it.key);
                             } else {
-                                if (it.count <= 1) {   // last unit: tile disappears
-                                    g_layout.erase(it.key);
-                                    if (it.def.bag != 0) {   // E4: contents back to main
-                                        g_openBags.erase(it.key);
-                                        for (auto& [k, le] : g_layout) {
-                                            if (le.bag == it.key) le.bag.clear();
-                                        }
-                                    }
-                                }
-                                if (g_dropWorld) {
-                                    g_dropWorld(it.obj, 1,   // GI36: star dies with it
-                                        ResolveExitUnit(it.obj, it.uid, it.sig, 1,
-                                                        it.fav ? 1 : 0, it.xlIdx));
-                                }
-                                RequestRebuild();
+                                DropTileUnits(it.key, 1);
                             }
                         }
                         // F: vanilla favorite toggle (feeds the Q menu);
@@ -9979,6 +9981,35 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     //  counted the trash as storage. There is now one answer: total - used.
     int SpaceTotal() { return g_spaceTotal; }
 
+    void DropTileUnits(const std::string& a_key, int a_count)
+    {
+        const auto it = std::find_if(g_items.begin(), g_items.end(),
+            [&](const Item& t) { return t.key == a_key; });
+        // ★The board can be rebuilt between the ask and the answer (a
+        // container closing, a script taking the stack), so a key that names
+        // nothing is an ordinary outcome here, not a fault to report.
+        if (it == g_items.end() || !it->obj || a_count <= 0) return;
+        const int n = (std::min)(a_count, (std::max)(1, it->count));
+        if (n >= it->count) {   // the last unit: the tile goes with it
+            g_layout.erase(it->key);
+            if (it->def.bag != 0) {   // E4: contents back to main
+                g_openBags.erase(it->key);
+                for (auto& [k, le] : g_layout) {
+                    if (le.bag == it->key) le.bag.clear();
+                }
+            }
+        }
+        if (g_dropWorld) {
+            // GI36/rule 58: the star dies with the units that leave --
+            // ResolveExitUnit keeps it when only PART of the stack goes
+            // (the survivors own that list), so the flag passes as-is.
+            g_dropWorld(it->obj, n,
+                        ResolveExitUnit(it->obj, it->uid, it->sig, n,
+                                        it->fav ? 1 : 0, it->xlIdx));
+        }
+        RequestRebuild();
+    }
+
     void PickupPartial(RE::TESBoundObject* a_obj, int a_count,
                        const std::string& a_srcKey, int a_srcTotal)
     {
@@ -13499,12 +13530,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         ok = false;
                     }
                 }
+                // ★(1.5.x stack flow) how many units the LOOT path actually
+                // asked for. Barter and pickpocket still raise a window and
+                // have not answered yet, so they leave this at zero and the
+                // drop hint stays open-ended for them (see hintCount).
+                int tookNow = 0;
                 if (ok) {
                     if (LootBarter::IsLootMode(LootBarter::CurrentMode())) {
-                        if (cnt > 1) LootBarter::OpenSlider(a_held.obj, cnt,
-                            LootBarter::XferDir::kTake, {}, 0, a_held.uid, a_held.sig);
-                        else LootBarter::RequestTake(a_held.obj, cnt,
-                                                     a_held.uid, a_held.sig);
+                        // the whole dragged cell, clamped to what fits; the
+                        // remainder stays in the container exactly as it did
+                        // when the slider was clamped to the same number
+                        tookNow = LootBarter::RequestTakeAll(a_held.obj, cnt,
+                                                             a_held.uid, a_held.sig);
                     } else if (LootBarter::CurrentMode() ==
                                LootBarter::Mode::kPickpocket) {
                         // F6b: dragging out of a mark's pockets rolls too
@@ -13592,7 +13629,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     //
                     // 0 means "whatever arrives", which is exactly right for an
                     // amount nobody has chosen yet.
-                    const int hintCount = (cnt > 1) ? 0 : cnt;
+                    // ★(1.5.x stack flow) ...and a LOOT take now knows its
+                    // number here, because it no longer asks: tookNow is the
+                    // count already requested (clamped), so the aimed units
+                    // are placed instead of first-fitting. The open-ended 0
+                    // survives for the two directions that still ask.
+                    const int hintCount = tookNow > 0 ? tookNow
+                                                      : ((cnt > 1) ? 0 : cnt);
                     g_dropHint = { hintBase, hintPool,
                                    g_target.col, g_target.row, v.bagKey, a_held.rot,
                                    hintCount };
@@ -14406,19 +14449,24 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
             } else if (!(GoldCoins::IsCoinForm(fid) && !GoldCoins::IsPouch(fid))) {
                 const auto sd = LootBarter::QueryStoreDrop();   // F7 (dead outside kLoot/kSteal)
-                if (a_held.count > 1) {
-                    // srcKey rides along: pending-remove fires on CONFIRM (an
-                    // immediate erase made the tile jump to the front while
-                    // the engine removal was still queued).
-                    // F7: an empty drop cell rides the slider as a spot hint
-                    if (sd.onCell && sd.freeSpot) {
-                        LootBarter::AimStoreAt(a_held.obj, sd.col, sd.row,
-                                               HeldInstanceSig(), a_held.rot);
-                    }
-                    LootBarter::OpenSlider(a_held.obj, a_held.count,
-                        LootBarter::XferDir::kStore, a_held.key, 0, a_held.uid, a_held.sig,
-                        false, a_held.fav, a_held.xlIdx);
-                } else {
+                {
+                    // ★(1.5.x stack flow) NO QUANTITY WINDOW, AND THE STACK
+                    // INHERITS THE SINGLE UNIT'S MANNERS.
+                    //
+                    // A stack used to branch away here into the slider, and
+                    // that branch knew far less than this one: it could place
+                    // on a free square (through a stored hint) but it could
+                    // not SWAP with an occupant, and it never carried a bag's
+                    // contents. So dropping five potions onto an occupied
+                    // container cell behaved unlike dropping one, for no
+                    // reason a player could see. Collapsing the branch is what
+                    // removes that difference -- the stack now takes the same
+                    // road, swap and all.
+                    //
+                    // Room is still asked WHOLE (PartnerHasRoomFor above): the
+                    // partial rule belongs to taking, where the leftovers have
+                    // a home to stay in. Here they would have to come back to
+                    // the cursor, which is what shift+left split is for.
                     LootBarter::RequestStore(a_held.obj, a_held.count,
                                              HeldUidOf(a_held.key, a_held.uid), a_held.sig,
                                              a_held.fav, a_held.xlIdx, a_held.key);

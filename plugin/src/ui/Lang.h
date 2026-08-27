@@ -143,6 +143,9 @@ namespace FUI::Lang
         X(TakeLabel, "Take")   /* slider action labels */                                                   \
         X(StoreLabel, "Store")                                                                              \
         X(SplitLabel, "Split")                                                                              \
+        X(DropLabel, "Drop")   /* (1.5.x) R on a stack asks how many */                                     \
+        /* (1.5.x) a whole-cell take that only partly fit -- the rest stayed put */                         \
+        X(TookWhatFit, "Took what fit - the rest stayed behind")                                            \
         X(EquippedLabel, "Equipped")   /* shift-compare card */                                             \
         X(HintTakeAll, "R  Take all")                                                                        \
         X(PrecacheLabel, "PRECACHE ALL")                                                                    \

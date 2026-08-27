@@ -702,15 +702,10 @@ namespace FUI::LootBarter
         }
 
         // pending drop-cell spot for a STACK store (slider round-trip)
-        struct StoreHint
-        {
-            RE::TESBoundObject* obj = nullptr;
-            int                 col = -1;
-            int                 row = -1;
-            std::uint16_t sig = 0;   // GI18
-            int           rot = 0;   // GI62: the angle survives the slider too
-        };
-        StoreHint g_storeHint;
+        // ⛔F7's StoreHint is gone with the store slider (1.5.x stack flow).
+        //  It existed to carry a drop cell ACROSS the quantity window, and a
+        //  store no longer opens one -- the drop path places (and swaps) on
+        //  the spot directly, the way the single-unit case always did.
 
         // GI18: drop positions waiting for their item to actually arrive. The
         // engine transfer runs on the next Tick, so the cell does not exist yet
@@ -1069,8 +1064,6 @@ namespace FUI::LootBarter
         Grid::ClearDropHint();            // B2
         g_slider.active = false;
         g_confirm.active = false;
-        g_storeHint = {};        // F7: session-scoped aim (the grid geometry
-                                 // leaves it dead, so no teardown needed here)
         g_in.clear();            // promises whose transfers were just flushed
         // ★A merchant's board lives exactly as long as the visit. It is a real
         // board while the window is open -- one code path with a chest -- and
@@ -1119,11 +1112,15 @@ namespace FUI::LootBarter
             a_max = fit;   // may become 1: the slider then offers exactly one
         }
         // start at half the max (split-friendly default), min 1
+        // ★...except a DROP, which starts at ONE. R has always meant "get rid
+        // of one of these" (it dropped a single unit per press), and the
+        // window is here to make that reachable in bulk, not to change what
+        // the key means. MAX is one click away for the other intent.
         g_slider = {};
         g_slider.active = true;
         g_slider.obj = a_obj;
         g_slider.max = a_max;
-        g_slider.value = (std::max)(1, a_max / 2);
+        g_slider.value = a_dir == XferDir::kDrop ? 1 : (std::max)(1, a_max / 2);
         g_slider.dir = a_dir;
         g_slider.srcKey = a_srcKey;
         g_slider.unitValue = a_unitValue;
@@ -1263,6 +1260,34 @@ namespace FUI::LootBarter
             return true;
         }
         return false;
+    }
+
+    int RequestTakeAll(RE::TESBoundObject* a_obj, int a_count,
+                       std::uint16_t a_uid, std::uint16_t a_sig, bool a_fromWorn)
+    {
+        if (!a_obj || a_count <= 0) return 0;
+        // ★GOLD IS EXEMPT FROM THE CLAMP, not from the rule. Coins are a
+        // mirror of the ledger and occupy no cells, so "how many fit" has no
+        // meaning for them -- the same exemption the click paths state where
+        // they gate on CanFitNewItem.
+        int want = a_count;
+        if (!a_obj->IsGold()) {
+            want = Grid::MaxAcceptUnits(a_obj, a_count);
+            if (want <= 0) {
+                Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
+                return 0;
+            }
+        }
+        if (!RequestTake(a_obj, want, a_uid, a_sig, a_fromWorn)) return 0;
+        // ★Partial is a RESULT, not a refusal: what fit is already on its way,
+        // and the note explains the units still sitting in the container so
+        // the shortfall is never read as the click having missed.
+        if (want < a_count) {
+            Sfx::FailNote(Lang::T(Lang::Str::TookWhatFit));
+            SKSE::log::info("[XFER] whole-cell take clamped: {} of {} '{}'",
+                            want, a_count, a_obj->GetName());
+        }
+        return want;
     }
 
     void RequestStore(RE::TESBoundObject* a_obj, int a_count,
@@ -2174,6 +2199,7 @@ namespace FUI::LootBarter
         case XferDir::kBuy:       lbl = Lang::T(Lang::Str::BuyLabel); break;
         case XferDir::kSell:      lbl = Lang::T(Lang::Str::SellLabel); break;
         case XferDir::kPickStore: lbl = Lang::T(Lang::Str::StoreLabel); break;
+        case XferDir::kDrop:      lbl = Lang::T(Lang::Str::DropLabel); break;
         default: break;   // kTake / kPickTake share the Take label
         }
         const bool barter = g_slider.dir == XferDir::kBuy ||
@@ -2295,7 +2321,11 @@ namespace FUI::LootBarter
         // than firing a request for 0 units.
         if (ok && g_slider.value > 0) {
             switch (g_slider.dir) {
-            case XferDir::kTake:   RequestTake(g_slider.obj, g_slider.value, g_slider.uid, g_slider.sig, g_slider.worn); break;
+            // ⛔kTake and kStore no longer reach this switch: a move is a
+            //  whole-cell act now (1.5.x stack flow) and raises no window, so
+            //  the two arms that answered one are gone rather than left to
+            //  read as live paths. OpenSlider still knows kTake for the
+            //  CLAMP it shares with kBuy/kPickTake.
             case XferDir::kShelfSplit: {
                 const std::string nk = SplitShelfCell(g_slider.srcKey, g_slider.value);
                 if (!nk.empty()) {
@@ -2316,30 +2346,11 @@ namespace FUI::LootBarter
                 RequestPickStore(g_slider.obj, g_slider.value, g_slider.uid, g_slider.sig,
                                  g_slider.srcKey, g_slider.fav, g_slider.xlIdx);
                 break;
-            case XferDir::kStore:
-                // ★(1.3.3) a follower's pack is 10 x 8 -- asked here too, so
-                // the slider cannot walk around the check the click made
-                if (!PartnerHasRoomFor(g_slider.obj, g_slider.value)) {
-                    Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
-                    g_storeHint = {};
-                    break;
-                }
-                RequestStore(g_slider.obj, g_slider.value, g_slider.uid, g_slider.sig,
-                             g_slider.fav, g_slider.xlIdx, g_slider.srcKey);
-                // outgoing units leave their tile IN PLACE (engine removal is
-                // still queued on the Tick — without this the interim rebuild
-                // re-seats them at the front)
-                Grid::NotePendingRemove(g_slider.obj, g_slider.srcKey, g_slider.value,
-                                        g_slider.xlIdx);
-                // F7: a stack dropped on an empty container cell carried its
-                // drop spot through the slider — apply it on confirm
-                if (g_storeHint.obj == g_slider.obj && g_storeHint.col >= 0) {
-                    PlaceStoredCell(g_storeHint.obj, g_slider.value,
-                                    g_storeHint.col, g_storeHint.row,
-                                    g_storeHint.rot, g_slider.uid, g_storeHint.sig);
-                }
-                g_storeHint = {};   // GI18: the pending claim stays — the
-                                    // item has not reached the container yet
+            case XferDir::kDrop:
+                // ★the tile's own hand does the dropping (layout, bag reflow
+                // and the star's death all live on that side) -- this window
+                // only carries the number to it
+                Grid::DropTileUnits(g_slider.srcKey, g_slider.value);
                 break;
             case XferDir::kPickup: Grid::PickupPartial(g_slider.obj, g_slider.value, g_slider.srcKey, g_slider.max); break;
             case XferDir::kBuy: {
@@ -2375,7 +2386,6 @@ namespace FUI::LootBarter
         } else if (cancel || ok) {   // `ok` here can only be a zero-quantity confirm
             g_slider.active = false;
             Grid::ClearDropHint();   // B2: the pending drop-cell hint dies with the slider
-            g_storeHint = {};   // F7: the store-spot hint dies with it too
         }
         ImGui::End();
     }
@@ -5210,12 +5220,19 @@ namespace
                                 // the pickpocket branch states.
                                 g_actingSpot = it.spotKey;   // GI20
                                 RequestTake(it.obj, it.count, it.uid, it.sig, it.worn);
-                            } else if (it.count > 1) {
-                                g_actingSpot = it.spotKey;   // GI20
-                                OpenSlider(it.obj, it.count, XferDir::kTake, {}, 0, it.uid, it.sig, it.worn);
                             } else {
+                                // ★(1.5.x stack flow) THE WHOLE CELL, exactly
+                                // as the gold branch above hauls its whole
+                                // amount. A stack used to raise the quantity
+                                // window here; it does not any more, because a
+                                // take only changes WHERE the units are and
+                                // one right-click on the tile that arrives
+                                // sends them straight back. Shift+left still
+                                // splits (the branch above), so choosing an
+                                // amount never stopped being possible -- it
+                                // stopped being compulsory.
                                 g_actingSpot = it.spotKey;   // GI20
-                                RequestTake(it.obj, it.count, it.uid, it.sig, it.worn);
+                                RequestTakeAll(it.obj, it.count, it.uid, it.sig, it.worn);
                             }
                         }
                     } else if (g_mode == Mode::kPickpocket) {
@@ -6050,12 +6067,6 @@ namespace
         NoteIn(a_obj, a_uid, a_sig, a_count);
     }
 
-    void AimStoreAt(RE::TESBoundObject* a_obj, int a_col, int a_row,
-                    std::uint16_t a_sig, int a_rot)
-    {
-        g_storeHint = { a_obj, a_col, a_row, a_sig, a_rot & 3 };
-    }
-
     void PlaceStoredCell(RE::TESBoundObject* a_obj, int a_count,
                          int a_col, int a_row, int a_rot,
                          std::uint16_t a_uid, std::uint16_t a_sig)
@@ -6468,7 +6479,6 @@ namespace
         g_barterBoard.cells.clear();   // a shop shelf never outlives its visit
         g_in.clear();                  // promises from the previous save
         g_contStamp = 0;
-        g_storeHint = {};
         g_pendingBundles.clear();   // (1.3.0-D) bundles from the previous save
         g_incomingBundles.clear();
         g_shelfBags.clear();        // windows onto a board that no longer exists

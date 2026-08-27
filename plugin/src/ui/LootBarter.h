@@ -76,6 +76,21 @@ namespace FUI::LootBarter
     bool RequestTake(RE::TESBoundObject* a_obj, int a_count,
                      std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
                      bool a_fromWorn = false, bool a_useAfter = false);
+    // ★(1.5.x stack flow) THE WHOLE CELL, clamped to what the boards can hold.
+    //
+    // Right-clicking a stack used to open the quantity window; it hauls the
+    // cell home now, which is the grammar gold has had since 1.5.0 and the
+    // one this replaces it with everywhere a move only changes WHERE a thing
+    // is. Shift+left still splits, so choosing an amount never left.
+    //
+    // The clamp is the slider's own (MaxAcceptUnits) moved to the call site:
+    // whatever fits arrives and the remainder stays in the container -- the
+    // same outcome as confirming the slider at its clamped maximum, minus the
+    // question. Returns the units requested (0 = none fit; the note has
+    // already played, and the caller must not queue anything else).
+    int RequestTakeAll(RE::TESBoundObject* a_obj, int a_count,
+                       std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
+                       bool a_fromWorn = false);
     // a_xlIdx: where the outgoing unit sits, so the sink removes THAT one
     // (see XferReq::xlIdx). -1 = unknown, historical behaviour.
     // a_srcKey: the tile the units leave (B3-b) -- rides the ledger request so
@@ -268,7 +283,15 @@ namespace FUI::LootBarter
     // on the player's board (which is where it becomes a take).
     enum class XferDir { kTake, kStore, kPickup, kBuy, kSell,    // kPickup = split onto cursor
                          kPickTake, kPickStore,                  // F6b pickpocket rolls
-                         kShelfSplit };
+                         kShelfSplit,
+                         // ★(1.5.x stack flow) R on a stack. kTake/kStore no
+                         // longer raise this window at all -- moving a stack
+                         // is a whole-cell act now, like gold -- so the only
+                         // directions left that ASK are the ones where the
+                         // answer cannot be undone with one more click:
+                         // money (kBuy/kSell), the pickpocket roll, the
+                         // deliberate split, and this.
+                         kDrop };
     // a_srcKey (kPickup only): the grid tile the split quantity is taken from.
     // a_unitValue (kBuy/kSell only): the item's base value per unit, so the
     // confirmed quantity is priced (buy/sell price * count).
@@ -407,14 +430,11 @@ namespace FUI::LootBarter
     void NoteStoredUnits(RE::TESBoundObject* a_obj, int a_count,
                          std::uint16_t a_uid = 0, std::uint16_t a_sig = 0);
 
-    // A stack store opens a quantity popup first, and the square the player
-    // aimed at has to survive that round trip -- the drop happened before
-    // the number was known. Remembered here, spent by the confirm (which
-    // then calls PlaceStoredCell with the chosen amount), dropped on cancel.
-    // ★Not a claim on a future cell like the old pending-spot queue: it is
-    // one square, held across one modal, for one carry.
-    void AimStoreAt(RE::TESBoundObject* a_obj, int a_col, int a_row,
-                    std::uint16_t a_sig = 0, int a_rot = 0);
+    // ⛔AimStoreAt is gone (1.5.x stack flow). It held the square a stack was
+    //  dropped on ACROSS the store quantity popup, because the drop happened
+    //  before the number was known. A store asks no number now, so the drop
+    //  path places on that square itself -- and swaps with an occupant, which
+    //  the round trip never could.
 
     // cosave 'GCLY' v1: container ref FormID -> (item key -> spot), LRU 128.
     // main.cpp owns the record loop.

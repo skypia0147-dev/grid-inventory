@@ -389,6 +389,12 @@ namespace FUI::Grid
     // coin tile is converted whole-to-pin before the split (siblings untouched).
     void PickupPartial(RE::TESBoundObject* a_obj, int a_count,
                        const std::string& a_srcKey, int a_srcTotal = 0);
+    // ★(1.5.x stack flow) drop a_count units of ONE tile into the world -- the
+    // hand behind R's quantity window. R itself still drops a single unit
+    // outright when the tile holds one; a stack asks first (see kDrop), and
+    // the confirmed number comes back here. Silent on a key that no longer
+    // names a tile: the board can be rebuilt between the ask and the answer.
+    void DropTileUnits(const std::string& a_key, int a_count);
 
     // Draw the main tetris grid inside the current ImGui window.
     void Draw();
