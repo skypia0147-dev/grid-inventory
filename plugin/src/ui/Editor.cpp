@@ -491,7 +491,13 @@ namespace FUI::Editor
         // fixed height and snaps one frame later.
         static float s_wantH = 0.0f;
         const float maxH = ImGui::GetIO().DisplaySize.y - 80.0f * s;
+        // ★kept as the fit report's own verdict now that no bar is drawn:
+        //  past this line the body WHEELS, and the log says so
         const bool clamped = s_wantH > 0.0f && s_wantH > maxH;
+        if (Grid::FitTrace() && clamped) {
+            SKSE::log::info("[EDITFIT] editor wants {:.0f} > screen {:.0f}"
+                            " -- body wheels (no bar)", s_wantH, maxH);
+        }
         const float winH = s_wantH > 0.0f
                              ? (std::min)(s_wantH, maxH)
                              : 666.0f * s + 2.0f * Theme::FrameInsetY();
@@ -541,9 +547,9 @@ namespace FUI::Editor
             w = (std::max)(w, labelW + kTrackW * s + sp + txt(note));
             return w;
         }();
+        // (no scrollbar allowance any more -- the body cannot draw one)
         const ImVec2 size((std::max)(342.0f * s, needW + 2.0f * Theme::PadX()) +
-                              2.0f * Theme::FrameInsetX() +
-                              (clamped ? ImGui::GetStyle().ScrollbarSize : 0.0f),
+                              2.0f * Theme::FrameInsetX(),
                           winH);   // +Stack row (G3)
         ImVec2 defPos(60.0f, 120.0f);
         if (auto* mw = wm->Find("main")) {
@@ -568,7 +574,17 @@ namespace FUI::Editor
         // ★where the body begins, so the measurement below can say how tall the
         // WINDOW wants to be rather than just the body
         const float childTop = ImGui::GetCursorPosY();
-        ImGui::BeginChild("##editor_body", ImVec2(0.0f, 0.0f));
+        // ★★★NO SCROLLBAR, the way the board has none. The main grid wheels
+        // its overflow rows behind ImGuiWindowFlags_NoScrollbar and shows no
+        // bar at all; this panel is part of the same UI and had no business
+        // sprouting one. A bar here is worse than elsewhere, too -- it takes
+        // its width out of the rows, which is how "a scrollbar appeared" and
+        // "the text is cut off" arrived as one report.
+        // ★NoScrollWithMouse is deliberately NOT set: the wheel still moves
+        // the body, so nothing becomes unreachable when the panel is taller
+        // than the screen. It is the BAR that goes, not the scrolling.
+        ImGui::BeginChild("##editor_body", ImVec2(0.0f, 0.0f),
+            ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
 
         if (!g_sel) {
             ImGui::TextDisabled("%s", Lang::T(Lang::Str::SelectHint));

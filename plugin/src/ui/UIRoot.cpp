@@ -2234,12 +2234,17 @@ namespace FUI::UIRoot
             static float s_wantH = 0.0f;   // desired full window height
             const ImVec2 disp = ImGui::GetIO().DisplaySize;
             const float maxH = disp.y - 80.0f * S;
+            // ★see Editor.cpp: no bar is drawn, so this is the report's
+            //  verdict rather than a width allowance
             const bool clamped = s_wantH > 0.0f && s_wantH > maxH;
+            if (Grid::FitTrace() && clamped) {
+                SKSE::log::info("[EDITFIT] settings wants {:.0f} > screen {:.0f}"
+                                " -- body wheels (no bar)", s_wantH, maxH);
+            }
             const float winH = s_wantH > 0.0f ? (std::min)(s_wantH, maxH)
                                               : 440.0f * S + 2.0f * insY;
             const ImVec2 size(
-                12.0f + insX + labelW + ctrlW + 12.0f + insX +
-                    (clamped ? ImGui::GetStyle().ScrollbarSize : 0.0f),
+                12.0f + insX + labelW + ctrlW + 12.0f + insX,   // no bar to allow for
                 winH);
             ImVec2 defPos(200.0f, 200.0f);
             if (auto* mw = wm->Find("main")) {
@@ -2265,8 +2270,11 @@ namespace FUI::UIRoot
 
             const SettingsCtx ctx{ labelW, trackW, S };
             const float childTop = ImGui::GetCursorPosY();
+            // ★No bar here either -- see the note on the editor's body. The
+            // wheel still scrolls; only the bar is gone, and with it the width
+            // it used to take out of the rows.
             ImGui::BeginChild("##settings_body", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
-                ImGuiWindowFlags_NoBackground);
+                ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
             ImGui::Dummy(ImVec2(0.0f, 4.0f * S));
             for (size_t s = 0; s < std::size(kSettingsSections); ++s) {
                 const auto& sec = kSettingsSections[s];
