@@ -696,7 +696,7 @@ namespace FUI::UIRoot
         float         g_engineLastX = 0.0f;
         float         g_engineLastY = 0.0f;
         int           g_engineStillFrames = 0;
-        bool              g_bookWasOpen = false;   // Book Menu edge (see Render)
+        bool              g_hiddenWas = false;   // off-screen edge: book OR suppressed
         // ★suppression (UIRoot.h): open, but neither drawing nor listening.
         // atomic because the menu message arrives on the game thread while
         // Render reads it on the render thread.
@@ -4381,8 +4381,8 @@ namespace FUI::UIRoot
         // a case of its own. (UIRoot.h has the message contract; the tutorial
         // popup and the engine MessageBox arrive through it.)
         if (IsBookOpen() || IsSuppressed()) {
-            if (!g_bookWasOpen) {
-                g_bookWasOpen = true;
+            if (!g_hiddenWas) {
+                g_hiddenWas = true;
                 // ★The click that opened the book never gets its release here
                 // (our input relay stands down too), so queue one. Without it
                 // ImGui resumes with the button still down and the first
@@ -4406,9 +4406,9 @@ namespace FUI::UIRoot
             // regulars know it from the world's pages.
             return;
         }
-        if (g_bookWasOpen) {
+        if (g_hiddenWas) {
             // ★back to us: MouseHandler takes the cursor again from here on
-            g_bookWasOpen = false;
+            g_hiddenWas = false;
             // ★(1.5.x) the page just closed: if E flagged a shelf take while
             // it was up, this is where the transfer starts (render thread,
             // like every other request)
@@ -4614,22 +4614,34 @@ namespace FUI::UIRoot
         // more and we come back. The grace lets a mod close one window and
         // open the next without us flashing in between.
         if (IsSuppressed()) {
-            static constexpr std::string_view kFurniture[] = {
-                "HUD Menu", "Cursor Menu", "Fader Menu", "Loading Menu",
-                "Overlay Menu", "Overlay Interaction Menu", "LoadWaitSpinner",
-                "GridInventoryMenu", "GridWheelerMenu",
+            // ★★A NAME LIST WOULD HAVE BEEN WRONG, and the first measurement
+            // said so: a real session had BTPS, TrueHUD and SegmentedHUD open
+            // the whole time. Any list I could write would go stale the next
+            // time somebody installs a HUD mod I have never heard of, and a
+            // stale entry here disables the net silently.
+            //
+            // So ask a PROPERTY instead. A window that wanted us out of the
+            // way is a window the player is interacting with -- it takes the
+            // cursor, pauses the game, or is modal. A HUD overlay does none of
+            // those, whoever wrote it.
+            static constexpr std::string_view kOurs[] = {
+                "GridInventoryMenu", "GridWheelerMenu", "Cursor Menu",
             };
             bool blocker = false;
             if (auto* ui = RE::UI::GetSingleton()) {
                 for (const auto& [name, entry] : ui->menuMap) {
                     if (!ui->IsMenuOpen(name)) continue;
-                    if (std::find(std::begin(kFurniture), std::end(kFurniture),
+                    if (std::find(std::begin(kOurs), std::end(kOurs),
                                   std::string_view(name.c_str())) !=
-                        std::end(kFurniture)) {
+                        std::end(kOurs)) {
                         continue;
                     }
-                    blocker = true;
-                    break;
+                    const auto m = ui->GetMenu(name);
+                    if (!m) continue;
+                    if (m->UsesCursor() || m->PausesGame() || m->Modal()) {
+                        blocker = true;
+                        break;
+                    }
                 }
             }
             // ★...and a hard backstop regardless, because a window we cannot

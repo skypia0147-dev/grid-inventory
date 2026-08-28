@@ -7774,8 +7774,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         if (g_needRebuild.load(std::memory_order_relaxed)) return false;
         // Menu closed: the coalesced flag is already the cheap path -- the
         // next open (or a capacity gate) rebuilds once for the whole batch.
-        auto* ui = RE::UI::GetSingleton();
-        if (!ui || !ui->IsMenuOpen("GridInventoryMenu")) return false;   // quiet: normal
+        // (IsBoardLive: this path exists to patch a board that is on screen)
+        if (!UIRoot::IsBoardLive()) return false;   // quiet: normal
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || !player->Is3DLoaded()) return false;              // 원칙 4
         if (g_views.empty()) return false;   // board never built yet this session
@@ -9664,9 +9664,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // flag coalesces, so this costs one rebuild per burst of changes.
         void FreshenLayoutForGates()
         {
-            if (auto* ui = RE::UI::GetSingleton();
-                ui && ui->IsMenuOpen("GridInventoryMenu")) {
-                return;   // menu open: FinishFrame owns the flag
+            // ★IsBoardLive, not IsMenuOpen. This steps back because the
+            // render loop is about to do the work -- but a SUPPRESSED menu
+            // draws no frame, so FinishFrame never comes and nobody freshens
+            // the layout at all. The gates would then answer from a stale
+            // board: a pickup refused with room in plain sight, or allowed
+            // into a cell that is taken.
+            if (UIRoot::IsBoardLive()) {
+                return;   // on screen: FinishFrame owns the flag
             }
             // ★B5: OR the board was never built this session. The gates ran
             // fine on a stale flag alone while the sims re-derived everything

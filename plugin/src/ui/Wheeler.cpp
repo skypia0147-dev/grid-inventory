@@ -1,4 +1,4 @@
-#include "ui/Wheeler.h"
+﻿#include "ui/Wheeler.h"
 
 #include "game/Costume.h"
 #include "game/DualRing.h"
@@ -3514,8 +3514,10 @@ namespace FUI::Wheeler
         // explain it. Checked here because Tick is the one thing that runs
         // whatever else happens.
         if (g_capDev >= 0) {
-            auto* ui = RE::UI::GetSingleton();
-            if (!ui || !ui->IsMenuOpen("GridInventoryMenu"sv)) g_capDev = -1;
+            // ★...and the settings row is equally gone when the menu is merely
+            // suppressed, so the same disarm applies: an armed capture eats
+            // every key, and it must never outlive the panel it belongs to.
+            if (!UIRoot::IsBoardLive()) g_capDev = -1;
         }
         // ★★The brush advances BEFORE the "nothing is moving" early-out. It used
         // to sit after it, so the stroke could only ever be laid down while the

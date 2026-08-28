@@ -23,7 +23,10 @@ namespace FUI::HostApi
         bool Svc_IsMenuOpen()
         {
             auto* ui = RE::UI::GetSingleton();
-            return ui && ui->IsMenuOpen("GridInventoryMenu"sv);
+            // ★IsBoardLive: the contract says "check this before doing
+            // anything the user could be looking at", and a suppressed menu
+            // is one nobody can see.
+            return UIRoot::IsBoardLive();
         }
 
         // Grant-time tile snapshot. Counts only the TRUE cells of a polyomino
