@@ -50,7 +50,8 @@ namespace
     std::string_view g_echoMenu{};
     bool g_pendingPartnerOpen = false; // open our grid once Container/BarterMenu fully closed (loot/barter)
     bool g_movementOff = false;        // we disabled the movement handler (text input)
-    bool g_reopenAfterMsg = false;     // we stepped aside for a MessageBox (poison confirm)
+    // (g_reopenAfterMsg retired: stepping aside is suppression now, and a
+    //  suppressed menu needs no reopening -- see HandleOverlayAside)
 
     // ★★★HOP TO THE VANILLA INVENTORY AND BACK, WITHOUT LEAVING THE GAME.
     //
@@ -346,8 +347,7 @@ namespace
                                 FUI::Grid::RequestRebuild();
                             }
                         }
-                        auto* ui = RE::UI::GetSingleton();
-                        if (!ui || !ui->IsMenuOpen("GridInventoryMenu"sv)) return;
+                        if (!FUI::UIRoot::IsBoardLive()) return;   // nothing on screen
                         auto* player = RE::PlayerCharacter::GetSingleton();
                         if (!player || !player->Is3DLoaded()) return;
                         if (auto* proc =
@@ -701,8 +701,9 @@ namespace
                 // A real mouse event hands the pointer back from the pad.
                 // This is the ONLY reliable signal — see UIRoot::NoteMouseInput.
                 if (e->GetDevice() == RE::INPUT_DEVICE::kMouse) {
-                    if (auto* ui = RE::UI::GetSingleton();
-                        ui && ui->IsMenuOpen("GridInventoryMenu"sv)) {
+                    // IsBoardLive: while a window sits over us the pointer
+                    // is theirs, and taking it back would fight them for it
+                    if (FUI::UIRoot::IsBoardLive()) {
                         FUI::UIRoot::NoteMouseInput();
                     }
                     continue;
@@ -712,8 +713,7 @@ namespace
                 // Only while our menu owns the screen, so nothing here can
                 // touch normal gameplay input.
                 if (e->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
-                    auto* ui = RE::UI::GetSingleton();
-                    if (!ui || !ui->IsMenuOpen("GridInventoryMenu"sv)) continue;
+                    if (!FUI::UIRoot::IsBoardLive()) continue;   // suppressed: their input
                     if (FUI::UIRoot::IsBookOpen()) continue;   // the book has input
                     if (auto* ts = e->AsThumbstickEvent()) {
                         FUI::UIRoot::NotePadStick(ts->IsRight(), ts->xValue, ts->yValue);
@@ -768,8 +768,8 @@ namespace
                 // The game's Inventory key closes our menu. This sink sits
                 // UPSTREAM of input-context filtering, so it still sees the
                 // raw key while kMenuMode swallows the user event.
-                if (auto* ui = RE::UI::GetSingleton();
-                    ui && ui->IsMenuOpen("GridInventoryMenu"sv)) {
+                // hidden behind someone's window: the key is not ours to read
+                if (FUI::UIRoot::IsBoardLive()) {
                     auto* cm = RE::ControlMap::GetSingleton();
                     // NOTE: GetMappedKey returns 0xFF here (confirmed in
                     // the log) - fall back to the default I scancode.
@@ -1586,21 +1586,38 @@ namespace
     // ---- Phase 3: menu open/close handling, one function per menu concern ----
     // Each returns true when the event is fully handled (stop processing).
 
-    // Engine MessageBoxes (e.g. "apply poison to weapon?") render UNDER the
-    // movie-less menu and can't be clicked through it — step aside while the
-    // box is up, come back when it closes.
-    bool HandleMessageBoxAside(const RE::MenuOpenCloseEvent& a_event)
+    // ★★★A SCALEFORM WINDOW OVER A MOVIE-LESS MENU CANNOT BE REACHED.
+    //
+    // Engine MessageBoxes ("apply poison to weapon?") and the first-time
+    // tutorial popups both render UNDER us and cannot be clicked through, so
+    // we have to get out of the way. Two families, one rule.
+    //
+    // ★This used to CLOSE the menu and reopen it, and that was the wrong tool:
+    // closing runs the session teardown, so a box raised while the player was
+    // standing at a chest ended the loot session and reopened them into a
+    // plain inventory. The barter tutorial made it plainly wrong -- it fires
+    // on the first trade, and stepping aside would drop the player out of the
+    // shop they had just opened.
+    //
+    // Suppression keeps everything: the board, the carry, the partner, the
+    // trash. See the message contract in UIRoot.h.
+    bool HandleOverlayAside(const RE::MenuOpenCloseEvent& a_event)
     {
-        if (a_event.menuName != RE::MessageBoxMenu::MENU_NAME) return false;
+        // "Tutorial Menu" is the whole kHelp* family -- barter, lockpicking,
+        // levelling, favourites and a dozen more -- so naming the MENU rather
+        // than the individual tutorials covers every one of them at once.
+        const bool isBox = a_event.menuName == RE::MessageBoxMenu::MENU_NAME;
+        const bool isTut = a_event.menuName == RE::TutorialMenu::MENU_NAME;
+        if (!isBox && !isTut) return false;
         auto* ui = RE::UI::GetSingleton();
+        const char* who = isBox ? "MessageBox" : "Tutorial";
         if (a_event.opening && ui && ui->IsMenuOpen("GridInventoryMenu"sv)) {
-            g_reopenAfterMsg = true;
-            FUI::UIRoot::Close();
-            logger::info("[INV] MessageBox opened -> stepping aside");
-        } else if (!a_event.opening && g_reopenAfterMsg) {
-            g_reopenAfterMsg = false;
-            FUI::UIRoot::Open();
-            logger::info("[INV] MessageBox closed -> back to the grid");
+            FUI::UIRoot::Suppress(true, who);
+        } else if (!a_event.opening) {
+            // ★Unconditional on close: the safety net would get us back
+            // anyway, but a window we KNOW has gone should not cost the
+            // player the grace period.
+            if (FUI::UIRoot::IsSuppressed()) FUI::UIRoot::Suppress(false, who);
         }
         return true;
     }
@@ -1998,7 +2015,7 @@ namespace
                 }
                 // one handler per menu concern; true = event fully handled
                 HandleLockpickAutoReopen(*a_event);   // observation only
-                HandleMessageBoxAside(*a_event) ||
+                HandleOverlayAside(*a_event) ||
                     HandleTextInputHotkeyBlock(*a_event) ||
                     HandleFavoritesMenuIntercept(*a_event) ||
                     HandleInventoryMenuIntercept(*a_event) ||
@@ -2316,7 +2333,9 @@ namespace
             g_movementOff = false;
         }
         g_planBPendingOpen = false;
-        g_reopenAfterMsg = false;
+        // ★suppression does not survive a load either: the window that
+        //  asked for it belongs to the session being left
+        FUI::UIRoot::Suppress(false, "session reset");
         // ★★★A DEBT OWED TO A SAVE THAT IS GONE. g_echoMenu names a vanilla
         // menu whose close we still have to announce; left set across a load,
         // MenuCloseEchoTick fires it on the FIRST unpaused frame of the new

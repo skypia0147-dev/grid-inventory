@@ -1,4 +1,4 @@
-#include "ui/GridMenu.h"
+﻿#include "ui/GridMenu.h"
 #include "game/Census.h"
 #include "game/DeltaWatch.h"
 #include "game/Ledger.h"
@@ -295,10 +295,30 @@ namespace FUI
             }
             break;
         }
+        // ★★★THREE MESSAGES, THREE MEANINGS (contract in UIRoot.h).
+        //
+        // kHide used to be our close, and closing runs the whole session
+        // teardown -- the trash is emptied, the loot session ends, the carry
+        // is put down, ui.ini is written. But kHide is also the courtesy every
+        // other mod sends to put a window over a menu, and answering it with
+        // that teardown is why a MessageBox over the grid throws the player
+        // out of the chest they were standing at, and why an overlay mod
+        // could not sit on top of us at all (reported by the author of
+        // Fitting Room / Menu Studio).
+        //
+        // So kHide SUPPRESSES: we stay open, stop drawing, stop listening,
+        // and everything the session holds survives. kForceHide -- the
+        // engine's own "close, no negotiation" -- is our close now, and
+        // UIRoot::Close() sends it.
         case RE::UI_MESSAGE_TYPE::kShow:
+        case RE::UI_MESSAGE_TYPE::kReshow:
+            UIRoot::Suppress(false, "kShow");
             OnShow();
             break;
         case RE::UI_MESSAGE_TYPE::kHide:
+            UIRoot::Suppress(true, "kHide");
+            return RE::UI_MESSAGE_RESULTS::kHandled;   // ...and STAY on the stack
+        case RE::UI_MESSAGE_TYPE::kForceHide:
             OnHide();
             break;
         case RE::UI_MESSAGE_TYPE::kScaleformEvent: {

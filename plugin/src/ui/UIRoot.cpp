@@ -279,9 +279,13 @@ namespace FUI::UIRoot
                 // (The mouse is deliberately NOT blocked — the console does not
                 // use it, and freezing a window the player can still see is
                 // worse than letting them point at it.)
+                // ★IsBoardLive, not IsMenuOpen: while suppressed the window
+                // over us owns the keyboard, and this road bypasses Scaleform
+                // entirely -- leaving it open would feed every keystroke into
+                // our ImGui behind somebody else's editor.
                 if (auto* ui = RE::UI::GetSingleton();
-                    ui && ui->IsMenuOpen("GridInventoryMenu"sv) &&
-                    !ui->IsMenuOpen(RE::Console::MENU_NAME) &&
+                    IsBoardLive() &&
+                    ui && !ui->IsMenuOpen(RE::Console::MENU_NAME) &&
                     ImGui::GetCurrentContext()) {
                     if (m == WM_CHAR) {
                         g_wmCharSeen.fetch_add(1, std::memory_order_relaxed);
@@ -693,6 +697,11 @@ namespace FUI::UIRoot
         float         g_engineLastY = 0.0f;
         int           g_engineStillFrames = 0;
         bool              g_bookWasOpen = false;   // Book Menu edge (see Render)
+        // ★suppression (UIRoot.h): open, but neither drawing nor listening.
+        // atomic because the menu message arrives on the game thread while
+        // Render reads it on the render thread.
+        std::atomic<bool> g_suppressed{ false };
+        int               g_suppressTicks = 0;   // safety-net age, in Ticks
 
         // Called from the input sink (game thread, but not the render pass) —
         // only flags are touched here; the cursor is seeded during the frame.
@@ -3690,8 +3699,46 @@ namespace FUI::UIRoot
     void Close()
     {
         if (auto* mq = RE::UIMessageQueue::GetSingleton()) {
-            mq->AddMessage(GridInventoryMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+            // ★kForceHide, not kHide: kHide is the courtesy another mod sends
+            // to put a window over us, and it suppresses now instead of
+            // closing (see the contract in UIRoot.h). Our own close has to say
+            // so unambiguously, and kForceHide is the engine's own word for it.
+            mq->AddMessage(GridInventoryMenu::MENU_NAME,
+                           RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
         }
+    }
+
+    void Suppress(bool a_on, const char* a_why)
+    {
+        if (g_suppressed.exchange(a_on) == a_on) return;
+        if (a_on) {
+            g_suppressTicks = 0;
+            // ★Step 0 of the plan, done in the field instead of guessed at:
+            // whoever suppressed us has a menu open, and the safety net has to
+            // tell it from the ones that are always there. Naming them here
+            // means a report carries the list rather than a theory about it.
+            std::string open;
+            if (auto* ui = RE::UI::GetSingleton()) {
+                for (const auto& [name, entry] : ui->menuMap) {
+                    if (name == GridInventoryMenu::MENU_NAME) continue;
+                    open += ' ';
+                    open += name.c_str();
+                }
+            }
+            SKSE::log::info("[SUPPRESS] on ({}) -- open menus:{}", a_why,
+                            open.empty() ? " (none)" : open.c_str());
+        } else {
+            SKSE::log::info("[SUPPRESS] off ({})", a_why);
+        }
+    }
+
+    bool IsSuppressed() { return g_suppressed.load(std::memory_order_relaxed); }
+
+    bool IsBoardLive()
+    {
+        if (IsSuppressed()) return false;
+        auto* ui = RE::UI::GetSingleton();
+        return ui && ui->IsMenuOpen(GridInventoryMenu::MENU_NAME);
     }
 
     void OpenInspect(RE::TESBoundObject* a_obj, const std::string& a_key)
@@ -4324,7 +4371,12 @@ namespace FUI::UIRoot
         // The book the player just right-clicked is a real Scaleform menu
         // UNDER our overlay. Skip the whole frame (not just the windows) so
         // nothing of ours is drawn and no ImGui state is touched meanwhile.
-        if (IsBookOpen()) {
+        // ★★The book was the first thing that ever needed us off the screen
+        // while staying open, and everything it does here is what SUPPRESSION
+        // needs too -- so the book is now one reason among others rather than
+        // a case of its own. (UIRoot.h has the message contract; the tutorial
+        // popup and the engine MessageBox arrive through it.)
+        if (IsBookOpen() || IsSuppressed()) {
             if (!g_bookWasOpen) {
                 g_bookWasOpen = true;
                 // ★The click that opened the book never gets its release here
@@ -4544,6 +4596,49 @@ namespace FUI::UIRoot
         // -- refreshed HERE because this tick runs on the main thread in both
         // worlds (the update hook unpaused, AdvanceMovie paused).
         DeltaWatch::RefreshMenuSnapshot();
+        // ★★★THE SAFETY NET, and suppression is not safe without it.
+        //
+        // Whoever suppressed us is expected to send kShow when their window
+        // closes. If they forget -- or if the engine ever means "close" by a
+        // kHide we answered with a hide -- we would sit here open, invisible
+        // and PAUSING THE GAME. That is a soft lock, so it cannot depend on
+        // anyone else's good manners.
+        //
+        // The test is simply whether anything is still up that could have
+        // wanted us out of the way. Whoever suppressed us had a window; if no
+        // window but the permanent furniture remains, nobody is there any
+        // more and we come back. The grace lets a mod close one window and
+        // open the next without us flashing in between.
+        if (IsSuppressed()) {
+            static constexpr std::string_view kFurniture[] = {
+                "HUD Menu", "Cursor Menu", "Fader Menu", "Loading Menu",
+                "Overlay Menu", "Overlay Interaction Menu", "LoadWaitSpinner",
+                "GridInventoryMenu", "GridWheelerMenu",
+            };
+            bool blocker = false;
+            if (auto* ui = RE::UI::GetSingleton()) {
+                for (const auto& [name, entry] : ui->menuMap) {
+                    if (!ui->IsMenuOpen(name)) continue;
+                    if (std::find(std::begin(kFurniture), std::end(kFurniture),
+                                  std::string_view(name.c_str())) !=
+                        std::end(kFurniture)) {
+                        continue;
+                    }
+                    blocker = true;
+                    break;
+                }
+            }
+            // ★...and a hard backstop regardless, because a window we cannot
+            // see in the menu map (a mod drawing without registering one) must
+            // not be able to strand us either.
+            constexpr int kGrace   = 20;      // ~0.3s: covers a window swap
+            constexpr int kBackstop = 60 * 60;   // ~1 min of being nobody's guest
+            ++g_suppressTicks;
+            if ((!blocker && g_suppressTicks > kGrace) ||
+                g_suppressTicks > kBackstop) {
+                Suppress(false, !blocker ? "nothing left above us" : "backstop");
+            }
+        }
         Grid::ProcessBookRead();   // raise the Book Menu OUTSIDE the render pass
         Grid::ProcessFavorites();  // GI32: favourites, same reason
         Grid::ProcessRecharge();   // (1.3.1) soul-gem recharge, same reason

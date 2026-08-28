@@ -1,4 +1,4 @@
-#include "ui/Sfx.h"
+﻿#include "ui/Sfx.h"
 #include "PCH.h"
 
 #include "api/HostApi.h"
@@ -136,6 +136,19 @@ namespace FUI::HostApi
             if (!a_msg) return;
             if (a_msg->type == GridInvAPI::kMsgRegisterProvider) {
                 OnRegisterProvider(a_msg);
+                return;
+            }
+            if (a_msg->type == GridInvAPI::kMsgSuppressUI) {
+                // ★Same size check every ABI struct gets: a sender built
+                // against a different header is refused rather than read.
+                const auto* p = static_cast<const GridInvAPI::SuppressUI*>(a_msg->data);
+                if (!p || a_msg->dataLen < sizeof(GridInvAPI::SuppressUI) ||
+                    p->structSize != sizeof(GridInvAPI::SuppressUI)) {
+                    logger::warn("[API] suppress: malformed payload -- ignored");
+                    return;
+                }
+                UIRoot::Suppress(p->suppress != 0, a_msg->sender ? a_msg->sender : "api");
+                return;
             }
         }
     }

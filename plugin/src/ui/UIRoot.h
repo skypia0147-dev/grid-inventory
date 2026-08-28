@@ -57,7 +57,35 @@ namespace FUI::UIRoot
     bool TryInitD3D();    // idempotent ImGui init from renderer data
 
     void Open();   // queue kShow for GridInventoryMenu
-    void Close();  // queue kHide
+    void Close();  // queue kForceHide -- see the message contract below
+
+    // ---- suppression: open, but not on screen -------------------------------
+    // ★★★THE MESSAGE CONTRACT, and why it has three members.
+    //
+    //   kForceHide      -> CLOSE. Our own Close() sends this, and the engine
+    //                      sends it when it means business.
+    //   kHide           -> SUPPRESS. Another mod is putting a window over us
+    //                      and wants a clean backdrop; the standard courtesy
+    //                      a menu is expected to answer to.
+    //   kShow / kReshow -> restore (or open, if we were not open at all).
+    //
+    // The split exists because kHide used to be our close, and closing runs
+    // the WHOLE session teardown -- the trash is emptied, the loot session
+    // ends, the carried item is put down, ui.ini is written. A mod that only
+    // wanted a backdrop got all of that, which is why a MessageBox over the
+    // grid still throws the player out of the chest they were standing at.
+    // Suppression keeps every one of those alive.
+    //
+    // ★A suppressed menu is still OPEN: IsMenuOpen stays true, the board, the
+    // carry and every sub-window are exactly where they were. What stops is
+    // drawing and input -- see IsBoardLive.
+    void Suppress(bool a_on, const char* a_why);
+    [[nodiscard]] bool IsSuppressed();
+    // ★"Is the player looking at our board right now." Distinct from
+    // IsMenuOpen, which answers a question about the engine's menu stack.
+    // Anything that consumes input, draws, or means "the user can see this"
+    // asks THIS one; anything reasoning about the stack keeps asking the UI.
+    [[nodiscard]] bool IsBoardLive();
 
     // ★DIAG, wired but not called (same policy as g_poolTrace). SkyUI-style
     // widgets -- SunHelm's among them -- show only while the TOP of the HUD's

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // =============================================================================
 //  Grid Inventory -- extension ABI v1
 // =============================================================================
@@ -86,6 +86,22 @@ namespace GridInvAPI
     inline constexpr std::uint32_t kMsgHostReady        = 0x47494852;  // 'GIHR'
     inline constexpr std::uint32_t kMsgRegisterProvider = 0x47495250;  // 'GIRP'
     inline constexpr std::uint32_t kMsgCostumeState     = 0x47494353;  // 'GICS'
+    // ★(1.5.x) SUPPRESS THE GRID'S OWN WINDOW while yours sits over it.
+    //
+    // Sending UI_MESSAGE_TYPE::kHide to "GridInventoryMenu" does the same
+    // thing and needs no header -- that is the standard courtesy and it is
+    // answered. This message exists for the case where the intent should be
+    // unambiguous: the engine also sends kHide, so a host that wants to know
+    // the request came from a MOD rather than from the game reads this one.
+    //
+    // The grid stays OPEN throughout: its board, the item on the cursor and
+    // every sub-window survive, and IsMenuOpen("GridInventoryMenu") keeps
+    // answering true. What stops is drawing and input.
+    //
+    // ★Release it when your window closes. The host restores itself if
+    // nothing is left above it, but that costs a fraction of a second of
+    // nobody being able to see either window.
+    inline constexpr std::uint32_t kMsgSuppressUI      = 0x47495355;  // 'GISU'
 
     // ---- limits -----------------------------------------------------------
 
@@ -268,6 +284,14 @@ namespace GridInvAPI
     //  shield and a quiver -- a costume leaves all of those alone, because they
     //  are held rather than worn. Only the pieces that actually reach the body
     //  are listed here, so every entry is something the player is now seen in.
+    struct SuppressUI
+    {
+        std::uint32_t structSize;   // = sizeof(SuppressUI)
+        std::uint32_t abiVersion;   // = kABIVersion
+        std::uint32_t suppress;     // 1 = hide the grid, 0 = give it back
+    };
+    static_assert(sizeof(SuppressUI) == 12, "SuppressUI is part of the ABI");
+
     struct CostumeState
     {
         std::uint32_t  structSize;   // = sizeof(CostumeState)
