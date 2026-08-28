@@ -1082,7 +1082,37 @@ namespace FUI::Editor
         // EndChild, where the cursor still sits at the bottom of the content.
         const float bodyH = ImGui::GetCursorPosY() + 4.0f * s;   // bottom margin
         ImGui::EndChild();
-        s_wantH = childTop + bodyH + 8.0f + Theme::FrameInsetY();
+        // ★★★THE BOTTOM PADDING IS PAID TWICE, AND THAT IS NOT A TYPO.
+        //
+        // This read `+ 8.0f + Theme::FrameInsetY()`, where the 8 stood in for
+        // the window's bottom padding. Two things were wrong with it and they
+        // hid each other at the one setting we test on.
+        //
+        // The 8 was unscaled while the padding it substituted for is
+        // `PadY() = 8 * scale`; and the WindowPadding pushed before Begin is
+        // inherited by the BODY CHILD, so the frame inset is needed at the
+        // window's bottom AND at the child's -- twice -- while the line paid
+        // for it once.
+        //
+        // Required, derived: the child must hold its content plus its own
+        // padding top and bottom, so the window owes `2 * WindowPadding.y`,
+        // less the title clearance ApplyNext adds back on its own.
+        //
+        //     opaque, scale 1.0  ->  owed 16 - 8 = 8, paid 8      (exactly right)
+        //     translucent        ->  owed 28 - 8 = 20, paid 14    (6 short)
+        //     torn frame         ->  owed 64 - 8 = 56, paid 32    (24 short)
+        //
+        // Sixteen of the shipped skins carry a frame inset, so every one of
+        // them showed a scrollbar at every scale -- and the opaque skin at
+        // scale 1.0, the configuration this was tested in, is the single
+        // combination where the old arithmetic came out even. That is why the
+        // bug was "fixed" more than once and kept being reported.
+        //
+        // ★Reading the style rather than restating it is the actual repair:
+        // whatever a skin or a scale does to the padding, this follows.
+        s_wantH = childTop + bodyH +
+                  2.0f * ImGui::GetStyle().WindowPadding.y -
+                  Theme::TitleTopPad();
         ImGui::End();
         ImGui::PopStyleVar();   // WindowPadding (torn-frame inset)
     }
