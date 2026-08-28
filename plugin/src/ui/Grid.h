@@ -53,6 +53,12 @@ namespace FUI::Grid
     // ...and read back, so the ini writer can keep a switch the tester
     // turned on across a restart instead of making them set it every time.
     [[nodiscard]] bool PoolTrace();
+    // ★(1.5.x) `!fittrace = 1` -- the EDIT / SETTINGS window fit report. Says
+    // what the content measured, what the window asked for, and whether the
+    // screen clamp cut it off. Exists because a scrollbar in those windows was
+    // diagnosed twice from arithmetic and twice wrongly; the numbers settle it.
+    [[nodiscard]] bool FitTrace();
+    void SetFitTrace(bool a_on);
     [[nodiscard]] bool SimDrift();
 
     // ★Tile keys of the coin pouches on the board right now, front cell

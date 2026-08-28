@@ -327,6 +327,11 @@ namespace FUI
                 Grid::SetPoolTrace(rest == "1" || rest == "true");
                 continue;
             }
+            // EDIT / SETTINGS window fit report -- see Grid::FitTrace
+            if (key == "!fittrace") {
+                Grid::SetFitTrace(rest == "1" || rest == "true");
+                continue;
+            }
             // 1.4 / B0: engine-delta observation. Writes a lot and changes
             // nothing -- see DeltaWatch.h.
             if (key == "!delta") {
@@ -849,6 +854,7 @@ namespace FUI
         // a tester should not have to re-arm them every session. Written
         // only while ON, so an ordinary install never carries them.
         if (Grid::PoolTrace()) out << "!pooltrace = 1\n";
+        if (Grid::FitTrace())  out << "!fittrace = 1\n";
         if (Grid::SimDrift())  out << "!simdrift = 1\n";
         if (DeltaWatch::Enabled()) out << "!delta = 1\n";
         // ★Inverted since their promotions: ON is the default, so the line is

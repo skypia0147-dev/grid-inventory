@@ -1461,6 +1461,7 @@ namespace FUI::Grid
         // it shadows anything a mod folder ships. Compiling the default in is
         // the only form of the switch that reaches them.
         bool g_poolTrace = false;
+        bool g_fitTrace = false;   // !fittrace -- window fit report
 
         // *TEST ONLY ("!simdrift = 1" in GridInventory_ui.ini), ships OFF.
         // Hands the carry-exclusion a DELIBERATELY WRONG identity -- the
@@ -10183,6 +10184,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     void MarkCapacityDirty() { g_capacityDirty = true; }
 
     bool PoolTrace() { return g_poolTrace; }
+    bool FitTrace() { return g_fitTrace; }
+    void SetFitTrace(bool a_on)
+    {
+        if (g_fitTrace == a_on) return;
+        g_fitTrace = a_on;
+        SKSE::log::info("[EDITFIT] window fit report {}", a_on ? "ON" : "OFF");
+    }
     bool SimDrift()  { return g_simDrift; }
 
     void SetSimDrift(bool a_on)

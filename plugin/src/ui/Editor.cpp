@@ -1082,37 +1082,34 @@ namespace FUI::Editor
         // EndChild, where the cursor still sits at the bottom of the content.
         const float bodyH = ImGui::GetCursorPosY() + 4.0f * s;   // bottom margin
         ImGui::EndChild();
-        // ★★★THE BOTTOM PADDING IS PAID TWICE, AND THAT IS NOT A TYPO.
+        // ★★★MEASURED, AND THE OBVIOUS SUSPECT IS INNOCENT.
         //
-        // This read `+ 8.0f + Theme::FrameInsetY()`, where the 8 stood in for
-        // the window's bottom padding. Two things were wrong with it and they
-        // hid each other at the one setting we test on.
+        // This line was once "+ 2 * WindowPadding.y", on the reasoning that
+        // the pushed WindowPadding is inherited by the body child and so the
+        // frame inset is owed twice. It is not: ImGui gives a NON-BORDERED
+        // child zero padding by default ("no padding by default for
+        // non-bordered child windows", ImGuiChildFlags_AlwaysUseWindowPadding),
+        // and this child is created with no flags. The change only made every
+        // window taller, which pushed borderline setups PAST the screen clamp
+        // below and produced scrollbars on skins that had none. Reverted.
         //
-        // The 8 was unscaled while the padding it substituted for is
-        // `PadY() = 8 * scale`; and the WindowPadding pushed before Begin is
-        // inherited by the BODY CHILD, so the frame inset is needed at the
-        // window's bottom AND at the child's -- twice -- while the line paid
-        // for it once.
-        //
-        // Required, derived: the child must hold its content plus its own
-        // padding top and bottom, so the window owes `2 * WindowPadding.y`,
-        // less the title clearance ApplyNext adds back on its own.
-        //
-        //     opaque, scale 1.0  ->  owed 16 - 8 = 8, paid 8      (exactly right)
-        //     translucent        ->  owed 28 - 8 = 20, paid 14    (6 short)
-        //     torn frame         ->  owed 64 - 8 = 56, paid 32    (24 short)
-        //
-        // Sixteen of the shipped skins carry a frame inset, so every one of
-        // them showed a scrollbar at every scale -- and the opaque skin at
-        // scale 1.0, the configuration this was tested in, is the single
-        // combination where the old arithmetic came out even. That is why the
-        // bug was "fixed" more than once and kept being reported.
-        //
-        // ★Reading the style rather than restating it is the actual repair:
-        // whatever a skin or a scale does to the padding, this follows.
-        s_wantH = childTop + bodyH +
-                  2.0f * ImGui::GetStyle().WindowPadding.y -
-                  Theme::TitleTopPad();
+        // With the padding accounted honestly the child always has 8 + 4*scale
+        // of slack, so the body cannot overflow on its own. Every scrollbar
+        // seen in this window is therefore the maxH CLAMP: the content is
+        // genuinely taller than the screen allows. That is a content problem,
+        // not an arithmetic one -- see the [EDITFIT] line below, which reports
+        // the numbers rather than leaving the next reader to re-derive them.
+        s_wantH = childTop + bodyH + 8.0f + Theme::FrameInsetY();
+        if (Grid::FitTrace()) {
+            SKSE::log::info("[EDITFIT] editor content {:.0f} (child {:.0f} + body "
+                            "{:.0f}) want {:.0f} maxH {:.0f} scale {:.2f} disp {:.0f} "
+                            "inset {:.0f}{}",
+                            childTop + bodyH, childTop, bodyH, s_wantH,
+                            ImGui::GetIO().DisplaySize.y - 80.0f * s, s,
+                            ImGui::GetIO().DisplaySize.y, Theme::FrameInsetY(),
+                            s_wantH > ImGui::GetIO().DisplaySize.y - 80.0f * s
+                                ? "  ★CLAMPED -- scrollbar is the clamp" : "");
+        }
         ImGui::End();
         ImGui::PopStyleVar();   // WindowPadding (torn-frame inset)
     }
