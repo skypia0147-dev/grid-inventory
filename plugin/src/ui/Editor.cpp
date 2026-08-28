@@ -495,7 +495,54 @@ namespace FUI::Editor
         const float winH = s_wantH > 0.0f
                              ? (std::min)(s_wantH, maxH)
                              : 666.0f * s + 2.0f * Theme::FrameInsetY();
-        const ImVec2 size(342.0f * s + 2.0f * Theme::FrameInsetX() +
+        // ★★★THE WIDTH IS MEASURED NOW, and that -- not the height -- is what
+        // the reports were about.
+        //
+        // 342 was a fixed number scaled by the UI scale, and it survived every
+        // language this mod has shipped in. What it does not survive is
+        // Theme::FontScale(), added in 1.5.0: an INDEPENDENT text multiplier
+        // from 0.85 to 1.60 riding on style.FontScaleMain. Raise it and every
+        // string grows by up to 60% while this number does not move at all, so
+        // the buttons run past the right edge and the value notes lose their
+        // closing bracket. The same growth makes the rows taller, which is the
+        // other half of the same report -- the body then outgrows the screen
+        // clamp and a scrollbar appears. One cause, two symptoms, and the
+        // height arithmetic (twice suspected) was never involved.
+        //
+        // The settings window measures its own content and is why it was never
+        // reported: CalcTextSize reads the live font, FontScaleMain included.
+        // This does the same, against the rows that can actually overflow --
+        // the two button rows, the tab pair, and a gauge row's label + track +
+        // note. Everything else is narrower than those by construction.
+        //
+        // ★The baseline stays: max() means a configuration that already fits
+        // is laid out exactly as before, to the pixel.
+        const float needW = [s]() {
+            const auto& st = ImGui::GetStyle();
+            const float sp = st.ItemSpacing.x;
+            const auto btn = [&](Lang::Str a_id) {
+                return ImGui::CalcTextSize(Lang::T(a_id)).x + st.FramePadding.x * 2.0f;
+            };
+            const auto txt = [](const char* a_t) { return ImGui::CalcTextSize(a_t).x; };
+            // the widest fixed label in the left column, against its slot
+            float labelW = kLabelW * s;
+            for (const char* l : { "Scale", "Stack", "Lgt X", "Lgt Y" }) {
+                labelW = (std::max)(labelW, txt(l) + 6.0f * s);
+            }
+            char note[64];
+            std::snprintf(note, sizeof(note), "(%s)",
+                          Lang::T(Lang::Str::EditUnchanged));
+            float w = 0.0f;
+            w = (std::max)(w, btn(Lang::Str::EditSave) + btn(Lang::Str::ResetDefault) +
+                              btn(Lang::Str::SaveCategory) + 2.0f * sp);
+            w = (std::max)(w, btn(Lang::Str::CopyProps) + btn(Lang::Str::PasteProps) + sp);
+            w = (std::max)(w, btn(Lang::Str::FootRotate) + btn(Lang::Str::FootMove) +
+                              4.0f * s);
+            w = (std::max)(w, labelW + kTrackW * s + sp + txt(note));
+            return w;
+        }();
+        const ImVec2 size((std::max)(342.0f * s, needW + 2.0f * Theme::PadX()) +
+                              2.0f * Theme::FrameInsetX() +
                               (clamped ? ImGui::GetStyle().ScrollbarSize : 0.0f),
                           winH);   // +Stack row (G3)
         ImVec2 defPos(60.0f, 120.0f);
