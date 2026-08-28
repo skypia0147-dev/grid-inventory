@@ -187,6 +187,12 @@ namespace FUI::Editor
 
         constexpr float kLabelW = 46.0f;   // * scale
         constexpr float kTrackW = 158.0f;  // * scale
+        // ★The mask painter's side, hoisted so the window's width measurement
+        // and the painter itself cannot disagree about it. Deliberately NOT
+        // scaled -- an 8x8 board of grabbable cells is sized by the mouse, not
+        // by the text -- which is why the column beside it carries its own
+        // minimum rather than a share of some total.
+        constexpr float kPaintBlock = 180.0f;
 
         // ★★★THE TRACK, CLIPPED TO WHAT THE ROW ACTUALLY HAS LEFT.
         //
@@ -523,6 +529,17 @@ namespace FUI::Editor
         //
         // ★The baseline stays: max() means a configuration that already fits
         // is laid out exactly as before, to the pixel.
+        // ★EVERY ROW THAT CAN OVERFLOW, measured at the live font. The first
+        // pass of this missed two of them and the panel still clipped, so the
+        // list is written out rather than sampled:
+        //   A/B  the two button rows      (localized, and the widest by far)
+        //   C    the tab pair
+        //   D    a gauge row: label + track + its closing note -- and the note
+        //        is NOT always the localized "(unchanged)". The Stack row ends
+        //        in "(default)" / "(override)", which are hardcoded ENGLISH
+        //        literals and stay English in every translation. "(defau..."
+        //        clipped mid-word is exactly what the reporter photographed.
+        //   E    the painter block and the column beside it (Bag / W / H)
         const float needW = [s]() {
             const auto& st = ImGui::GetStyle();
             const float sp = st.ItemSpacing.x;
@@ -535,22 +552,44 @@ namespace FUI::Editor
             for (const char* l : { "Scale", "Stack", "Lgt X", "Lgt Y" }) {
                 labelW = (std::max)(labelW, txt(l) + 6.0f * s);
             }
-            char note[64];
-            std::snprintf(note, sizeof(note), "(%s)",
+            // the widest closing note any row can end in
+            char unchanged[64];
+            std::snprintf(unchanged, sizeof(unchanged), "(%s)",
                           Lang::T(Lang::Str::EditUnchanged));
+            char wasNote[64];
+            std::snprintf(wasNote, sizeof(wasNote), "(%s 360.00)",
+                          Lang::T(Lang::Str::EditWas));
+            const float noteW = (std::max)({ txt(unchanged), txt(wasNote),
+                                             txt("(default)"), txt("(override)") });
+            // the Bag checkbox sits in the column beside the painter block
+            const float boxW = ImGui::GetFrameHeight() + st.ItemInnerSpacing.x +
+                               txt(Lang::T(Lang::Str::Bag));
             float w = 0.0f;
             w = (std::max)(w, btn(Lang::Str::EditSave) + btn(Lang::Str::ResetDefault) +
                               btn(Lang::Str::SaveCategory) + 2.0f * sp);
             w = (std::max)(w, btn(Lang::Str::CopyProps) + btn(Lang::Str::PasteProps) + sp);
             w = (std::max)(w, btn(Lang::Str::FootRotate) + btn(Lang::Str::FootMove) +
                               4.0f * s);
-            w = (std::max)(w, labelW + kTrackW * s + sp + txt(note));
+            w = (std::max)(w, labelW + kTrackW * s + sp + noteW);
+            w = (std::max)(w, kPaintBlock + 16.0f + (std::max)(90.0f, boxW));
             return w;
         }();
         // (no scrollbar allowance any more -- the body cannot draw one)
         const ImVec2 size((std::max)(342.0f * s, needW + 2.0f * Theme::PadX()) +
                               2.0f * Theme::FrameInsetX(),
                           winH);   // +Stack row (G3)
+        // ★What the panel decided and why. Reported clipping has now survived
+        // three fixes aimed at guesses; these are the numbers that end the
+        // guessing -- the width the rows asked for, the floor they were
+        // measured against, and both scales, since the FONT one is the input
+        // this window never used to read.
+        if (Grid::FitTrace()) {
+            SKSE::log::info("[EDITFIT] editor W: need {:.0f} (+pad {:.0f}) vs floor "
+                            "{:.0f} -> win {:.0f} | uiScale {:.2f} fontScale {:.2f} "
+                            "lang {}", needW, needW + 2.0f * Theme::PadX(),
+                            342.0f * s, size.x, s, Theme::FontScale(),
+                            Lang::Id(Lang::Get()));
+        }
         ImVec2 defPos(60.0f, 120.0f);
         if (auto* mw = wm->Find("main")) {
             defPos = ImVec2(mw->pos.x - size.x - 8.0f, mw->pos.y);
@@ -801,7 +840,7 @@ namespace FUI::Editor
             // ★The painter grew from 6x6 to 8x8 but its BLOCK did not: 180px
             // was tuned against the bag column beside it, so the cell shrinks
             // to keep the same total. 22.5 * 8 == 30 * 6.
-            constexpr float kPaintBlock = 180.0f;
+            // (kPaintBlock is file-scope now -- see the layout constants)
             const float cell = kPaintBlock / static_cast<float>(kPaintN);
             auto* dl = ImGui::GetWindowDrawList();
             const float availW = ImGui::GetContentRegionAvail().x;

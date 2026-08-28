@@ -2491,6 +2491,13 @@ SKSEPluginInfo(
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
     InitializeLog();
+    // ★★★WHICH BINARY IS THIS. The version line alone cannot answer it: every
+    // test build a reporter is sent carries the same 1.5.0, so a log from one
+    // is indistinguishable from a log from another -- and "I installed it" and
+    // "it did not help" then look identical. Four builds went out on one bug
+    // before that gap was noticed. The compile stamp is unique per build and
+    // costs a line.
+    SKSE::log::info("build " __DATE__ " " __TIME__);
     SKSE::Init(a_skse);
     // ★Say so in the log itself. A diagnostic build is otherwise
     // indistinguishable from the release one, and a report is worth much less
