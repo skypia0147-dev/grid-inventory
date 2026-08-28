@@ -10979,6 +10979,33 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 t.pop_back();
             }
             if (t.empty()) return false;
+            // ★★★A PICTURE IS A PAGE. Checked FIRST, because the marker rule
+            // below cannot tell the two apart and got this wrong.
+            //
+            // A treasure map's whole description is one image tag, taken from
+            // Skyrim.esm and its strings rather than guessed at:
+            //
+            //   dunTreasMapIlinaltasDeep
+            //     "<img src='img://Textures/Interface/Books/...png'
+            //           width='290' height='389'>"
+            //
+            // Trimmed, that starts with '<', ends with '>', and holds exactly
+            // one '>' -- all three of the marker test's conditions -- so every
+            // treasure map in the game was answered "nothing to read". The
+            // page was never raised and the inventory closed instead, which is
+            // what the report described: the use sound plays and the menu
+            // shuts. Confirmed in the log before this line was written:
+            //
+            //   [BOOK] read 'Treasure Map, Shimmermist Cave' -- Read=false Use=true
+            //   [BOOK] nothing to read -- the engine has it
+            //
+            // The marker rule was written for the Elder Scroll's
+            // "<Cool graphic>", which is Bethesda NAMING a picture it does not
+            // supply. An <img> tag IS the picture, and the whole reason to
+            // open a page.
+            if (t.rfind("<img", 0) == 0 || t.find("<img ") != std::string::npos) {
+                return true;
+            }
             // one bracketed marker and nothing else -- "<Cool graphic>"
             if (t.front() == '<' && t.back() == '>' &&
                 t.find('>') == t.size() - 1) {
