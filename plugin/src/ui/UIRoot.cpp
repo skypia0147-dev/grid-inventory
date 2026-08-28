@@ -3720,6 +3720,10 @@ namespace FUI::UIRoot
             std::string open;
             if (auto* ui = RE::UI::GetSingleton()) {
                 for (const auto& [name, entry] : ui->menuMap) {
+                    // ★menuMap is every REGISTERED menu, not the open ones --
+                    // the first version of this line printed all forty-five
+                    // of them and said nothing at all.
+                    if (!ui->IsMenuOpen(name)) continue;
                     if (name == GridInventoryMenu::MENU_NAME) continue;
                     open += ' ';
                     open += name.c_str();

@@ -1601,6 +1601,34 @@ namespace
     //
     // Suppression keeps everything: the board, the carry, the partner, the
     // trash. See the message contract in UIRoot.h.
+    // ★★A MENU HOP IS A REPLACEMENT, NOT A GUEST.
+    //
+    // Pressing J opens the Journal OVER us and nothing takes us down: the
+    // engine sends no kHide for this (measured -- no [SUPPRESS] line follows
+    // a J press), so the grid sat behind a full-screen menu, paused, with the
+    // player unable to reach either. These screens REPLACE the inventory in
+    // vanilla, so the honest answer is to close.
+    //
+    // ★Only the ones nobody else already handles: the magic hop closes us
+    // itself (see the hotkey sink), the wheel owns FavoritesMenu, and TweenMenu
+    // is part of our own open path. Adding those here would fight code that
+    // already works.
+    bool HandleMenuHopClose(const RE::MenuOpenCloseEvent& a_event)
+    {
+        if (!a_event.opening) return false;
+        if (a_event.menuName != RE::JournalMenu::MENU_NAME &&
+            a_event.menuName != RE::MapMenu::MENU_NAME &&
+            a_event.menuName != RE::StatsMenu::MENU_NAME) {
+            return false;
+        }
+        auto* ui = RE::UI::GetSingleton();
+        if (!ui || !ui->IsMenuOpen("GridInventoryMenu"sv)) return false;
+        logger::info("[INV] {} opened -> closing the grid (menu hop)",
+                     a_event.menuName.c_str());
+        FUI::UIRoot::Close();
+        return false;   // let everything else see the event too
+    }
+
     bool HandleOverlayAside(const RE::MenuOpenCloseEvent& a_event)
     {
         // "Tutorial Menu" is the whole kHelp* family -- barter, lockpicking,
@@ -2015,6 +2043,7 @@ namespace
                 }
                 // one handler per menu concern; true = event fully handled
                 HandleLockpickAutoReopen(*a_event);   // observation only
+                HandleMenuHopClose(*a_event) ||
                 HandleOverlayAside(*a_event) ||
                     HandleTextInputHotkeyBlock(*a_event) ||
                     HandleFavoritesMenuIntercept(*a_event) ||

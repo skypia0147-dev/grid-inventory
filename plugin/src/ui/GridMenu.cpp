@@ -322,8 +322,15 @@ namespace FUI
             OnHide();
             break;
         case RE::UI_MESSAGE_TYPE::kScaleformEvent: {
-            // ditto for the mouse/keys relay: the book owns input while it is up
-            if (UIRoot::IsBookOpen()) break;
+            // ★★★A SUPPRESSED MENU MUST NOT EAT THE INPUT ITS GUEST NEEDS.
+            //
+            // Returning kHandled below stops the event dead: nothing under us
+            // ever sees it. That is right while we are on screen and wrong the
+            // instant we are not -- the poison confirm box appeared with the
+            // grid correctly hidden and could not be clicked, because every
+            // mouse event was still being swallowed here. The book has always
+            // broken out for exactly this reason; suppression joins it.
+            if (UIRoot::IsBookOpen() || UIRoot::IsSuppressed()) break;
             auto* scaleformData = reinterpret_cast<RE::BSUIScaleformData*>(a_message.data);
             if (scaleformData && scaleformData->scaleformEvent) {
                 ProcessScaleformEvent(scaleformData);
