@@ -1937,7 +1937,30 @@ namespace FUI::Wheeler
                 ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
             }
 
-            void AdvanceMovie(float, std::uint32_t) override {}
+            // ★★★THE CLOSE ANIMATION NEEDS A CLOCK THAT SURVIVES A PAUSE.
+            //
+            // Tick() runs from the PlayerCharacter update hook, and that hook
+            // STOPS the moment a menu pauses the game. Let go of the hotkey and
+            // open a menu before the wheel has finished shrinking away and the
+            // animation freezes mid-close -- with it, the overlay menu it is
+            // supposed to take down. The player then reads a menu with our
+            // ghost sitting on top of it, and it clears only when they close
+            // that menu and the hook starts again. Reported.
+            //
+            // A menu's AdvanceMovie keeps being called while the game is
+            // paused, which is exactly the clock that is missing. Our own grid
+            // has driven UIRoot::Tick from here since it learned the same
+            // lesson; the wheel's copy of the method was left empty.
+            //
+            // ★Only while PAUSED, or the two clocks would both run: the wheel
+            // does not pause the game itself, so during ordinary play the hook
+            // is already ticking and a second call here would close the wheel
+            // at double speed.
+            void AdvanceMovie(float, std::uint32_t) override
+            {
+                auto* ui = RE::UI::GetSingleton();
+                if (ui && ui->GameIsPaused()) Tick();
+            }
 
         private:
             static RE::IMenu* Creator()
