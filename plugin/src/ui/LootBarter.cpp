@@ -1010,7 +1010,36 @@ namespace FUI::LootBarter
             // the prefetch walks the list, so the new item gets its icon in the
             // same caching burst as the rest of the stock.
             if (a_mode == Mode::kBarter && a_partner) {
-                GoldCoins::SeedVendorStock(a_partner->As<RE::Actor>(), src);
+                // ★★★WHICH CHEST, AND WHAT WAS IN IT BEFORE WE TOUCHED IT.
+                //
+                // Reported against 1.5.0: some merchants show no stock at all,
+                // only the bag we add -- and their gold reads 0. Those two come
+                // from the SAME place, so an empty shelf and an empty purse is
+                // one fact, not two: the chest we read had nothing in it.
+                //
+                // What cannot be told from outside is WHY. Either the merchant
+                // faction gave us a container that is not the one holding their
+                // wares, or it is the right one and it was empty at that moment
+                // -- a restock that had not run. So the answer is stated before
+                // anything of ours is added to it: whose shop, which chest, how
+                // many stacks and how much gold. One line per shop visit.
+                auto* actor = a_partner->As<RE::Actor>();
+                auto* fac = actor ? actor->GetVendorFaction() : nullptr;
+                int stacks = 0;
+                long long gold = 0;
+                for (const auto& [obj, data] : src->GetInventory()) {
+                    if (!obj || data.first <= 0) continue;
+                    ++stacks;
+                    if (obj->IsGold()) gold += data.first;
+                }
+                logger::info("[VENDOR] '{}' faction {:08X} chest {:08X}{} -- "
+                             "{} stack(s), {} gold BEFORE seeding",
+                    actor ? actor->GetDisplayFullName() : "<null>",
+                    fac ? fac->GetFormID() : 0u,
+                    src->GetFormID(),
+                    src == a_partner ? " (the ACTOR -- faction had no container)" : "",
+                    stacks, gold);
+                GoldCoins::SeedVendorStock(actor, src);
             }
             auto* cache = IconCache::GetSingleton();
             for (const auto& [obj, data] : src->GetInventory()) {
