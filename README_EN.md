@@ -131,6 +131,14 @@ first run — there is nothing to edit beforehand. Safe to add to an ongoing sav
 while a ten-slot ring opens. It **replaces the vanilla favourites menu**, so it
 answers that key and follows it if you rebind it in the game's own controls.
 
+> **Giving the wheel a key of its own.** The wheel hides its key from the game,
+> so that the vanilla favourites menu never opens over it. That means another
+> control put on the same key stops working — put the inventory there and the
+> bag will not open at all. Set `!wheelkey` in
+> `SKSE/Plugins/GridInventory_ui.ini` to a scan code to move the wheel
+> somewhere of its own; `0` keeps it on the Favourites key. Common codes:
+> `Q=16 E=18 R=19 F=33 G=34 V=47 X=45 Z=44 CapsLock=58`.
+
 - **`A` / `D` switch group** — there are four.
 
   | Group | What it holds |
