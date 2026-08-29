@@ -4187,6 +4187,19 @@ namespace FUI::UIRoot
         if (!s_sexScanned) {
             s_sexScanned = true;
             IconCache::GetSingleton()->ReportSexSpecificArmour();
+            // ★AUTHOR TOOLING, on the same watch-file idiom as the vanilla
+            // passthrough: drop the file, open the bag once, and the shipping
+            // pak is beside it. Nothing here runs for a player, and the file
+            // is removed afterwards so a forgotten one cannot rewrite the pak
+            // every session.
+            std::error_code ec;
+            constexpr const char* kFlag =
+                "Data/SKSE/Plugins/GridInventory_makeshippingpak.txt";
+            if (std::filesystem::exists(kFlag, ec)) {
+                IconCache::GetSingleton()->ExportShippingPak(
+                    "Data/SKSE/Plugins/GridInventory_icons.shipping.pak");
+                std::filesystem::remove(kFlag, ec);
+            }
         }
     }
 

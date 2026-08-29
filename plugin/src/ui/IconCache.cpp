@@ -1404,16 +1404,14 @@ namespace FUI
         SKSE::log::info("[ICONS] disk cache reset (retexture refresh)");
     }
 
-    void IconCache::ReportSexSpecificArmour()
+    namespace
     {
-        auto* dh = RE::TESDataHandler::GetSingleton();
-        if (!dh) return;
-
-        // ★The SAME normalisation the key folds with, or the count would
-        // disagree with the thing it is counting: a record whose two paths
-        // differ only by "meshes\" or a slash is ONE picture to the key, and
-        // must not be reported as two.
-        const auto norm = [](const char* a_p) {
+        // ★The SAME normalisation the key folds with, or every answer here
+        // would disagree with the thing it is answering about: a record whose
+        // two paths differ only by "meshes\" or a slash is ONE picture to the
+        // key, and must not be treated as two.
+        [[nodiscard]] std::string NormModelPath(const char* a_p)
+        {
             std::string s(a_p ? a_p : "");
             if (_strnicmp(s.c_str(), "meshes", 6) == 0 &&
                 (s.size() > 6 && (s[6] == '\\' || s[6] == '/'))) {
@@ -1424,36 +1422,75 @@ namespace FUI
                 if (c == '/') c = '\\';
             }
             return s;
-        };
+        }
+
+        // Two ground models that are BOTH present and DIFFERENT: the picture
+        // depends on who is wearing it, and one cached icon cannot serve both.
+        // One side empty is not two pictures -- the engine falls back to the
+        // model that exists and both sexes see it.
+        [[nodiscard]] bool IsSexSpecific(RE::TESObjectARMO* a_armo)
+        {
+            if (!a_armo) return false;
+            const std::string m = NormModelPath(
+                a_armo->worldModels[RE::TESBipedModelForm::Sexes::kMale].GetModel());
+            const std::string f = NormModelPath(
+                a_armo->worldModels[RE::TESBipedModelForm::Sexes::kFemale].GetModel());
+            return !m.empty() && !f.empty() && m != f;
+        }
+
+        // Can this record's icon ever be shown? NOT Capturable(), which is the
+        // capture QUEUE's gate and answers false for the entire flat style --
+        // the question here is what a PAK would ship, not what one player's
+        // style draws.
+        [[nodiscard]] bool ShippableItem(RE::TESBoundObject* a_obj)
+        {
+            if (!a_obj || !a_obj->GetPlayable() || IsUnobtainable(a_obj)) return false;
+            const char* nm = a_obj->GetName();
+            return nm && *nm;
+        }
+
+        // The upper half of every icon key (see KeyFor) -- so one entry here
+        // retires a record's icon in EVERY rotation it was ever captured at.
+        [[nodiscard]] std::unordered_set<std::uint32_t> SexSpecificSlots(int* a_count)
+        {
+            std::unordered_set<std::uint32_t> out;
+            auto* dh = RE::TESDataHandler::GetSingleton();
+            if (!dh) return out;
+            int n = 0;
+            for (auto* armo : dh->GetFormArray<RE::TESObjectARMO>()) {
+                auto* obj = armo ? armo->As<RE::TESBoundObject>() : nullptr;
+                if (!ShippableItem(obj) || !IsSexSpecific(armo)) continue;
+                ++n;
+                out.insert(ModelSlot32(obj));
+            }
+            if (a_count) *a_count = n;
+            return out;
+        }
+    }
+
+    void IconCache::ReportSexSpecificArmour()
+    {
+        auto* dh = RE::TESDataHandler::GetSingleton();
+        if (!dh) return;
 
         int total = 0, differ = 0, oneSided = 0;
         std::string sample;
         int shown = 0;
         for (auto* armo : dh->GetFormArray<RE::TESObjectARMO>()) {
-            if (!armo) continue;
-            auto* obj = armo->As<RE::TESBoundObject>();
-            // ★NOT Capturable(), which is the capture QUEUE's gate: it answers
-            // false for the whole flat icon style, and this question is about
-            // what a pak would ship, not about what this player's style draws.
-            // The gate that matters is "can the item ever reach a bag".
-            if (!obj || !obj->GetPlayable() || IsUnobtainable(obj)) continue;
-            if (const char* nm = obj->GetName(); !nm || !*nm) continue;
+            auto* obj = armo ? armo->As<RE::TESBoundObject>() : nullptr;
+            if (!ShippableItem(obj)) continue;
             ++total;
-            const std::string m =
-                norm(armo->worldModels[RE::TESBipedModelForm::Sexes::kMale].GetModel());
-            const std::string f =
-                norm(armo->worldModels[RE::TESBipedModelForm::Sexes::kFemale].GetModel());
+            const std::string m = NormModelPath(
+                armo->worldModels[RE::TESBipedModelForm::Sexes::kMale].GetModel());
+            const std::string f = NormModelPath(
+                armo->worldModels[RE::TESBipedModelForm::Sexes::kFemale].GetModel());
             if (m == f) continue;
-            // ★One side EMPTY is not "two pictures": the engine falls back to
-            // the model that exists, so both sexes see the same thing and the
-            // shipped icon is right for everyone. Counting these would inflate
-            // the exclusion list with records that need no excluding.
             if (m.empty() || f.empty()) { ++oneSided; continue; }
             ++differ;
             if (shown < 12) {
                 ++shown;
                 sample += "\n           ";
-                sample += armo->GetName() && *armo->GetName() ? armo->GetName() : "?";
+                sample += armo->GetName();
                 sample += " (";
                 sample += std::to_string(armo->GetFormID());
                 sample += ")";
@@ -1465,6 +1502,76 @@ namespace FUI
             "fine -- both sexes see it).{}{}",
             differ, total, oneSided,
             differ ? "  First few:" : "", sample);
+    }
+
+    bool IconCache::ExportShippingPak(const char* a_path)
+    {
+        // ★★★THE PAK THAT GOES TO OTHER PEOPLE, minus the icons that are only
+        // right for the character who captured them.
+        //
+        // Measured on a real load order: 268 of 4386 shippable armours have two
+        // different ground models. Those 268 cannot be shipped -- one cached
+        // icon per record, rendered as whoever pressed the button -- so they
+        // are left out and each install captures them on its OWN character,
+        // where the engine picks the right one for free. The cost is one
+        // capture per record the player actually sees, appended to their own
+        // pak, so it does not repeat.
+        //
+        // The other 4118 are unaffected: a shared ground model looks the same
+        // on everybody, and dropping those would be pure waste.
+        ClosePakHandle();
+        std::error_code ec;
+        if (!std::filesystem::exists(kPakPath, ec)) {
+            SKSE::log::error("[ICONS] shipping export: no capture pak here");
+            return false;
+        }
+        if (!g_pakScanned) ScanPak();
+
+        int  records = 0;
+        const auto drop = SexSpecificSlots(&records);
+
+        std::ofstream out(a_path, std::ios::binary | std::ios::trunc);
+        std::ifstream in(kPakPath, std::ios::binary);
+        if (!out || !in) {
+            SKSE::log::error("[ICONS] shipping export: cannot open files");
+            return false;
+        }
+        std::vector<std::uint8_t> px;
+        std::size_t kept = 0, dropped = 0;
+        // Same record layout CompactPak writes -- this IS that loop with one
+        // condition added, and the two must not drift apart.
+        for (const auto& [key, en] : g_pakIndex) {
+            if (drop.contains(static_cast<std::uint32_t>(key >> 32))) {
+                ++dropped;
+                continue;
+            }
+            px.resize(en.len);
+            in.seekg(static_cast<std::streamoff>(en.off + en.hdrSize()));
+            if (!in.read(reinterpret_cast<char*>(px.data()), en.len)) {
+                SKSE::log::error("[ICONS] shipping export: short read at key {:016X}", key);
+                return false;
+            }
+            const std::uint32_t magic = en.hasRot ? kIconMagicRot : kIconMagic;
+            out.write(reinterpret_cast<const char*>(&magic), 4);
+            out.write(reinterpret_cast<const char*>(&key), 8);
+            out.write(reinterpret_cast<const char*>(&en.w), 4);
+            out.write(reinterpret_cast<const char*>(&en.h), 4);
+            out.write(reinterpret_cast<const char*>(&en.fmt), 4);
+            if (en.hasRot) out.write(reinterpret_cast<const char*>(en.rot), 36);
+            out.write(reinterpret_cast<const char*>(&en.len), 4);
+            out.write(reinterpret_cast<const char*>(px.data()), en.len);
+            if (!out) {
+                SKSE::log::error("[ICONS] shipping export: write failed");
+                return false;
+            }
+            ++kept;
+        }
+        in.close();
+        out.close();
+        SKSE::log::info("[ICONS] shipping pak written: {} kept, {} dropped "
+                        "({} sex-specific armour records) -> {}",
+                        kept, dropped, records, a_path);
+        return true;
     }
 
     bool IconCache::ExportPakTo(const char* a_path)

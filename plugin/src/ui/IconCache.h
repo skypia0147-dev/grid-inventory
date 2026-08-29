@@ -205,6 +205,15 @@ namespace FUI
         // Main/game thread, after kDataLoaded (walks the form arrays).
         void ReportSexSpecificArmour();
 
+        // ★Write the pak that goes to OTHER PEOPLE: this player's capture pak
+        // minus every icon whose picture depends on who was wearing it. Those
+        // records are then captured by each install on its own character,
+        // where the engine picks the right model for free -- one capture per
+        // record the player actually meets, appended to their own pak.
+        // Author tooling: drop GridInventory_makeshippingpak.txt beside the
+        // plugin and the next menu open writes it. Never called in play.
+        bool ExportShippingPak(const char* a_path);
+
         // GI47: preset icon bundle. Export copies our capture pak next to the
         // preset ini; import APPENDS the bundle's records behind our own --
         // the scanner's last-one-wins rule then gives the preset every shared
