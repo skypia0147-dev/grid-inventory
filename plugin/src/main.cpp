@@ -637,28 +637,58 @@ namespace
     // fell through to a hardcoded I -- which is fine until a player rebinds
     // Inventory, and then the key that opened the grid cannot close it.
     //
-    // So ask every context and take the first real answer. The hardcoded I
-    // stays as the last resort, because a wrong guess is better here than no
-    // way out at all.
-    [[nodiscard]] std::uint32_t MappedScanCode(std::string_view a_event,
-                                               std::uint32_t    a_fallback)
+    // So ask every context and take the first real answer.
+    [[nodiscard]] std::uint32_t MappedScanCode(std::string_view a_event)
     {
         if (auto* cm = RE::ControlMap::GetSingleton()) {
             using Ctx = RE::ControlMap::InputContextID;
             for (std::uint32_t c = 0; c < static_cast<std::uint32_t>(Ctx::kTotal); ++c) {
                 const auto k = cm->GetMappedKey(a_event, RE::INPUT_DEVICE::kKeyboard,
                                                 static_cast<Ctx>(c));
-                if (k != 0xFF && k != 0xFFFFFFFF) return k;
+                if (k != 0xFF && k != 0xFFFFFFFF && k != 0) return k;
             }
         }
-        return a_fallback;
+        return 0;
     }
 
+    // ★★★AND THE EVENT WAS THE WRONG ONE ALL ALONG. "Inventory" is the TWEEN
+    // MENU's entry -- the gamepad path -- and it carries NO keyboard binding,
+    // which is precisely the 0xFF the old note recorded and then worked around.
+    // The key a PC player actually presses is "Quick Inventory".
+    //
+    // The giveaway was sitting in the workaround: 0x17 is Quick Inventory's own
+    // default, and 0x19 is Quick Magic's. The fallbacks were right for the
+    // default binding and wrong for every other one, so nothing looked broken
+    // until somebody rebound the key -- and then the key that opened the grid
+    // could not close it. (Reported.)
+    //
+    // Both events are asked, quick first, because a pad player's binding really
+    // does live on the other one. The hardcoded default stays as a last resort:
+    // a wrong guess here is better than no way out of the menu at all.
     [[nodiscard]] std::uint32_t InventoryScanCode()
     {
         auto* ue = RE::UserEvents::GetSingleton();
-        return MappedScanCode(ue ? std::string_view(ue->inventory) : "Inventory",
-                              0x17);   // I
+        if (!ue) return 0x17;
+        std::uint32_t k = MappedScanCode(ue->quickInventory);
+        if (!k) k = MappedScanCode(ue->inventory);
+        if (!k) k = 0x17;   // I -- Quick Inventory's own default
+        static std::uint32_t s_said = 0;
+        if (s_said != k) {
+            s_said = k;
+            logger::info("[INV] close key resolves to scan 0x{:02X} "
+                         "(quick='{}' tween='{}')", k,
+                         ue->quickInventory.c_str(), ue->inventory.c_str());
+        }
+        return k;
+    }
+
+    [[nodiscard]] std::uint32_t MagicScanCode()
+    {
+        auto* ue = RE::UserEvents::GetSingleton();
+        if (!ue) return 0x19;
+        std::uint32_t k = MappedScanCode(ue->quickMagic);
+        if (!k) k = MappedScanCode("Magic");
+        return k ? k : 0x19;   // P -- Quick Magic's own default
     }
 
     // ---- Input sink ----
@@ -835,7 +865,7 @@ namespace
                     // kItemMenu context never translates this key into a user
                     // event, so it is read raw here exactly like the
                     // Inventory key above (same 0xFF fallback story).
-                    const auto mscan = MappedScanCode("Magic", 0x19);   // default P
+                    const auto mscan = MagicScanCode();
                     if (btn->GetIDCode() == mscan) {
                         SKSE::GetTaskInterface()->AddUITask([]() {
                             if (FUI::UIRoot::IsTextInputActive()) {
