@@ -4050,28 +4050,25 @@ namespace FUI::Wheeler
                 // would have enlarged the aliasing along with the shape.
                 constexpr float kSigilScale = 0.92f;   // spell, of the medallion box
                 constexpr float kWordScale  = 1.00f;   // shout, ...along its length
-                // ★★★MAGIC KEEPS ITS SIGIL, UNDER THE PICTURE.
+                // ★★★THE SIGIL IS THE FALLBACK NOW, NOT A GROUND.
                 //
-                // The three branches below are an if/else CHAIN, so the moment
-                // the magic group grew a face the school sigil stopped being
-                // drawn at all -- which was not the intent and not what the
-                // player wants: the sigil says destruction or restoration at a
-                // glance, and the picture says which spell inside it. One
-                // answers "what kind", the other "which one", and losing
-                // either makes the ring harder to read, not easier.
+                // It was tried underneath the picture on the reasoning that the
+                // sigil says "what school" while the picture says "which spell",
+                // so both were worth keeping. On the ring they simply crowded
+                // each other -- the spell's own art already reads as fire or
+                // frost, and a mark behind it added ink without adding an
+                // answer. Removed on sight (author's call).
                 //
-                // So for this group the mark is laid FIRST and the chain runs
-                // afterwards. A shout has no face, so it still reaches the mark
-                // through the chain -- hence the !magicUnder guard there, or it
-                // would be stamped twice and come out twice as dark.
+                // So the three branches stay the plain if/else CHAIN they were:
+                // a spell draws its picture, and anything with no picture --
+                // every SHOUT, since TESShout is not a bound object, and the
+                // handful of spells whose display object has no model -- falls
+                // through to the mark exactly as before.
+                //
+                // ★The flag lives on for the two things that ARE still true of
+                // a spell's picture: it needs more room than an item's, and it
+                // must not be given the dark-object halo.
                 const bool magicUnder = shownGroup == kMagic;
-                if (magicUnder) {
-                    // the verdict is the chain's business, not ours: here the
-                    // mark is a GROUND and a shout that draws none simply has
-                    // none under it
-                    (void)DrawMagicMark(dl, m, sz, shownGroup, i, a,
-                                        kSigilScale, kWordScale);
-                }
                 // Which of the two the group wants is the table's answer now.
                 if (auto* face = G(shownGroup).face(i)) {
                     auto* cache = IconCache::GetSingleton();
@@ -4189,8 +4186,7 @@ namespace FUI::Wheeler
                         dl->AddImage(tex, q0, q1, ImVec2(0, 0), ImVec2(1, 1),
                             IM_COL32(255, 255, 255, a));
                     }
-                } else if (!magicUnder &&
-                           DrawMagicMark(dl, m, sz, shownGroup, i, a,
+                } else if (DrawMagicMark(dl, m, sz, shownGroup, i, a,
                                          kSigilScale, kWordScale)) {
                     // a spell's school sigil, or a shout's word in dragon script
                 } else if (const auto* med = Medallion(G(shownGroup).medallion(i))) {
