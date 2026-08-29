@@ -887,6 +887,7 @@ namespace FUI::Wheeler
             RE::TESBoundObject* noFace(int s);
             RE::TESBoundObject* costumeFace(int s);
             RE::TESBoundObject* itemFace(int s);
+            RE::TESBoundObject* magicFace(int s);
             const char* itemMedallion(int s);
             const char* magicMedallion(int s);
         }
@@ -1022,7 +1023,7 @@ namespace FUI::Wheeler
               Art::itemMedallion, Art::itemFace, Items::click, Items::reorder },
             { "MAGIC", Magic::filled, Magic::eligible, Magic::name,
               Magic::current, Magic::apply,
-              Art::magicMedallion, Art::noFace, Magic::click, Magic::reorder },
+              Art::magicMedallion, Art::magicFace, Magic::click, Magic::reorder },
         };
 
         [[nodiscard]] const GroupDesc& G(int a_group)
@@ -1322,10 +1323,28 @@ namespace FUI::Wheeler
             }
             RE::TESBoundObject* itemFace(int s)
             {
-                // ★Only real items have a captured sprite. A spell is not an
-                // object the engine can stand in a menu and photograph, so it
-                // falls through to the medallion below.
                 return (s >= 0 && s < kSlots) ? g_fav[s].obj : nullptr;
+            }
+            // ★★★A SPELL CAN BE PHOTOGRAPHED AFTER ALL, and the line that used
+            // to sit above said otherwise: "a spell is not an object the engine
+            // can stand in a menu and photograph". It is not, itself -- but the
+            // game keeps one that is. MDOB is the bound object the vanilla
+            // magic menu stands in its own 3D scene for that spell, and
+            // IconCache::CaptureSourceOf now follows it, so asking for a
+            // spell's icon returns a flame or a ward instead of nothing.
+            //
+            // Reported: with everything wearing its school's sigil, choosing a
+            // spell meant reading names -- fine at five spells, slow at sixty.
+            // The sigil stays as the medallion UNDER this, so the school is
+            // still readable at a glance and the picture says which one.
+            //
+            // ★Shouts share this group and are NOT bound objects, so they
+            // answer null here and keep the sigil alone, exactly as before.
+            RE::TESBoundObject* magicFace(int s)
+            {
+                if (s < 0 || s >= kSlots) return nullptr;
+                auto* form = g_mag[s].form;
+                return form ? form->As<RE::TESBoundObject>() : nullptr;
             }
             const char* itemMedallion(int) { return nullptr; }
             // ★A shout borrows the spell medallion. Wrong drawing beats no
