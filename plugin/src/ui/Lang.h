@@ -33,8 +33,6 @@ namespace FUI::Lang
         X(Inventory, "Inventory")   /* main title — sentence case, like every bag title */                                                        \
         X(Edit, "EDIT")                                                                                     \
         X(Settings, "SETTINGS")                                                                             \
-        /* title bar: arrange the quick wheel. Absent when the wheel is off. */                      \
-        X(WheelEdit, "WHEEL")                                                                               \
         X(ScaleLabel, "SCALE")                                                                        \
         X(FontScaleLabel, "TEXT SIZE")   /* player's font multiplier over the automatic scale */      \
         X(SkinLabel, "SKIN")                                                                                \
@@ -279,7 +277,9 @@ namespace FUI::Lang
         X(WheelKeyPress, "press keys...")   /* ...and hold as many as you want */                   \
         X(WheelGroup, "group")   /* quick menu: mouse up/down moves between the two fans */          \
         X(WheelPick, "pick")                                                                        \
-        X(WheelApply, "release to apply")
+        X(WheelApply, "release to apply") \
+        X(WheelPage, "page")   /* quick menu: W/S, only shown when there IS another page */ \
+        X(WheelClose, "press again to close")   /* ...when a TAP left it standing */
 
     enum class Str : int
     {

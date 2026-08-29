@@ -3725,6 +3725,34 @@ namespace FUI::Wheeler
 
         }
 
+        // ★★★ESC SHUTS A WHEEL THAT WAS TAPPED OPEN, and it is not our ESC.
+        //
+        // A held wheel has a way out already -- bring the aim back to centre
+        // and let go. A TAPPED one is standing on its own, and the key that
+        // shuts every other thing in this game should shut it too.
+        //
+        // ★Asked of the control map, never hardcoded. "ESC" is 0x01 on nobody's
+        // keyboard but the default one, and this mod has already been caught
+        // once assuming a binding (see UIRoot::MappedScanCode for what that
+        // cost). Both events are honoured because ESC and the pad's B are the
+        // same gesture wearing different names: Pause is what backs out of
+        // play, Cancel is what backs out of a menu, and the wheel is neither
+        // and both.
+        if (g_open && g_toggled && a_event->IsDown()) {
+            auto* ue = RE::UserEvents::GetSingleton();
+            const std::uint32_t esc =
+                ue ? UIRoot::MappedScanCode(ue->pause) : 0;
+            const std::uint32_t cancel =
+                ue ? UIRoot::MappedScanCode(ue->cancel) : 0;
+            constexpr std::uint32_t kPadB = 0x2000;
+            if ((!pad && ((esc && id == esc) || (cancel && id == cancel))) ||
+                (pad && id == kPadB)) {
+                Sfx::SelectOff();
+                CloseWheel();
+                return true;   // eaten: the pause menu must not open behind it
+            }
+        }
+
         if (!InCombo(pad, id)) return false;
 
         // ★★A member that is NOT the one that opened the wheel is passed
@@ -4933,17 +4961,29 @@ namespace FUI::Wheeler
         // ---- the inventory's own prompt bar ------------------------------------
         using LS = Lang::Str;
         std::vector<UIRoot::PromptBit> bits;
+        // ★★THE ROW SAYS WHAT IS TRUE RIGHT NOW, not what the wheel can do.
+        //
+        // The page cap appears only when there IS another page -- the same rule
+        // the banner follows for "1/1" and a slot follows for a stack of one: a
+        // control that cannot do anything is a word in the way. And the last
+        // cap tells the truth about the press that is holding this open: after
+        // a TAP, letting go does nothing and pressing again is the way out, so
+        // saying "release to apply" would be an instruction that fails.
+        const bool paged = PageCount(g_group) > 1;
+        const char* last = g_toggled ? Lang::T(LS::WheelClose) : Lang::T(LS::WheelApply);
         if (g_padDriving) {
             bits = { { "STICK", Lang::T(LS::WheelPick) },
-                     { "D-PAD", Lang::T(LS::WheelGroup), true },
-                     { "", Lang::T(LS::WheelApply), true } };
+                     { "D-PAD", Lang::T(LS::WheelGroup), true } };
+            if (paged) bits.push_back({ "LB/RB", Lang::T(LS::WheelPage), true });
+            bits.push_back({ "", last, true });
         } else {
             // ★"MOUSE" named the device, not the control -- and the mouse does
             // two different things here. The wheel picks, the button switches
             // group; a cap that says MOUSE tells you neither.
             bits = { { "WHEEL", Lang::T(LS::WheelPick) },
-                     { "A/D", Lang::T(LS::WheelGroup), true },
-                     { "", Lang::T(LS::WheelApply), true } };
+                     { "A/D", Lang::T(LS::WheelGroup), true } };
+            if (paged) bits.push_back({ "W/S", Lang::T(LS::WheelPage), true });
+            bits.push_back({ "", last, true });
         }
         UIRoot::DrawPromptRow(bits, false, std::clamp(g_t * 1.6f, 0.0f, 1.0f));
     }

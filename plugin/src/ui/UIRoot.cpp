@@ -3828,6 +3828,19 @@ namespace FUI::UIRoot
 
     bool IsSuppressedByClient() { return g_suppressByClient.load(); }
 
+    std::uint32_t MappedScanCode(std::string_view a_event)
+    {
+        if (auto* cm = RE::ControlMap::GetSingleton()) {
+            using Ctx = RE::ControlMap::InputContextID;
+            for (std::uint32_t c = 0; c < static_cast<std::uint32_t>(Ctx::kTotal); ++c) {
+                const auto k = cm->GetMappedKey(a_event, RE::INPUT_DEVICE::kKeyboard,
+                                                static_cast<Ctx>(c));
+                if (k != 0xFF && k != 0xFFFFFFFF && k != 0) return k;
+            }
+        }
+        return 0;
+    }
+
     bool IsSessionOpen()
     {
         auto* ui = RE::UI::GetSingleton();

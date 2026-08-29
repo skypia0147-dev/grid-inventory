@@ -628,28 +628,11 @@ namespace
         spdlog::set_pattern("[%H:%M:%S] [%l] %v");
     }
 
-    // ★★WHICH KEY OPENS THE BAG, asked of the whole control map.
-    //
-    // ControlMap::GetMappedKey searches controlMap[ONE context] and returns
-    // 0xFF for anything it does not find there, so "not in the context you
-    // guessed" comes back indistinguishable from "not bound at all". The old
-    // call took the default context, got 0xFF (measured, it is in the log) and
-    // fell through to a hardcoded I -- which is fine until a player rebinds
-    // Inventory, and then the key that opened the grid cannot close it.
-    //
-    // So ask every context and take the first real answer.
-    [[nodiscard]] std::uint32_t MappedScanCode(std::string_view a_event)
-    {
-        if (auto* cm = RE::ControlMap::GetSingleton()) {
-            using Ctx = RE::ControlMap::InputContextID;
-            for (std::uint32_t c = 0; c < static_cast<std::uint32_t>(Ctx::kTotal); ++c) {
-                const auto k = cm->GetMappedKey(a_event, RE::INPUT_DEVICE::kKeyboard,
-                                                static_cast<Ctx>(c));
-                if (k != 0xFF && k != 0xFFFFFFFF && k != 0) return k;
-            }
-        }
-        return 0;
-    }
+    // ★Moved to UIRoot when the wheel needed the same question asked (its
+    // cancel key). Two copies of a control-map scan is two chances for the two
+    // to disagree about what a binding is; the reasoning lives with the one
+    // that survived.
+    using FUI::UIRoot::MappedScanCode;
 
     // ★★★AND THE EVENT WAS THE WRONG ONE ALL ALONG. "Inventory" is the TWEEN
     // MENU's entry -- the gamepad path -- and it carries NO keyboard binding,
@@ -2600,7 +2583,7 @@ namespace
 }
 
 SKSEPluginInfo(
-    .Version              = { 1, 5, 3, 0 },
+    .Version              = { 1, 6, 0, 0 },
     .Name                 = "GridInventory",
     .Author               = "Smooth",
     .RuntimeCompatibility = SKSE::VersionIndependence::AddressLibrary)

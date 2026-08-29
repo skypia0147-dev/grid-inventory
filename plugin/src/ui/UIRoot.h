@@ -1,7 +1,9 @@
 ﻿#pragma once
 
+#include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct ImDrawList;
@@ -120,6 +122,19 @@ namespace FUI::UIRoot
     // does not move this -- that is the whole point of suppression, and it is
     // what the ABI's IsMenuOpen answers.
     [[nodiscard]] bool IsSessionOpen();
+
+    // ★★★WHICH KEY IS THIS EVENT BOUND TO, asked of the WHOLE control map.
+    //
+    // ControlMap::GetMappedKey searches ONE context and returns 0xFF for
+    // anything it does not find there, so "not in the context you guessed"
+    // comes back indistinguishable from "not bound at all". That cost us once
+    // already: the grid's close key asked the default context, got 0xFF, and
+    // fell back to a hardcoded I -- fine until a player rebound Inventory.
+    //
+    // Shared rather than copied. Two callers ask this now (the grid's close
+    // and magic keys, the wheel's cancel), and a second copy of a scan is a
+    // second chance for the two to disagree about what a binding is.
+    [[nodiscard]] std::uint32_t MappedScanCode(std::string_view a_event);
     // ★"Is the player looking at our board right now." Distinct from
     // IsMenuOpen, which answers a question about the engine's menu stack.
     // Anything that consumes input, draws, or means "the user can see this"
