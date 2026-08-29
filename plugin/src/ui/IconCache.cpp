@@ -1502,6 +1502,74 @@ namespace FUI
             return nm && *nm;
         }
 
+        // ★★★WHOSE ITEM IS THIS, and it is asked because a shipped pak is
+        // built on ONE machine's load order.
+        //
+        // A full precache photographs everything the author happens to have
+        // installed, so the bundle that goes out carries icons for armour packs
+        // and gear mods most downloaders do not own. They pay for those in
+        // megabytes and can never see them. Measured on this build: 4649 icons
+        // against the 2364 of the version before, and nearly all of the
+        // difference was one machine's private list.
+        //
+        // So the shipping pak keeps only what everybody has: the base game, its
+        // official add-ons, Creation Club content (official, and free with the
+        // Anniversary edition), and our own plugin. Anyone running something
+        // else captures it themselves on first sight, which is what already
+        // happens today for anything the author did not own either.
+        [[nodiscard]] bool ShippableSource(RE::TESForm* a_form)
+        {
+            const auto* file = a_form ? a_form->GetFile(0) : nullptr;
+            if (!file) return false;   // dynamic / runtime form: nobody else has it
+            const std::string_view name = file->GetFilename();
+            static constexpr std::string_view kBase[] = {
+                "Skyrim.esm", "Update.esm", "Dawnguard.esm",
+                "HearthFires.esm", "Dragonborn.esm",
+            };
+            for (const auto& b : kBase) {
+                if (name.size() == b.size() &&
+                    _strnicmp(name.data(), b.data(), b.size()) == 0) {
+                    return true;
+                }
+            }
+            // ★Creation Club ships as cc<code>-<name>.esl/.esm. Official, and
+            // the free ones arrive with every Anniversary install.
+            if (name.size() > 2 && _strnicmp(name.data(), "cc", 2) == 0) return true;
+            return name.starts_with("Grid Inventory.");
+        }
+
+        // Model slots reachable from a form ANY downloader could have. A slot
+        // used by even one such form stays -- it is the same picture whoever
+        // asks for it.
+        [[nodiscard]] std::unordered_set<std::uint32_t> ShippableSlots(int* a_forms)
+        {
+            std::unordered_set<std::uint32_t> keep;
+            auto* dh = RE::TESDataHandler::GetSingleton();
+            if (!dh) return keep;
+            int n = 0;
+            const auto sweep = [&](const auto& a_arr) {
+                for (auto* form : a_arr) {
+                    auto* obj = form ? form->template As<RE::TESBoundObject>() : nullptr;
+                    if (!obj || !ShippableSource(form)) continue;
+                    ++n;
+                    keep.insert(ModelSlot32(obj));
+                }
+            };
+            sweep(dh->GetFormArray<RE::TESObjectWEAP>());
+            sweep(dh->GetFormArray<RE::TESObjectARMO>());
+            sweep(dh->GetFormArray<RE::TESAmmo>());
+            sweep(dh->GetFormArray<RE::AlchemyItem>());
+            sweep(dh->GetFormArray<RE::IngredientItem>());
+            sweep(dh->GetFormArray<RE::TESObjectBOOK>());
+            sweep(dh->GetFormArray<RE::TESObjectMISC>());
+            sweep(dh->GetFormArray<RE::TESSoulGem>());
+            sweep(dh->GetFormArray<RE::TESKey>());
+            sweep(dh->GetFormArray<RE::ScrollItem>());
+            sweep(dh->GetFormArray<RE::SpellItem>());
+            if (a_forms) *a_forms = n;
+            return keep;
+        }
+
         // The upper half of every icon key (see KeyFor) -- so one entry here
         // retires a record's icon in EVERY rotation it was ever captured at.
         [[nodiscard]] std::unordered_set<std::uint32_t> SexSpecificSlots(int* a_count)
@@ -1660,8 +1728,9 @@ namespace FUI
         }
         if (!g_pakScanned) ScanPak();
 
-        int  records = 0;
+        int  records = 0, shipForms = 0;
         const auto drop = SexSpecificSlots(&records);
+        const auto keep = ShippableSlots(&shipForms);
 
         std::ofstream out(a_path, std::ios::binary | std::ios::trunc);
         std::ifstream in(kPakPath, std::ios::binary);
@@ -1670,12 +1739,18 @@ namespace FUI
             return false;
         }
         std::vector<std::uint8_t> px;
-        std::size_t kept = 0, dropped = 0;
+        std::size_t kept = 0, dropped = 0, foreign = 0;
         // Same record layout CompactPak writes -- this IS that loop with one
         // condition added, and the two must not drift apart.
         for (const auto& [key, en] : g_pakIndex) {
-            if (drop.contains(static_cast<std::uint32_t>(key >> 32))) {
+            const auto slot = static_cast<std::uint32_t>(key >> 32);
+            if (drop.contains(slot)) {
                 ++dropped;
+                continue;
+            }
+            // ★...and anything only THIS machine's load order can reach.
+            if (!keep.contains(slot)) {
+                ++foreign;
                 continue;
             }
             px.resize(en.len);
@@ -1702,8 +1777,9 @@ namespace FUI
         in.close();
         out.close();
         SKSE::log::info("[ICONS] shipping pak written: {} kept, {} dropped "
-                        "({} sex-specific armour records) -> {}",
-                        kept, dropped, records, a_path);
+                        "({} sex-specific armour records), {} left out as "
+                        "third-party ({} shippable forms seen) -> {}",
+                        kept, dropped, records, foreign, shipForms, a_path);
         return true;
     }
 
