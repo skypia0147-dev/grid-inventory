@@ -11373,6 +11373,42 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         return a_form ? FormKey(a_form) : std::string{};
     }
 
+    // ★★★"PLAIN" IS OUR WORD, NOT THE ENGINE'S.
+    //
+    // InstanceSig deliberately does not hash ExtraTextDisplayData -- it has to
+    // not, because the engine drops the display name when it splits a unit off
+    // to equip it, and hashing something the engine can take away made the same
+    // dagger answer one signature in the pack and another on the body.
+    //
+    // The cost surfaced with quest letters. A letter's ONLY extra data is its
+    // name, so it hashes to 0, which is our word for "this unit carries nothing
+    // distinguishing" -- and ExtraForTile answers nullptr to that, because for
+    // every other purpose it is true. DisplayNameOf then has no list to read
+    // and falls back to the record text, which for these is not a name at all:
+    //
+    //     来自<Alias=HoldCity>领主<Alias=Jarl>的信
+    //
+    // Vanilla shows the resolved sentence, so the answer exists at runtime; we
+    // were simply not asking for it. (Reported with both screens.)
+    //
+    // ★The narrowest possible way to ask. The regression this must not
+    // reintroduce is three plain daggers all reading "Fine Dagger" because the
+    // entry's FIRST sub-stack happened to be tempered -- so the entry is
+    // consulted ONLY when it holds exactly one unit and exactly one list.
+    // Then the list IS the unit, and there is no other copy for it to be
+    // confused with. A player carrying three identical letters keeps the raw
+    // text, which is the right way round: a wrong name is worse than an ugly
+    // one.
+    [[nodiscard]] bool SoleUnitEntry(RE::InventoryEntryData* a_entry)
+    {
+        if (!a_entry || !a_entry->extraLists || a_entry->countDelta != 1) return false;
+        int n = 0;
+        for (auto* xl : *a_entry->extraLists) {
+            if (xl && ++n > 1) return false;
+        }
+        return n == 1;
+    }
+
     const char* DisplayNameOf(RE::TESBoundObject* a_obj, RE::ExtraDataList* a_xl,
                               RE::InventoryEntryData* a_entry)
     {
@@ -11776,8 +11812,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // x3) while the temper badge and the rest of the tooltip, which read
         // the unit's own extra data, correctly showed only one. Only an
         // AGGREGATE cell may fall back to the entry.
+        // ★...or a SOLE unit, where the entry's one list IS this unit and the
+        // borrowing the rule above forbids cannot happen. That is what gives a
+        // quest letter its real name back -- see SoleUnitEntry.
         const char* nm = DisplayNameOf(a_obj, scoped,
-            a_scope == ExtraScope::kAny ? entry : nullptr);
+            (a_scope == ExtraScope::kAny || SoleUnitEntry(entry)) ? entry : nullptr);
         if (a_count > 1) {
             ImGui::TextColored(Theme::TipBody(), "%s  x%d", nm, a_count);
         } else {
