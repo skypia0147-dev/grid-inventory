@@ -194,6 +194,19 @@ namespace FUI::Wheeler
         // Ten each is enough; ten between them was not.
         FavItem g_fav[kSlots]{};
         int     g_favN = 0;
+        // ★★★EVERY STAR, IN FULL, and not because ten was too few.
+        //
+        // g_starredAll has always held every starred FormID -- enough to answer
+        // "is this starred", which is all anything needed. A user group needs
+        // more than that: it names ten forms out of the whole list and has to
+        // build slots from them, and the editor that fills such a group needs
+        // to show what there IS to choose from.
+        //
+        // Collected in the same walk that fills the two built-in wheels. A
+        // second walk of the inventory to answer the same question is the cost
+        // this avoids, and A/D stepping between groups is exactly where paying
+        // it twice would be felt.
+        std::vector<FavItem> g_allFav, g_allMag;
         FavItem g_mag[kSlots]{};
         int     g_magN = 0;
 
@@ -1200,6 +1213,19 @@ namespace FUI::Wheeler
             Art::userMedallion, Art::userFace, User::click, User::reorder,
         };
 
+        // ★The banner's text. A built-in wheel's name is in its descriptor;
+        // a user group's is the player's own, and the descriptor is shared by
+        // all of them, so it cannot live there.
+        [[nodiscard]] const char* TitleOf(int a_group)
+        {
+            const int k = a_group - kBuiltinGroups;
+            if (k >= 0 && k < static_cast<int>(g_userGroups.size())) {
+                const auto& n = g_userGroups[static_cast<std::size_t>(k)].name;
+                return n.empty() ? "WHEEL" : n.c_str();
+            }
+            return kGroup[std::clamp(a_group, 0, kBuiltinGroups - 1)].title;
+        }
+
         // How many wheels A/D can reach right now.
         [[nodiscard]] int GroupCount()
         {
@@ -1340,6 +1366,42 @@ namespace FUI::Wheeler
         // ★Called once per open, on the game thread. It walks the inventory and
         // reads ExtraHotkey, which is where the engine keeps the star -- the
         // same mark the vanilla favourites menu shows.
+        // ★★★A USER GROUP NAMES FORMS; THIS TURNS THEM BACK INTO ENTRIES.
+        //
+        // The group stores ten FormIDs and nothing else, which is the only
+        // thing that survives a save honestly -- a count, a temper signature
+        // and whether it is worn are all facts about right now. So they are
+        // looked up rather than stored, out of the full lists the collection
+        // walk just built.
+        //
+        // ★A form that is no longer starred -- or no longer owned -- leaves an
+        // EMPTY PLACE rather than closing the gap. The whole reason a wheel is
+        // worth arranging is that the hand learns where things are, and a
+        // potion running out must not move everything after it. Same rule
+        // ApplyOrder follows for the built-in wheels.
+        void FillUserGroup(int a_group)
+        {
+            for (auto& f : g_user) f = {};
+            g_userN = 0;
+            const int k = a_group - kBuiltinGroups;
+            if (k < 0 || k >= static_cast<int>(g_userGroups.size())) return;
+            const auto& want = g_userGroups[static_cast<std::size_t>(k)].slot;
+            for (int i = 0; i < kSlots && i < static_cast<int>(want.size()); ++i) {
+                if (!want[i]) continue;
+                const auto find = [&](const std::vector<FavItem>& a_all) -> const FavItem* {
+                    for (const auto& e : a_all) {
+                        if (e.form && e.form->GetFormID() == want[i]) return &e;
+                    }
+                    return nullptr;
+                };
+                const FavItem* hit = find(g_allFav);
+                if (!hit) hit = find(g_allMag);
+                if (!hit) continue;
+                g_user[i] = *hit;
+                g_userN = (std::max)(g_userN, i + 1);
+            }
+        }
+
         void CollectFavorites()
         {
             // ★★★CLEAR THE ARRAY, not just the count. This wrote over the first
@@ -1355,6 +1417,8 @@ namespace FUI::Wheeler
             // whoever tests it after using the feature once.
             for (auto& f : g_fav) f = {};
             for (auto& f : g_mag) f = {};
+            g_allFav.clear();
+            g_allMag.clear();
             g_favN = 0;
             g_starredAll[0].clear();
             auto* player = RE::PlayerCharacter::GetSingleton();
@@ -1402,7 +1466,7 @@ namespace FUI::Wheeler
                 }
                 if (!star) star = wornStar;
                 if (star) g_starredAll[0].insert(obj->GetFormID());
-                if (star && g_favN < kSlots) {
+                if (star) {
                     // ★★★KEEP THE SIGNATURE OF THE UNIT THAT CARRIES THE STAR.
                     // The star sits on one ExtraDataList and we are holding it
                     // -- but sig was written as 0, which means "no instance" all
@@ -1425,10 +1489,17 @@ namespace FUI::Wheeler
                     // the doll (user report).
                     const bool wornHere = entry->IsWorn() ||
                                           DualRing::Second() == obj;
-                    g_fav[g_favN] = { obj, obj, FavKind::kItem,
+                    const FavItem fi{ obj, obj, FavKind::kItem,
                                       Grid::InstanceSigOf(star), -1,
                                       data.first, wornHere, starUid };
-                    ++g_favN;   // one tile per form: a starred pool is one thing
+                    // ★The full list first, and the ten that FIT second. They
+                    // used to be the same act, which is why anything past the
+                    // tenth star existed only as a FormID in a set.
+                    g_allFav.push_back(fi);
+                    if (g_favN < kSlots) {
+                        g_fav[g_favN] = fi;
+                        ++g_favN;   // one tile per form: a starred pool is one thing
+                    }
                 }
             }
             // ★...and the magic side of the same star. The engine keeps spells
@@ -1471,7 +1542,7 @@ namespace FUI::Wheeler
                         }
                         continue;
                     }
-                    if (g_magN >= kSlots) continue;   // seen, but no place to show it
+                    const bool room = g_magN < kSlots;
                     // ★"Currently on" for magic is the hand, not the pack. A
                     // shout sits in the voice slot; a spell in either hand, and
                     // both count -- the tick says "this is what you have out",
@@ -1485,12 +1556,17 @@ namespace FUI::Wheeler
                             if (sel == form) { on = true; break; }
                         }
                     }
-                    g_mag[g_magN] = { form, nullptr, k, 0, -1, 1, on };
-                    ++g_magN;
+                    const FavItem mi{ form, nullptr, k, 0, -1, 1, on };
+                    g_allMag.push_back(mi);
+                    if (room) {
+                        g_mag[g_magN] = mi;
+                        ++g_magN;
+                    }
                 }
             }
             ApplyOrder(g_fav, g_favN, 0);
             ApplyOrder(g_mag, g_magN, 1);
+            FillUserGroup(g_group);
         }
 
         [[nodiscard]] const char* SlotKey(int a_group, int a_slot)
@@ -3085,6 +3161,37 @@ namespace FUI::Wheeler
         // characters reach for different things, and a spellsword's habit is
         // not a stealth archer's.
         a_intfc->WriteRecordData(static_cast<std::int32_t>(g_group));
+
+        // ---- v4: the player's own wheels ------------------------------------
+        //
+        // ★★A SLOT IS WRITTEN AS A LIST, and today every list is one long.
+        //
+        // The next thing this feature wants is depth -- several things in one
+        // place, cycled with the scroll, which is how the mod this is named
+        // after fits an inventory into a wheel. Writing a bare FormID now would
+        // buy one saved integer per slot and cost a second format migration
+        // later, and a format migration is the one change here that can make an
+        // existing save wrong. So the shape arrives before the feature does.
+        a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_userGroups.size()));
+        for (std::size_t k = 0; k < g_userGroups.size(); ++k) {
+            const auto& g = g_userGroups[k];
+            const auto len = static_cast<std::uint32_t>(g.name.size());
+            a_intfc->WriteRecordData(len);
+            for (std::uint32_t i = 0; i < len; ++i) {
+                a_intfc->WriteRecordData(static_cast<std::uint8_t>(g.name[i]));
+            }
+            for (int i = 0; i < kSlots; ++i) {
+                const RE::FormID id =
+                    i < static_cast<int>(g.slot.size()) ? g.slot[i] : 0;
+                a_intfc->WriteRecordData(static_cast<std::uint32_t>(id ? 1 : 0));
+                if (id) a_intfc->WriteRecordData(id);
+            }
+            // ...and this group's own arrangement, in the same shape the
+            // built-in wheels are written in above.
+            const auto& ord = OrderFor(kBuiltinGroups + static_cast<int>(k));
+            a_intfc->WriteRecordData(static_cast<std::uint32_t>(ord.size()));
+            for (const auto id : ord) a_intfc->WriteRecordData(id);
+        }
     }
 
     void LoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version)
@@ -3138,9 +3245,70 @@ namespace FUI::Wheeler
         }
         if (a_version < 3) return;   // no remembered group in that save
         std::int32_t grp = 0;
-        if (a_intfc->ReadRecordData(grp)) {
+        if (!a_intfc->ReadRecordData(grp)) return;
+
+        if (a_version < 4) {
             g_group = std::clamp(static_cast<int>(grp), 0, GroupCount() - 1);
+            return;
         }
+
+        std::uint32_t ng = 0;
+        if (!a_intfc->ReadRecordData(ng)) return;
+        // Same reasoning as the order count above: a number read from a file is
+        // not a number yet, and this one sizes a loop that allocates.
+        if (ng > 64) {
+            SKSE::log::warn("[WHEEL] cosave says {} user wheels -- record ignored", ng);
+            return;
+        }
+        g_userGroups.clear();
+        for (std::uint32_t k = 0; k < ng; ++k) {
+            UserGroup g;
+            std::uint32_t len = 0;
+            if (!a_intfc->ReadRecordData(len)) return;
+            if (len > 64) {
+                SKSE::log::warn("[WHEEL] user wheel name of {} bytes -- record ignored", len);
+                return;
+            }
+            g.name.resize(len);
+            for (std::uint32_t i = 0; i < len; ++i) {
+                std::uint8_t c = 0;
+                if (!a_intfc->ReadRecordData(c)) return;
+                g.name[i] = static_cast<char>(c);
+            }
+            g.slot.assign(kSlots, 0);
+            for (int i = 0; i < kSlots; ++i) {
+                std::uint32_t depth = 0;
+                if (!a_intfc->ReadRecordData(depth)) return;
+                if (depth > static_cast<std::uint32_t>(kSlots)) return;
+                for (std::uint32_t d = 0; d < depth; ++d) {
+                    RE::FormID id = 0;
+                    if (!a_intfc->ReadRecordData(id)) return;
+                    RE::FormID resolved = 0;
+                    if (!a_intfc->ResolveFormID(id, resolved)) resolved = 0;
+                    // ★Only the first is kept while a slot holds one thing. The
+                    // rest are still READ, so a record written by a future build
+                    // cannot leave this one reading the next field at an offset.
+                    if (d == 0) g.slot[i] = resolved;
+                }
+            }
+            g_userGroups.push_back(std::move(g));
+            std::uint32_t n = 0;
+            if (!a_intfc->ReadRecordData(n)) return;
+            if (n > static_cast<std::uint32_t>(kSlots)) return;
+            auto& ord = OrderFor(kBuiltinGroups + static_cast<int>(k));
+            ord.clear();
+            ord.reserve(n);
+            for (std::uint32_t i = 0; i < n; ++i) {
+                RE::FormID id = 0;
+                if (!a_intfc->ReadRecordData(id)) return;
+                RE::FormID resolved = 0;
+                if (!a_intfc->ResolveFormID(id, resolved)) resolved = 0;
+                ord.push_back(resolved);
+            }
+        }
+        // ★Clamped only NOW: a remembered group of 5 is only meaningful once
+        // the groups it counts have been read back.
+        g_group = std::clamp(static_cast<int>(grp), 0, GroupCount() - 1);
     }
 
     void RevertGame(SKSE::SerializationInterface*)
@@ -3148,6 +3316,11 @@ namespace FUI::Wheeler
         // ★All of them, not the two that used to exist. A user group's
         // arrangement is written in the outgoing save's language too.
         g_order.clear();
+        // ...and the groups themselves. They are per save, like everything else
+        // here: another character's wheels are not this one's.
+        g_userGroups.clear();
+        for (auto& f : g_user) f = {};
+        g_userN = 0;
         // ★★Cleared, not left alone. Revert fires before every load, and a tab
         // index from the outgoing save names a different set in the incoming
         // one -- the arrangement is the only thing here that is written in a
@@ -3549,6 +3722,9 @@ namespace FUI::Wheeler
             else if (pad && id == kBack) dir = 1;
             if (dir) {
                 g_group = (g_group + dir + GroupCount()) % GroupCount();
+                // ★One array serves every user group, so landing on a
+                // different one is what makes it hold that one's slots.
+                FillUserGroup(g_group);
                 g_groupT = 0.0f;   // re-ink the ring for the new list
                 // ★★★A DRAG DOES NOT SURVIVE A GROUP CHANGE. Slot 2 of PRESET
                 // and slot 2 of GEAR are unrelated, so carrying an index across
@@ -4604,7 +4780,7 @@ namespace FUI::Wheeler
                     SKSE::log::warn(
                         "[WHEEL] icons: {} from cache, {} fell back to a drawing "
                         "(group {}, caplight {:.0f},{:.0f})",
-                        diagHit, diagMiss, G(shownGroup).title,
+                        diagHit, diagMiss, TitleOf(shownGroup),
                         Theme::CaptureLightAz(), Theme::CaptureLightEl());
                 }
             }
@@ -4767,7 +4943,7 @@ namespace FUI::Wheeler
                     ImVec2(0, 0), ImVec2(1, 1),
                     (kInk & 0x00FFFFFF) | (static_cast<ImU32>(a * 0.95f) << 24));
             }
-            Halo(dl, ImVec2(c.x, ty), G(shownGroup).title, 16.0f * S, kPaper, a);
+            Halo(dl, ImVec2(c.x, ty), TitleOf(shownGroup), 16.0f * S, kPaper, a);
         }
 
         ImGui::End();

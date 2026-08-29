@@ -268,7 +268,10 @@ namespace FUI::Wheeler
     // still load -- each version reads as far as it goes and the rest is
     // rebuilt or defaulted on the next open.
     inline constexpr std::uint32_t kRecordType = 'GWHL';
-    inline constexpr std::uint32_t kVersion = 3;
+    // 4: the player's own wheels. A slot is written as a LIST so that
+    //    several things in one place can arrive later without a second
+    //    migration -- see SaveGame.
+    inline constexpr std::uint32_t kVersion = 4;
 
     void SaveGame(SKSE::SerializationInterface* a_intfc);
     void LoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version);
