@@ -336,13 +336,23 @@ namespace FUI::Wheeler
             for (int i = 0; i < kSlots; ++i) a_list[i] = out[i];
         }
 
+        // ★★★A DRAG EDITS ONE PAGE, NOT THE WHOLE LIST.
+        //
+        // This used to assign ten places over the arrangement, which was the
+        // whole of it. The arrangement spans every page now, so assigning ten
+        // would keep page one and DELETE every page after it -- one drag and
+        // the eleventh star onwards is gone. It writes into the window the
+        // player is looking at instead, and leaves the rest of the list where
+        // it was.
         void RememberOrder(const FavItem* a_list, int a_n, int a_which)
         {
             (void)a_n;
             auto& out = OrderFor(a_which);
-            out.assign(kSlots, 0);
+            const std::size_t from = static_cast<std::size_t>(g_page) * kSlots;
+            if (out.size() < from + kSlots) out.resize(from + kSlots, 0);
             for (int i = 0; i < kSlots; ++i) {
-                if (a_list[i].form) out[i] = a_list[i].form->GetFormID();
+                out[from + static_cast<std::size_t>(i)] =
+                    a_list[i].form ? a_list[i].form->GetFormID() : 0;
             }
         }
 
@@ -1147,19 +1157,32 @@ namespace FUI::Wheeler
         // ★★HOW MANY PAGES this group needs. The item wheels grow one page
         // for every ten stars; the set wheels have exactly one, because what
         // they show is a list of tabs and there have never been more than fit.
+        // ★★★THE ARRANGEMENT IS ONE LIST PER WHEEL, AND PAGES ARE WINDOWS ON IT.
+        //
+        // It was briefly one list per (wheel, page), which looked tidier and
+        // was wrong: which PAGE a star landed on then came from where it sat in
+        // the collection walk, and that walk reads
+        //
+        //     std::map<TESBoundObject*, ...>
+        //
+        // -- keyed by the form's ADDRESS. Items came out in pointer order,
+        // which is to say no order, and could differ between sessions. Spells
+        // meanwhile come from MagicFavorites, an array the engine appends to,
+        // so they were in the order they were starred. One wheel sorted by
+        // memory and the other by history is exactly what "the order looks
+        // odd" is (reported).
+        //
+        // With one list, a star keeps its PLACE -- which is also its page --
+        // and a new one takes the first free place, appending a page when there
+        // is none. Which is the answer anyone would have guessed: the thing I
+        // just starred is at the end, and nothing else moved.
         [[nodiscard]] int PageCount(int a_group)
         {
-            const std::size_t n = a_group == kItems ? g_allFav.size()
-                                : a_group == kMagic ? g_allMag.size()
-                                                    : 0;
-            const int pages = static_cast<int>((n + kSlots - 1) / kSlots);
-            return std::clamp(pages, 1, kMaxPages);
+            const int which = a_group == kItems ? 0 : a_group == kMagic ? 1 : -1;
+            if (which < 0) return 1;
+            const std::size_t n = OrderFor(which).size();
+            return std::clamp(static_cast<int>((n + kSlots - 1) / kSlots), 1, kMaxPages);
         }
-
-        // Which arrangement belongs to (wheel, page). ★Page 0 keeps indices 0
-        // and 1 -- exactly where the two item wheels have always been -- so a
-        // save written before pages existed still lands in the right place.
-        [[nodiscard]] int OrderIdx(int a_which, int a_page) { return a_which + 2 * a_page; }
 
         // How many wheels A/D can reach. Fixed at four: what grows is PAGES.
         [[nodiscard]] int GroupCount() { return kBuiltinGroups; }
@@ -1476,25 +1499,67 @@ namespace FUI::Wheeler
         //
         // ★The arrangement is per (wheel, page): dragging on page two must not
         // reorder page one, and the hand learns each page separately.
+        // ★Give every star a PLACE in the wheel's one list, then show the ten
+        // that this page covers.
+        //
+        // A star already in the list keeps exactly where it is -- that is the
+        // whole promise of a wheel worth arranging. One that is not takes the
+        // first free place, and if every place is taken the list grows by a
+        // page. A place whose star is gone is freed rather than closed up, so
+        // a potion running out does not move everything after it.
+        void SeatStars(int a_which, const std::vector<FavItem>& a_all)
+        {
+            auto& ord = OrderFor(a_which);
+            if (ord.empty()) ord.assign(kSlots, 0);
+            const auto starred = [&](RE::FormID a_id) {
+                for (const auto& e : a_all) {
+                    if (e.form && e.form->GetFormID() == a_id) return true;
+                }
+                return false;
+            };
+            for (auto& id : ord) {
+                if (id && !starred(id)) id = 0;   // its star went away
+            }
+            for (const auto& e : a_all) {
+                if (!e.form) continue;
+                const RE::FormID id = e.form->GetFormID();
+                if (std::find(ord.begin(), ord.end(), id) != ord.end()) continue;
+                auto slot = std::find(ord.begin(), ord.end(), 0u);
+                if (slot == ord.end()) {
+                    if (static_cast<int>(ord.size()) >= kMaxPages * kSlots) break;
+                    ord.insert(ord.end(), kSlots, 0);
+                    slot = ord.end() - kSlots;
+                }
+                *slot = id;
+            }
+        }
+
         void FillPage()
         {
             for (auto& f : g_fav) f = {};
             for (auto& f : g_mag) f = {};
             g_favN = g_magN = 0;
-            const auto slice = [](const std::vector<FavItem>& a_all, FavItem* a_out,
-                                  int& a_n, int a_page) {
+            SeatStars(0, g_allFav);
+            SeatStars(1, g_allMag);
+            const auto window = [](int a_which, const std::vector<FavItem>& a_all,
+                                   FavItem* a_out, int& a_n, int a_page) {
+                const auto& ord = OrderFor(a_which);
                 const std::size_t from = static_cast<std::size_t>(a_page) * kSlots;
-                for (std::size_t i = 0; i < kSlots && from + i < a_all.size(); ++i) {
-                    a_out[i] = a_all[from + i];
-                    a_n = static_cast<int>(i) + 1;
+                for (int i = 0; i < kSlots; ++i) {
+                    const std::size_t at = from + static_cast<std::size_t>(i);
+                    if (at >= ord.size() || !ord[at]) continue;
+                    for (const auto& e : a_all) {
+                        if (!e.form || e.form->GetFormID() != ord[at]) continue;
+                        a_out[i] = e;
+                        a_n = i + 1;
+                        break;
+                    }
                 }
             };
-            const int gp = std::clamp(g_page, 0, PageCount(kItems) - 1);
-            const int mp = std::clamp(g_page, 0, PageCount(kMagic) - 1);
-            slice(g_allFav, g_fav, g_favN, gp);
-            slice(g_allMag, g_mag, g_magN, mp);
-            ApplyOrder(g_fav, g_favN, OrderIdx(0, gp));
-            ApplyOrder(g_mag, g_magN, OrderIdx(1, mp));
+            window(0, g_allFav, g_fav, g_favN,
+                   std::clamp(g_page, 0, PageCount(kItems) - 1));
+            window(1, g_allMag, g_mag, g_magN,
+                   std::clamp(g_page, 0, PageCount(kMagic) - 1));
         }
 
         [[nodiscard]] const char* SlotKey(int a_group, int a_slot)
@@ -3063,29 +3128,13 @@ namespace FUI::Wheeler
         // not a stealth archer's.
         a_intfc->WriteRecordData(static_cast<std::int32_t>(g_group));
 
-        // ---- v4: the extra PAGES ------------------------------------------
+        // ---- v4 ------------------------------------------------------------
         //
-        // ★Page 0 is the head above and is not repeated. That is what lets a
-        // v3 save be read by the same code that reads a v4 one -- pages are an
-        // addition to the record rather than a rewrite of it, and a format
-        // that can be added to is a format that does not have to be migrated.
-        std::uint32_t extra = 0;
-        for (int w = 0; w < 2; ++w) {
-            for (int pg = 1; pg < kMaxPages; ++pg) {
-                if (!OrderFor(OrderIdx(w, pg)).empty()) ++extra;
-            }
-        }
-        a_intfc->WriteRecordData(extra);
-        for (int w = 0; w < 2; ++w) {
-            for (int pg = 1; pg < kMaxPages; ++pg) {
-                const auto& ord = OrderFor(OrderIdx(w, pg));
-                if (ord.empty()) continue;
-                a_intfc->WriteRecordData(static_cast<std::uint32_t>(w));
-                a_intfc->WriteRecordData(static_cast<std::uint32_t>(pg));
-                a_intfc->WriteRecordData(static_cast<std::uint32_t>(ord.size()));
-                for (const auto id : ord) a_intfc->WriteRecordData(id);
-            }
-        }
+        // ★Nothing new but the page NUMBER. The arrangements above are the
+        // same two lists they have always been -- they are simply allowed to
+        // be longer than ten now, because a page is a window on one list
+        // rather than a list of its own. A format that grows by loosening a
+        // bound is a format nobody has to migrate.
         a_intfc->WriteRecordData(static_cast<std::int32_t>(g_page));
     }
 
@@ -3105,7 +3154,10 @@ namespace FUI::Wheeler
             // many FormIDs of memory and throws out of a load callback with no
             // catch above it. The real value is always kSlots; anything else
             // is a damaged record and there is nothing to salvage.
-            if (n > static_cast<std::uint32_t>(kSlots)) {
+            // ★The cap is pages now, not one wheel's worth. A v3 save never
+            // holds more than ten; a v4 one holds as many as the player has
+            // starred, and the ceiling is the same one the page count has.
+            if (n > static_cast<std::uint32_t>(kMaxPages * kSlots)) {
                 SKSE::log::warn("[WHEEL] cosave order count {} is impossible -- record ignored", n);
                 return;
             }
@@ -3147,39 +3199,6 @@ namespace FUI::Wheeler
             return;
         }
 
-        // ---- v4: the extra PAGES ------------------------------------------
-        //
-        // Page 0 of each item wheel is the head above -- unchanged, so a v3
-        // save still reads through the same code. Everything past the tenth
-        // star lives here.
-        std::uint32_t extra = 0;
-        if (!a_intfc->ReadRecordData(extra)) return;
-        // Same reasoning as the count above: a number read from a file is not
-        // a number yet, and this one sizes a loop that allocates.
-        if (extra > 2 * static_cast<std::uint32_t>(kMaxPages)) {
-            SKSE::log::warn("[WHEEL] cosave says {} extra pages -- record ignored", extra);
-            return;
-        }
-        for (std::uint32_t e = 0; e < extra; ++e) {
-            std::uint32_t which = 0, page = 0, n = 0;
-            if (!a_intfc->ReadRecordData(which)) return;
-            if (!a_intfc->ReadRecordData(page)) return;
-            if (!a_intfc->ReadRecordData(n)) return;
-            if (which > 1 || page >= static_cast<std::uint32_t>(kMaxPages) ||
-                n > static_cast<std::uint32_t>(kSlots)) {
-                return;
-            }
-            auto& ord = OrderFor(OrderIdx(static_cast<int>(which), static_cast<int>(page)));
-            ord.clear();
-            ord.reserve(n);
-            for (std::uint32_t i = 0; i < n; ++i) {
-                RE::FormID id = 0;
-                if (!a_intfc->ReadRecordData(id)) return;
-                RE::FormID resolved = 0;
-                if (!a_intfc->ResolveFormID(id, resolved)) resolved = 0;
-                ord.push_back(resolved);
-            }
-        }
         std::int32_t pg = 0;
         if (a_intfc->ReadRecordData(pg)) g_page = (std::max)(0, static_cast<int>(pg));
         g_group = std::clamp(static_cast<int>(grp), 0, GroupCount() - 1);
