@@ -226,6 +226,22 @@ namespace FUI::Wheeler
     // between. The act has to report itself.
     void ForgetFavorite(RE::FormID a_form);
 
+    // ★★★...AND THE MOMENT ONE GOES ON, which is the only moment the ORDER of
+    // starring is knowable at all.
+    //
+    // The engine records that a thing is starred and never when. Asked later,
+    // the inventory answers in the order of the forms' ADDRESSES -- so a wheel
+    // filled from scratch came out shuffled however carefully the player had
+    // starred things one at a time. Spells escaped it by accident:
+    // MagicFavorites is an array the engine appends to, so it already carries
+    // the history that items never had.
+    //
+    // Called as the star is made, this gives items the same history. Stars that
+    // predate it -- or that were made in the vanilla favourites menu, which
+    // does not pass through here -- are still seated in whatever order they are
+    // first seen; there is nothing left to ask by then.
+    void NoteStarred(RE::FormID a_form);
+
     // ---- assets ----------------------------------------------------------
     // ★★Drop the wheel's own drawn-icon cache. The medallions come out of the
     // same fallback folder the grid draws from -- "the folder IS the surface

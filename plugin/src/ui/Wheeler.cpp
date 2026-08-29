@@ -1507,6 +1507,23 @@ namespace FUI::Wheeler
         // first free place, and if every place is taken the list grows by a
         // page. A place whose star is gone is freed rather than closed up, so
         // a potion running out does not move everything after it.
+        // One form into the first free place, growing by a page if there is
+        // none. Already-placed forms are left exactly where they are.
+        void SeatOne(int a_which, RE::FormID a_id)
+        {
+            if (!a_id) return;
+            auto& ord = OrderFor(a_which);
+            if (ord.empty()) ord.assign(kSlots, 0);
+            if (std::find(ord.begin(), ord.end(), a_id) != ord.end()) return;
+            auto slot = std::find(ord.begin(), ord.end(), 0u);
+            if (slot == ord.end()) {
+                if (static_cast<int>(ord.size()) >= kMaxPages * kSlots) return;
+                ord.insert(ord.end(), kSlots, 0);
+                slot = ord.end() - kSlots;
+            }
+            *slot = a_id;
+        }
+
         void SeatStars(int a_which, const std::vector<FavItem>& a_all)
         {
             auto& ord = OrderFor(a_which);
@@ -1521,16 +1538,7 @@ namespace FUI::Wheeler
                 if (id && !starred(id)) id = 0;   // its star went away
             }
             for (const auto& e : a_all) {
-                if (!e.form) continue;
-                const RE::FormID id = e.form->GetFormID();
-                if (std::find(ord.begin(), ord.end(), id) != ord.end()) continue;
-                auto slot = std::find(ord.begin(), ord.end(), 0u);
-                if (slot == ord.end()) {
-                    if (static_cast<int>(ord.size()) >= kMaxPages * kSlots) break;
-                    ord.insert(ord.end(), kSlots, 0);
-                    slot = ord.end() - kSlots;
-                }
-                *slot = id;
+                if (e.form) SeatOne(a_which, e.form->GetFormID());
             }
         }
 
@@ -3272,6 +3280,16 @@ namespace FUI::Wheeler
         // comment saying it was not -- and the copy was missing the drag state.
         if (!a_on) CloseWheel();
         SKSE::log::info("[WHEEL] {}", a_on ? "enabled" : "disabled -- vanilla favourites restored");
+    }
+
+    void NoteStarred(RE::FormID a_form)
+    {
+        auto* form = a_form ? RE::TESForm::LookupByID(a_form) : nullptr;
+        if (!form) return;
+        // ★Which wheel it belongs to is a property of the FORM, so the caller
+        // never has to know -- the same reason ForgetFavorite asks both lists.
+        const bool magic = form->Is(RE::FormType::Spell) || form->Is(RE::FormType::Shout);
+        SeatOne(magic ? 1 : 0, a_form);
     }
 
     void ForgetFavorite(RE::FormID a_form)

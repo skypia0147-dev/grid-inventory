@@ -9200,7 +9200,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // invisible to it and the item returned to the slot it had been
                 // dragged to -- while the same two clicks either side of opening
                 // the wheel put it at the front. The act reports itself now.
+                // ★★...and the moment it goes ON, for the same reason and the
+                // other half of it. The engine never records WHEN a thing was
+                // starred, so this is the only moment the order of starring
+                // can be known -- ask later and the inventory answers by form
+                // ADDRESS, which is how a freshly filled wheel came out
+                // shuffled however carefully it had been starred one at a
+                // time. (Reported.)
                 if (on) Wheeler::ForgetFavorite(f.obj->GetFormID());
+                else    Wheeler::NoteStarred(f.obj->GetFormID());
                 if (on && !xl) {
                     // ★Turning a pool off that has NO list of its own. Naming it
                     // would match nothing and the toggle would jam in the "on"
