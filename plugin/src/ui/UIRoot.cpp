@@ -4175,6 +4175,19 @@ namespace FUI::UIRoot
 
         SKSE::log::info("[UI] menu shown ({} icons cached)",
             IconCache::GetSingleton()->CachedCount());
+
+        // ★Once per session, on the first open: how many armours have a
+        // picture that depends on who is wearing them. It answers whether the
+        // shipped icon pak can simply LEAVE those out (each install then
+        // captures them on its own character, correctly) or whether that
+        // would cost the player a visible wait. Here rather than at
+        // kDataLoaded because it walks the form arrays and the first open is
+        // already a covered moment. See IconCache.h for the whole argument.
+        static bool s_sexScanned = false;
+        if (!s_sexScanned) {
+            s_sexScanned = true;
+            IconCache::GetSingleton()->ReportSexSpecificArmour();
+        }
     }
 
     void OnClose()

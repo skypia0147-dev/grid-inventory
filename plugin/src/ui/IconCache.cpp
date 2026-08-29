@@ -1404,6 +1404,69 @@ namespace FUI
         SKSE::log::info("[ICONS] disk cache reset (retexture refresh)");
     }
 
+    void IconCache::ReportSexSpecificArmour()
+    {
+        auto* dh = RE::TESDataHandler::GetSingleton();
+        if (!dh) return;
+
+        // ★The SAME normalisation the key folds with, or the count would
+        // disagree with the thing it is counting: a record whose two paths
+        // differ only by "meshes\" or a slash is ONE picture to the key, and
+        // must not be reported as two.
+        const auto norm = [](const char* a_p) {
+            std::string s(a_p ? a_p : "");
+            if (_strnicmp(s.c_str(), "meshes", 6) == 0 &&
+                (s.size() > 6 && (s[6] == '\\' || s[6] == '/'))) {
+                s.erase(0, 7);
+            }
+            for (auto& c : s) {
+                if (c >= 'A' && c <= 'Z') c += 32;
+                if (c == '/') c = '\\';
+            }
+            return s;
+        };
+
+        int total = 0, differ = 0, oneSided = 0;
+        std::string sample;
+        int shown = 0;
+        for (auto* armo : dh->GetFormArray<RE::TESObjectARMO>()) {
+            if (!armo) continue;
+            auto* obj = armo->As<RE::TESBoundObject>();
+            // ★NOT Capturable(), which is the capture QUEUE's gate: it answers
+            // false for the whole flat icon style, and this question is about
+            // what a pak would ship, not about what this player's style draws.
+            // The gate that matters is "can the item ever reach a bag".
+            if (!obj || !obj->GetPlayable() || IsUnobtainable(obj)) continue;
+            if (const char* nm = obj->GetName(); !nm || !*nm) continue;
+            ++total;
+            const std::string m =
+                norm(armo->worldModels[RE::TESBipedModelForm::Sexes::kMale].GetModel());
+            const std::string f =
+                norm(armo->worldModels[RE::TESBipedModelForm::Sexes::kFemale].GetModel());
+            if (m == f) continue;
+            // ★One side EMPTY is not "two pictures": the engine falls back to
+            // the model that exists, so both sexes see the same thing and the
+            // shipped icon is right for everyone. Counting these would inflate
+            // the exclusion list with records that need no excluding.
+            if (m.empty() || f.empty()) { ++oneSided; continue; }
+            ++differ;
+            if (shown < 12) {
+                ++shown;
+                sample += "\n           ";
+                sample += armo->GetName() && *armo->GetName() ? armo->GetName() : "?";
+                sample += " (";
+                sample += std::to_string(armo->GetFormID());
+                sample += ")";
+            }
+        }
+        SKSE::log::info(
+            "[ICONS] sex-specific armour: {} of {} capturable ARMO have two "
+            "DIFFERENT ground models ({} more have only one side, which is "
+            "fine -- both sexes see it).{}{}",
+            differ, total, oneSided,
+            differ ? "  First few:" : "", sample);
+    }
+
     bool IconCache::ExportPakTo(const char* a_path)
     {
         ClosePakHandle();   // flush pending appends before the copy

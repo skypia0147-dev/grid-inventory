@@ -187,6 +187,24 @@ namespace FUI
         // The retired stylized derivative is swept here too (GI60).
         void ResetDiskCache();
 
+        // ★★COUNT THE ARMOURS WHOSE PICTURE DEPENDS ON WHO IS WEARING IT.
+        //
+        // An icon key folds BOTH ground models of an armour together
+        // (ModelSlot32), so a record gets exactly ONE icon -- and the engine
+        // renders whichever sex the character capturing it happens to be. For
+        // the ~99% of armours whose two ground models are the same file that
+        // is invisible and correct. For the rest -- underwear, some bard and
+        // mage clothing -- the shipped pak hands every player the sex it was
+        // captured on. Reported against a male character seeing female models.
+        //
+        // The fix under consideration is to leave those records OUT of the
+        // shipped pak, so each install captures them on its own character.
+        // That is only sane if the number is small: every excluded record is a
+        // live capture the player waits for once. So it is measured before it
+        // is decided, and the count lands in every log we are ever sent.
+        // Main/game thread, after kDataLoaded (walks the form arrays).
+        void ReportSexSpecificArmour();
+
         // GI47: preset icon bundle. Export copies our capture pak next to the
         // preset ini; import APPENDS the bundle's records behind our own --
         // the scanner's last-one-wins rule then gives the preset every shared
