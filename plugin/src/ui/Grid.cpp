@@ -9811,7 +9811,64 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
         const long long units = static_cast<long long>(room) +
                                 static_cast<long long>(fitTiles) * aCap;
-        return static_cast<int>((std::min)(static_cast<long long>(a_want), units));
+        const int answer = static_cast<int>(
+            (std::min)(static_cast<long long>(a_want), units));
+
+        // ★★★A REFUSAL THAT CANNOT EXPLAIN ITSELF COSTS A ROUND TRIP.
+        //
+        // Reported: with two cells free, a dagger is refused while two 1x1
+        // items go in. Every mechanism that report implicates is present and
+        // correct here -- both orientations are tried (see the probe seeding
+        // and PlaceItems' mirror fallback), partial stacks merge before any
+        // cell is asked for, and typed bags take the spill. So a refusal is
+        // either right and merely surprising (the free cells are not adjacent;
+        // the item that "fitted" merged into a stack or fell into a bag), or
+        // it is a bug none of this reading can see. From the outside those
+        // look identical, which is exactly the shape of problem that turns one
+        // report into four.
+        //
+        // So it says its arithmetic. Once per FORM per game session, which is
+        // both the cheap thing and the readable one: this runs inside
+        // per-frame gates (rule 4-3 #3), and a line repeated every frame is
+        // one nobody can find in a log anyway.
+        if (answer < a_want) {
+            static std::set<std::string> s_said;
+            if (s_said.insert(aKey).second) {
+                // Occupancy straight off the sim that just ran: every placed
+                // tile stamps its own mask, so this counts what the probe was
+                // actually offered rather than a second opinion about it.
+                std::vector<std::vector<bool>> occ(
+                    kMinRows, std::vector<bool>(kCols, false));
+                for (const auto* p : list) {
+                    if (!p || p->overflow || p->col < 0 || p->row < 0) continue;
+                    if (p->key.rfind("##probe", 0) == 0) continue;   // not a tenant
+                    for (int y = 0; y < p->mask.h; ++y) {
+                        for (int x = 0; x < p->mask.w; ++x) {
+                            if (!p->mask.rows[y][x]) continue;
+                            const int c = p->col + x, r = p->row + y;
+                            if (r >= 0 && r < kMinRows && c >= 0 && c < kCols) {
+                                occ[r][c] = true;
+                            }
+                        }
+                    }
+                }
+                int freeCells = 0;
+                for (int r = 0; r < kMinRows; ++r) {
+                    for (int c = 0; c < kCols; ++c) {
+                        if (!occ[r][c]) ++freeCells;
+                    }
+                }
+                SKSE::log::info(
+                    "[FIT] '{}' {}x{} rot={} -- want {} got {} "
+                    "(stack room {}, tiles needed {} fitted {}, "
+                    "free cells on the hard board {} + cw bonus {})",
+                    a_obj->GetName() ? a_obj->GetName() : "?",
+                    aDef.w, aDef.h, CanRotate(aDef) ? "both" : "fixed",
+                    a_want, answer, room, tilesNeeded, fitTiles,
+                    freeCells, g_cwBonusCells);
+            }
+        }
+        return answer;
     }
 
     bool CanFitNewItem(RE::TESBoundObject* a_obj)
