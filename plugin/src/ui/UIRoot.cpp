@@ -3715,20 +3715,17 @@ namespace FUI::UIRoot
     {
         // ★★OWNERSHIP, and both halves of it run BEFORE the early-out.
         //
-        // Taking: a client is allowed to re-send its suppress as a heartbeat,
-        // and a heartbeat arriving while already suppressed must still restart
-        // the backstop -- otherwise the clock would count from the first call
-        // and a long session would be cut off mid-way for being alive.
+        // Taking: the flag is set before the early-out so that a repeat
+        // suppress from a client still claims the hold -- a client whose first
+        // message arrived while the engine already had us hidden would
+        // otherwise never own the thing it asked for.
         //
         // Giving back: a hold belongs to whoever took it. The engine hands us
         // a kShow whenever the stack thinks we are topmost again, and honouring
         // that would put the board back on screen over a client window that is
         // still up -- silently, with no event the client could answer.
         if (a_on) {
-            if (a_by == SuppressBy::kClient) {
-                g_suppressByClient = true;
-                g_suppressTicks    = 0;
-            }
+            if (a_by == SuppressBy::kClient) g_suppressByClient = true;
         } else if (g_suppressByClient && a_by == SuppressBy::kEngine) {
             return;
         } else {
@@ -4116,12 +4113,12 @@ namespace FUI::UIRoot
 
     void OnClose()
     {
-        // ★★A HOLD MUST NOT OUTLIVE THE THING IT WAS HELD OVER, and since a
-        // client hold now refuses the engine's kShow, nothing else would ever
-        // clear it: the next open would come up suppressed, invisible, and
-        // stay that way until the backstop. The window it was covering is
-        // gone, so the hold is answered here -- with kOverride, because the
-        // client is not the one saying it.
+        // ★★A HOLD MUST NOT OUTLIVE THE THING IT WAS HELD OVER. A client hold
+        // refuses the engine's kShow and never expires, so if it is not
+        // answered here NOTHING answers it: the next open would come up
+        // suppressed and invisible and stay that way for the rest of the
+        // session. The window it was covering is gone, so the hold ends here
+        // -- with kOverride, because the client is not the one saying so.
         Suppress(false, "menu closed", SuppressBy::kOverride);
         CloseInspect();           // release the pinned inspect model + engine scale
         Editor::OnMenuClosed();   // flush pending edits, drop selection
@@ -4665,16 +4662,21 @@ namespace FUI::UIRoot
             // otherwise. The net was right about the stack and wrong about
             // the screen.
             //
-            // So the stack is not asked. What remains is the soft-lock
-            // backstop, which nothing may be exempt from: a client that dies
-            // still holding this would leave the player paused in front of a
-            // board nobody can see, with the keyboard belonging to a window
-            // that is gone. It is long, and ANY repeat suppress restarts it
-            // (see Suppress), so a session outliving it only has to say so.
-            constexpr int kClientBackstop = 60 * 60 * 10;   // ~10 min
-            if (++g_suppressTicks > kClientBackstop) {
-                Suppress(false, "client backstop", SuppressBy::kOverride);
-            }
+            // ★★AND NO TIMER EITHER, which took one more round to see. The
+            // first version kept a ten-minute backstop here on the grounds
+            // that a client dying while holding this would strand the player.
+            // It would -- but nobody sits in front of a frozen game for ten
+            // minutes. Two is where people reach for the task manager. So the
+            // timer could not reach the case it was written for, and the only
+            // thing it could still reach was a LEGITIMATE session that ran
+            // long, which it would end for no reason. A safety net that
+            // cannot arrive in time is not a safety net; it is a bug with an
+            // alibi.
+            //
+            // So the hold is absolute, and the client owns every exit path of
+            // its own window (checklist 6-1: the same pairing rule as an
+            // injected key's IsUp). Ours are still ours: our close, a save
+            // load and a new game all take it back.
         } else if (IsSuppressed()) {
             // ★★A NAME LIST WOULD HAVE BEEN WRONG, and the first measurement
             // said so: a real session had BTPS, TrueHUD and SegmentedHUD open

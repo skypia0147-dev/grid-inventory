@@ -109,15 +109,22 @@ namespace GridInvAPI
     // A hold taken with this message is not second-guessed that way, and the
     // host's own kShow will not break it either.
     //
-    // What that buys costs one obligation: RELEASE IT (suppress = 0) when
-    // your window closes. Nothing else will, except --
+    // ★★AND THERE IS NO TIMER BEHIND IT. The hold does not expire. What that
+    // buys costs one obligation, and it is absolute:
     //
-    //   * the player closing the inventory, or a save load / new game, both
-    //     of which end the session your window was living over anyway; and
-    //   * a ~10 minute backstop, which exists only so that a client that
-    //     DIES holding this cannot strand the player in front of a board
-    //     nobody can see. Re-send suppress = 1 at any time to restart it --
-    //     a session that legitimately runs longer just has to say so.
+    //   RELEASE IT (suppress = 0) ON EVERY PATH THAT CLOSES YOUR WINDOW.
+    //
+    // Not just the normal one. The cancel, the error return, the hotkey that
+    // closes it, the load that happens while it is up -- every exit. While
+    // you hold this the player cannot see the inventory and cannot reach it,
+    // so a path that forgets is a soft lock, and no timer is coming: a build
+    // of this host did carry a ten-minute backstop and it was removed,
+    // because nobody sits in front of a frozen game for ten minutes. They
+    // kill the process at two.
+    //
+    // The only other things that take the hold back are the ones that end the
+    // session your window was living over anyway: our own close, a save load,
+    // and a new game.
     inline constexpr std::uint32_t kMsgSuppressUI      = 0x47495355;  // 'GISU'
 
     // ---- limits -----------------------------------------------------------

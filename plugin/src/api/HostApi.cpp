@@ -165,8 +165,9 @@ namespace FUI::HostApi
                 // ★kClient: this sender named itself, so it OWNS the hold --
                 // the safety net stops second-guessing it against the menu
                 // stack (which cannot see a window that is not a menu), and
-                // only this sender's own release gives it back. A repeat
-                // suppress=1 is a heartbeat and restarts the backstop.
+                // nothing expires it. Its own release, our close and a load
+                // are the only ways back. The obligation that buys is spelled
+                // out where clients read it, in GridInventoryAPI.h.
                 UIRoot::Suppress(p->suppress != 0,
                                  a_msg->sender ? a_msg->sender : "api",
                                  UIRoot::SuppressBy::kClient);

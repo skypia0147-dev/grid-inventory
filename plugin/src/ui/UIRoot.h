@@ -88,10 +88,11 @@ namespace FUI::UIRoot
     //   kClient   -- a mod that named itself through kMsgSuppressUI. It may
     //                have no menu at all (a Flick overlay is not one), so no
     //                stack test can see it and none is applied. It owns the
-    //                hold: only its own release, a close, a load, or the
-    //                backstop takes it back.
-    //   kOverride -- release regardless of who holds it. The backstop, the
-    //                session reset and our own close speak with this.
+    //                hold and the hold does not expire: only its own release,
+    //                our close, or a load takes it back.
+    //   kOverride  -- release regardless of who holds it. The engine-side
+    //                backstop, the session reset and our own close speak
+    //                with this.
     enum class SuppressBy
     {
         kEngine,
