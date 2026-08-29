@@ -840,6 +840,11 @@ namespace FUI::Wheeler
             bool (*eligible)(int slot);            // ...and may it be chosen now
             const char* (*name)(int slot);         // hub text
             bool (*current)(int slot);             // draws the tick
+            // ★HOW MANY OF IT, or 0 for a group where the question means
+            // nothing. A preset is not a quantity and neither is a spell; only
+            // the gear wheel has stacks. Asked of the table rather than tested
+            // by group id, for the same reason every other row here is.
+            int  (*count)(int slot);
             void (*apply)(int slot);               // what letting go does
             // ★There is no "slot to open on". Every wheel opens with nothing
             // chosen -- see SeedCursor. This used to be a per-group function
@@ -887,7 +892,19 @@ namespace FUI::Wheeler
             RE::TESBoundObject* noFace(int s);
             RE::TESBoundObject* costumeFace(int s);
             RE::TESBoundObject* itemFace(int s);
+            int noCount(int) { return 0; }
+            // ★★TWO OF THE SAME WEAPON ARE ONE PLACE ON THE WHEEL, and the
+            // number is how the player knows there is a second one to put in
+            // the other hand. The vanilla menu does exactly this -- one entry
+            // with a count -- and the click rule in UseFav now matches it.
+            // The value was already being carried; nothing but this draws it.
+            int itemCount(int s)
+            {
+                return (s >= 0 && s < kSlots) ? g_fav[s].count : 0;
+            }
             RE::TESBoundObject* magicFace(int s);
+            int noCount(int s);
+            int itemCount(int s);
             const char* itemMedallion(int s);
             const char* magicMedallion(int s);
         }
@@ -1013,16 +1030,16 @@ namespace FUI::Wheeler
             // ITEM icon, because a costume IS armour and the body piece is what
             // the player recognises; there is no weapon in it to name.
             { "PRESET", Preset::filled, Preset::eligible, Preset::name,
-              Preset::current, Preset::apply,
+              Preset::current, Art::noCount, Preset::apply,
               Art::presetMedallion, Art::noFace, Preset::click, Preset::reorder },
             { "COSTUME", Costume_::filled, Costume_::eligible, Costume_::name,
-              Costume_::current, Costume_::apply,
+              Costume_::current, Art::noCount, Costume_::apply,
               Art::noMedallion, Art::costumeFace, Costume_::click, Costume_::reorder },
             { "GEAR", Items::filled, Items::eligible, Items::name,
-              Items::current, Items::apply,
+              Items::current, Art::itemCount, Items::apply,
               Art::itemMedallion, Art::itemFace, Items::click, Items::reorder },
             { "MAGIC", Magic::filled, Magic::eligible, Magic::name,
-              Magic::current, Magic::apply,
+              Magic::current, Art::noCount, Magic::apply,
               Art::magicMedallion, Art::magicFace, Magic::click, Magic::reorder },
         };
 
@@ -2119,7 +2136,30 @@ namespace FUI::Wheeler
             // right-click all along; it was simply never reachable from here.
             // ★Reads the snapshot, so it lags a rebuild at most -- a third of a
             // second, and the alternative is walking the inventory per click.
-            if (a_list[a_slot].worn) {
+            //
+            // ★★★...EXCEPT THAT A HAND IS NOT THE BODY, and the same correction
+            // the spell branch above already carries. `worn` is true when the
+            // form is out ANYWHERE, which is right for the tick that marks a
+            // slot active and wrong for deciding what a click means: with a
+            // sword in the right hand, right-clicking to put its twin in the
+            // LEFT hand read as "already out" and took the first one off. Two
+            // of the same weapon, one in each hand, was unreachable -- and the
+            // VANILLA menu does it: one entry with a count, left-click for the
+            // right hand, then right-click for the left. (Reported.)
+            //
+            // ★No type test, and that is what makes it right. Asking the
+            // engine what is in each hand answers for a weapon, a torch and a
+            // shield alike; a cuirass is in neither hand, so it falls through
+            // to the snapshot and keeps behaving exactly as it did. Read at the
+            // click for the same reason the spells are -- the snapshot
+            // refreshes on a timer and a second click lands inside that window.
+            bool wornHere = a_list[a_slot].worn;
+            if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
+                const bool inL = pc->GetEquippedObject(true) == obj;
+                const bool inR = pc->GetEquippedObject(false) == obj;
+                if (inL || inR) wornHere = a_leftHand ? inL : inR;
+            }
+            if (wornHere) {
                 // ★The second ring is not ENGINE-worn -- a carrier stands in
                 // for it -- so the engine unequip below is a no-op for it.
                 // The carrier's own gate does the whole job (sound, redraw).
@@ -4259,6 +4299,28 @@ namespace FUI::Wheeler
                         ImVec2(tc.x - ts, tc.y - ts), ImVec2(tc.x + ts, tc.y + ts),
                         ImVec2(0, 0), ImVec2(1, 1),
                         (kRed & 0x00FFFFFF) | (static_cast<ImU32>(a) << 24));
+                }
+                // ★★HOW MANY, and only when there is more than one.
+                //
+                // Two of the same weapon are ONE place on this wheel -- the
+                // list is keyed by form -- so without a number there is nothing
+                // to say the second one exists, and the player has no reason to
+                // try the other hand. The vanilla menu shows exactly this: one
+                // entry, a count, and both hands reachable from it.
+                //
+                // ★"1" is not information. Every unique thing on the ring would
+                // wear a number that never changes and never means anything,
+                // and the wheel is already carrying a medallion, a picture and
+                // sometimes a check in the same square.
+                //
+                // ★Opposite corner from the check, on purpose: a stack that is
+                // also equipped shows both, and two marks in one corner would
+                // have to be laid out around each other.
+                if (const int n = G(shownGroup).count(i); n > 1) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%d", n);
+                    Halo(dl, ImVec2(m.x + sz * 0.78f, m.y + sz * 0.78f), buf,
+                         sz * 0.95f, IM_COL32(236, 232, 225, 255), a);
                 }
             }
             // ★Held until the wheel is FULLY open. Slots fade in one at a
