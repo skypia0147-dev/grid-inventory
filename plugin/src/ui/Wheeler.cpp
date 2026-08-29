@@ -139,6 +139,14 @@ namespace FUI::Wheeler
         // ★On by default: the wheel is what this feature IS, and a player who
         // wants the vanilla screen back can say so once. See Wheeler.h.
         bool  g_enabled = true;
+        // ★★TAP HELD IT OPEN. The wheel has always been a hold: press, aim,
+        // let go, it applies. A tap now leaves it standing until the key is
+        // pressed again, and the two live together -- hold past the threshold
+        // and nothing about the old behaviour changes.
+        bool  g_toggled = false;
+        // Milliseconds. Above this a press is a HOLD and the release applies;
+        // below it the press is a TAP and the release does nothing.
+        float g_tapMs = 250.0f;
         // ★Said once per stand-down -- see the probe in OnButton.
         bool  g_saidPassing = false;
 
@@ -2075,6 +2083,10 @@ namespace FUI::Wheeler
         {
             if (!g_open) return;
             g_open = false;
+            // ★Every exit clears it, not just the toggle's own. A wheel shut by
+            // a load, by the settings switch or by standing down to vanilla
+            // must not come back believing it is still being held open.
+            g_toggled = false;
             g_dir = -1;
             // ★★AND IT DOES NOT TOUCH THE PICK. The release path latches
             // g_pick one line before calling this, precisely so the close
@@ -2860,6 +2872,15 @@ namespace FUI::Wheeler
     // No amount of cleverness inside the blanking fixes that -- one key cannot
     // be eaten and passed on at once. The player needs somewhere else to put
     // the wheel, so !wheelkey in the ui ini is that somewhere.
+    void SetTapMs(int a_ms)
+    {
+        // Bounded here as well as at the reader: this is also reachable from a
+        // preset import, and a shared file is not a trusted one.
+        g_tapMs = static_cast<float>(std::clamp(a_ms, 60, 2000));
+    }
+
+    int TapMs() { return static_cast<int>(g_tapMs); }
+
     void SetKeyOverride(bool a_pad, std::uint32_t a_code)
     {
         g_keyOverride[a_pad ? 1 : 0] = a_code;
@@ -3089,6 +3110,10 @@ namespace FUI::Wheeler
         // exactly this re-read.
         SetKeyOverride(false, WinManager::ReadWheelKey(false));
         SetKeyOverride(true,  WinManager::ReadWheelKey(true));
+        // ★Same reason as the two above: the FIRST press has to be judged
+        // correctly, and that press can come long before any window has
+        // pulled in the rest of this file.
+        SetTapMs(WinManager::ReadWheelTapMs(TapMs()));
         AdoptFavoritesKey();
         SKSE::log::info("[WHEEL] hotkey: {} / pad {}", ComboText(false), ComboText(true));
     }
@@ -3409,6 +3434,15 @@ namespace FUI::Wheeler
         // sprinting. Only the opening code is ours to take.
         if (g_open && id != g_openedBy && !a_event->IsUp()) return false;
 
+        // ★A SECOND PRESS SHUTS A TAPPED WHEEL, and applies nothing. Letting
+        // it apply would make the same key mean "choose this" and "never mind"
+        // depending on where the pointer happens to be resting, which is a coin
+        // flip the player did not ask to toss.
+        if (a_event->IsDown() && g_open && g_toggled && id == g_openedBy) {
+            Sfx::SelectOff();
+            CloseWheel();
+            return true;
+        }
         if (a_event->IsDown() && !g_open && ComboComplete(pad)) {
             if (SomethingElseOwnsTheKey(id)) return false;
             LoadTextures();
@@ -3475,6 +3509,27 @@ namespace FUI::Wheeler
             return true;
         }
         if (a_event->IsUp() && g_open) {
+            // ★★★TAP OR HOLD, decided by the ENGINE'S OWN measure of the press.
+            //
+            // ButtonEvent carries how long it was held (HeldDuration), so
+            // nothing here has to remember when the key went down -- and the
+            // muting we do to the event stream deliberately leaves that field
+            // alone (see Mute), precisely so it can still be read here.
+            //
+            // Under the threshold the press was a TAP: the wheel stays up, and
+            // the release neither applies nor closes. Over it, everything below
+            // runs exactly as it always has.
+            //
+            // ★Only the OPENING key's duration is asked. A combo's modifier was
+            // already down before the wheel existed, so its clock says nothing
+            // about this press. (DynamicKeyActionFramework takes the minimum
+            // across a chord for the same reason -- the youngest press is the
+            // one the player just made.)
+            if (id == g_openedBy && !g_toggled &&
+                a_event->HeldDuration() * 1000.0f < g_tapMs) {
+                g_toggled = true;
+                return true;
+            }
             // ★Latch before clearing g_open -- the close animation has to know
             // which slot to hold on to, and the pointer stops existing here.
             g_pick = g_sel;

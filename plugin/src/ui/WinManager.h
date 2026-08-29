@@ -80,6 +80,11 @@ namespace FUI
         // re-reading 0 a hundred times cannot fight anything.
         // a_pad: false = keyboard scan code, true = gamepad button.
         [[nodiscard]] static std::uint32_t ReadWheelKey(bool a_pad);
+        // ★How long a press has to be to count as a HOLD rather than a tap,
+        // in milliseconds. Same early-read reason as the two above: the wheel
+        // answers a key during ordinary play, long before any window exists.
+        // 0 or nonsense returns the default the caller passes.
+        [[nodiscard]] static int ReadWheelTapMs(int a_default);
         // GI46-48: NAMED share files. "Default" -> GridInventory_Default.ini,
         // "P1" -> GridInventory_P1.ini ... each beside its icon bundle
         // (GridInventory_<name>_icons.pak). One ini carries the style subset

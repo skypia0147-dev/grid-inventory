@@ -220,6 +220,31 @@ namespace FUI
         return a_default;
     }
 
+    int WinManager::ReadWheelTapMs(int a_default)
+    {
+        std::ifstream in(kUiIniPath);
+        if (!in) return a_default;
+        std::string line;
+        while (std::getline(in, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            auto key = line.substr(0, eq);
+            while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+            if (key != "!wheeltapms") continue;
+            try {
+                const int v = std::stoi(line.substr(eq + 1));
+                // ★Bounded rather than trusted. Under ~60ms no human press is
+                // a tap and every hold would toggle; over ~2s a hold is being
+                // read as a tap and the wheel sticks open by surprise.
+                if (v < 60 || v > 2000) return a_default;
+                return v;
+            } catch (...) {
+                return a_default;
+            }
+        }
+        return a_default;
+    }
+
     std::uint32_t WinManager::ReadWheelKey(bool a_pad)
     {
         // Same shape and the same reason as ReadWheelEnabled: the hotkey has to
@@ -560,6 +585,10 @@ namespace FUI
             // this file is re-read on every inventory open: the override has to
             // outlive that, or the game's Favourites binding takes the wheel
             // back the first time the player opens a bag.
+            if (key == "!wheeltapms") {
+                try { Wheeler::SetTapMs(std::stoi(rest)); } catch (...) {}
+                continue;
+            }
             if (key == "!wheelkey" || key == "!wheelkeypad") {
                 const bool pad = key == "!wheelkeypad";
                 try {
@@ -950,7 +979,14 @@ namespace FUI
         out << "!wheelkey = " << Wheeler::KeyOverride(false) << "\n";
         out << "; Gamepad button, same rule. 0 = follow the game.\n";
         out << "; 게임패드 버튼, 규칙 동일. 0이면 게임을 따라갑니다.\n";
-        out << "!wheelkeypad = " << Wheeler::KeyOverride(true) << "\n\n";
+        out << "!wheelkeypad = " << Wheeler::KeyOverride(true) << "\n";
+        out << "; A press SHORTER than this is a tap: the wheel stays open until\n";
+        out << ";   you press again. Longer is the hold it always was -- let go\n";
+        out << ";   and it applies. Milliseconds, 60 to 2000.\n";
+        out << "; 이 시간보다 짧게 누르면 탭입니다. 다시 누를 때까지 휠이\n";
+        out << ";   열린 채로 있습니다. 그보다 길면 종전과 같습니다 -- 놓는 순간\n";
+        out << ";   적용됩니다. 밀리초 단위, 60~2000.\n";
+        out << "!wheeltapms = " << Wheeler::TapMs() << "\n\n";
         for (const auto& w : m_wins) {
             if (!w.posKnown) continue;
             out << w.key << " = "

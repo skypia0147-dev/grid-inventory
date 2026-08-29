@@ -245,6 +245,13 @@ namespace FUI::Wheeler
     // game's Favourites key can no longer drag the wheel back on top of it.
     // Exists because Inventory rebound onto that key became unopenable: the
     // wheel blanks its hotkey before any menu can see it.
+    // ★★A TAP HOLDS THE WHEEL OPEN. Under this many milliseconds a press is a
+    // tap and the wheel stays up until the key is pressed again; over it the
+    // press is the hold it always was and letting go applies. The two coexist,
+    // so nobody has to choose and nobody's habit breaks.
+    void          SetTapMs(int a_ms);
+    [[nodiscard]] int TapMs();
+
     void          SetKeyOverride(bool a_pad, std::uint32_t a_code);
     [[nodiscard]] std::uint32_t KeyOverride(bool a_pad);
 
