@@ -2162,6 +2162,32 @@ namespace FUI
         sweep(dh->GetFormArray<RE::TESSoulGem>());
         sweep(dh->GetFormArray<RE::TESKey>());
         sweep(dh->GetFormArray<RE::ScrollItem>());
+        // ★★SPELLS TOO, and by their own rules rather than the sweep's.
+        //
+        // The generic filter asks GetPlayable() and looks for a world model,
+        // neither of which means anything for a spell: what gets photographed
+        // is its MDOB (CaptureSourceOf), and what makes it worth photographing
+        // is that a player can pick it. Abilities, diseases and enchantments
+        // are carried BY things rather than chosen, so they never reach a
+        // wheel and would be pure capture cost.
+        //
+        // ★Every spell, not the ones this character happens to know. The pak
+        // is built once and shipped to people whose spell lists we cannot see,
+        // and an icon missing from it is a capture THEY wait for. Capturable()
+        // refuses the ~130 with no display object, so the ones without cost
+        // nothing but this loop.
+        for (auto* sp : dh->GetFormArray<RE::SpellItem>()) {
+            if (!sp) continue;
+            const auto t = sp->GetSpellType();
+            if (t != RE::MagicSystem::SpellType::kSpell &&
+                t != RE::MagicSystem::SpellType::kPower &&
+                t != RE::MagicSystem::SpellType::kLesserPower) {
+                continue;
+            }
+            const char* nm = sp->GetName();
+            if (!nm || !nm[0]) continue;
+            if (auto* obj = sp->As<RE::TESBoundObject>()) Prefetch(obj, true);
+        }
         const size_t queued = m_queue.size() - before;
         SKSE::log::info("[ICONS] precache: {} queued ({} already on disk)",
             queued, g_pakIndex.size());
@@ -3113,41 +3139,97 @@ namespace FUI
             }
         }
 
-        // ★★WHERE THE PICTURE'S WEIGHT ACTUALLY SITS.
+        // ★★★CENTRE WHAT THE EYE SEES, for spells only.
         //
-        // Reported: one spell icon looks off-centre on the wheel while the
-        // others look fine. Everything that draws a sprite centres its
-        // BOUNDING BOX, which is the right answer for a solid object -- the
-        // box IS the object. It stops being the right answer when the content
-        // is a light: a flame with a faint plume on one side has a box that
-        // reaches the plume, and the bright part everyone actually looks at
-        // then sits off to the other side of that box's middle.
+        // Everything that draws a sprite centres its BOUNDING BOX, which is
+        // the right answer for a solid object: the box IS the object, and a
+        // bottle should sit in its cell the way it sits on a table. It stops
+        // being the right answer when the content is a LIGHT. A flame with a
+        // faint plume up one side has a box that reaches the plume, and the
+        // part anyone actually looks at then sits off to the other side of the
+        // box's middle. Measured on the ring: 'Flames' put its luminous weight
+        // at 0.60 of its own height where every other spell measured 0.50, and
+        // it was the one icon that looked wrong (reported).
         //
-        // Whether that is what is happening cannot be told from outside, so
-        // the capture states it: the alpha-weighted centroid, in fractions of
-        // the sprite. 0.50 / 0.50 is centred content and the draw is at fault;
-        // anything far from it is the picture itself, and no draw-side change
-        // will move it.
-        {
-            double wsum = 0.0, cx = 0.0, cy = 0.0;
+        // ★Not the centroid, though the centroid is what found this. A mean
+        // gets dragged by a wide dim halo, and that halo is exactly the part
+        // nobody sees. What is centred here is the BOX OF THE VISIBLE CORE:
+        // pixels carrying at least a quarter of the brightest one. That is a
+        // "where does the shape look like it is" answer rather than a "where
+        // is its mass" one, and for a two-part model -- a dim flame above a
+        // bright orb -- it lands between them, which is where an eye puts it.
+        //
+        // ★Done by PADDING rather than by moving the crop: the crop is bounded
+        // by the capture, and a core near an edge would need pixels that were
+        // never rendered. Transparent rows cost nothing and the draw centres
+        // the result for free -- no draw-side change, no per-form ini, and the
+        // correction rides in the shipped pak.
+        //
+        // ★ITEMS ARE LEFT ALONE, deliberately. A wine bottle measures 0.48 /
+        // 0.64 because it is heavy at the base, and "correcting" that would
+        // float it in its cell. Its box is honest; a spell's is not.
+        if (m_pending.obj->As<RE::SpellItem>() && trimW > 0 && trimH > 0) {
+            const auto vOf = [](const std::uint8_t* a_px) {
+                const double lum = (a_px[0] * 0.299 + a_px[1] * 0.587 +
+                                    a_px[2] * 0.114) / 255.0;
+                return (a_px[3] / 255.0) * lum;
+            };
+            double vmax = 0.0;
             for (int y = 0; y < trimH; ++y) {
                 const auto* row = sprite.data() + static_cast<size_t>(y) * trimW * 4;
-                for (int x = 0; x < trimW; ++x) {
-                    // ★Weighted by alpha AND by brightness: an eye finds the
-                    // bright core, not the dim halo that alpha alone counts as
-                    // equal to it.
-                    const auto* px = row + x * 4;
-                    const double lum = (px[0] * 0.299 + px[1] * 0.587 + px[2] * 0.114) / 255.0;
-                    const double wgt = (px[3] / 255.0) * lum;
-                    wsum += wgt;
-                    cx += wgt * (x + 0.5);
-                    cy += wgt * (y + 0.5);
-                }
+                for (int x = 0; x < trimW; ++x) vmax = (std::max)(vmax, vOf(row + x * 4));
             }
-            if (wsum > 0.0) {
-                SKSE::log::info("[ICONS] '{}' {}x{} centroid {:.2f} / {:.2f}",
-                                m_pending.obj->GetName(), trimW, trimH,
-                                cx / wsum / trimW, cy / wsum / trimH);
+            if (vmax > 0.0) {
+                const double thr = vmax * 0.25;
+                int x0 = trimW, y0 = trimH, x1 = -1, y1 = -1;
+                for (int y = 0; y < trimH; ++y) {
+                    const auto* row = sprite.data() + static_cast<size_t>(y) * trimW * 4;
+                    for (int x = 0; x < trimW; ++x) {
+                        if (vOf(row + x * 4) < thr) continue;
+                        x0 = (std::min)(x0, x); x1 = (std::max)(x1, x);
+                        y0 = (std::min)(y0, y); y1 = (std::max)(y1, y);
+                    }
+                }
+                if (x1 >= x0 && y1 >= y0) {
+                    const int cx = (x0 + x1 + 1) / 2;
+                    const int cy = (y0 + y1 + 1) / 2;
+                    // Pad the side the content is NEAREST, so its core lands on
+                    // the new middle. (Derivation: with padL added on the left,
+                    // the core sits at cx+padL and the middle at (trimW+padL)/2;
+                    // equal when padL = trimW - 2*cx.)
+                    int padL = (std::max)(0, trimW - 2 * cx);
+                    int padR = (std::max)(0, 2 * cx - trimW);
+                    int padT = (std::max)(0, trimH - 2 * cy);
+                    int padB = (std::max)(0, 2 * cy - trimH);
+                    // ★A core hard against one edge would otherwise ask to
+                    // double the sprite, spending memory and resolution on
+                    // emptiness. Past this the picture is simply lopsided and
+                    // half-correcting it is better than paying for the rest.
+                    const int capW = trimW * 3 / 5, capH = trimH * 3 / 5;
+                    padL = (std::min)(padL, capW); padR = (std::min)(padR, capW);
+                    padT = (std::min)(padT, capH); padB = (std::min)(padB, capH);
+                    if (padL || padR || padT || padB) {
+                        const int nw = trimW + padL + padR;
+                        const int nh = trimH + padT + padB;
+                        std::vector<std::uint8_t> padded(
+                            static_cast<size_t>(nw) * nh * 4, 0);
+                        for (int y = 0; y < trimH; ++y) {
+                            std::memcpy(
+                                padded.data() +
+                                    (static_cast<size_t>(y + padT) * nw + padL) * 4,
+                                sprite.data() + static_cast<size_t>(y) * trimW * 4,
+                                static_cast<size_t>(trimW) * 4);
+                        }
+                        SKSE::log::info(
+                            "[ICONS] '{}' centred: core box middle was {} / {} "
+                            "of {}x{} -- padded L{} R{} T{} B{}",
+                            m_pending.obj->GetName(), cx, cy, trimW, trimH,
+                            padL, padR, padT, padB);
+                        sprite = std::move(padded);
+                        trimW = nw;
+                        trimH = nh;
+                    }
+                }
             }
         }
 
