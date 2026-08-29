@@ -168,9 +168,11 @@ namespace FUI::HostApi
                 // nothing expires it. Its own release, our close and a load
                 // are the only ways back. The obligation that buys is spelled
                 // out where clients read it, in GridInventoryAPI.h.
-                UIRoot::Suppress(p->suppress != 0,
-                                 a_msg->sender ? a_msg->sender : "api",
-                                 UIRoot::SuppressBy::kClient);
+                // ★RequestClientSuppress, never Suppress: this listener runs on
+                // whatever thread the sender dispatched from, and Suppress
+                // reads RE::UI's menu map, which is walked without a lock.
+                UIRoot::RequestClientSuppress(p->suppress != 0,
+                                              a_msg->sender ? a_msg->sender : "api");
                 return;
             }
         }

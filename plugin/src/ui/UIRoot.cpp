@@ -702,9 +702,19 @@ namespace FUI::UIRoot
         // Render reads it on the render thread.
         std::atomic<bool> g_suppressed{ false };
         int               g_suppressTicks = 0;   // safety-net age, in Ticks
-        // ★A named client holds this one (UIRoot.h SuppressBy). Game thread
-        // only -- every Suppress() call and the net's read are on it.
-        bool              g_suppressByClient = false;
+        // ★A named client holds this one (UIRoot.h SuppressBy). ATOMIC because
+        // a client dispatches its message on whatever thread it likes, and
+        // SKSE hands the dispatch straight to us on that thread -- a plain
+        // bool written there and read by the net is a data race.
+        std::atomic<bool> g_suppressByClient{ false };
+        // ...and the request itself is parked rather than acted on, for the
+        // same reason. Guarded because the sender's name is a string: two
+        // clients arriving at once must not tear it. Not a per-frame path --
+        // this is touched once per suppress message (rule 4-3 #3 is safe).
+        std::mutex        g_clientReqLock;
+        bool              g_clientReqPending = false;
+        bool              g_clientReqOn      = false;
+        std::string       g_clientReqWho;
 
         // Called from the input sink (game thread, but not the render pass) —
         // only flags are touched here; the cursor is seeded during the frame.
@@ -3715,21 +3725,50 @@ namespace FUI::UIRoot
     {
         // ★★OWNERSHIP, and both halves of it run BEFORE the early-out.
         //
-        // Taking: the flag is set before the early-out so that a repeat
-        // suppress from a client still claims the hold -- a client whose first
-        // message arrived while the engine already had us hidden would
-        // otherwise never own the thing it asked for.
-        //
-        // Giving back: a hold belongs to whoever took it. The engine hands us
-        // a kShow whenever the stack thinks we are topmost again, and honouring
-        // that would put the board back on screen over a client window that is
-        // still up -- silently, with no event the client could answer.
+        // Both halves run BEFORE the early-out, so that a message arriving
+        // while the state is already what it asks for still settles OWNERSHIP:
+        // a client whose suppress lands while the engine already had us hidden
+        // would otherwise never own the thing it asked for.
         if (a_on) {
-            if (a_by == SuppressBy::kClient) g_suppressByClient = true;
-        } else if (g_suppressByClient && a_by == SuppressBy::kEngine) {
-            return;
+            if (a_by == SuppressBy::kClient) {
+                // ★★★A HOLD OVER NOTHING IS A TRAP, and with no timer behind
+                // it, a permanent one. Taken while the inventory is CLOSED,
+                // the hold survives to the next open -- where kShow is refused
+                // (it is kEngine), the board never draws, and every key that
+                // could close it is gated behind IsBoardLive. The player would
+                // have an open, invisible, unreachable menu for the rest of
+                // the session, and nothing in the design would ever end it.
+                //
+                // There is nothing to step aside from when we are not on
+                // screen, so the request is refused rather than banked.
+                if (!IsSessionOpen()) {
+                    SKSE::log::warn("[SUPPRESS] refused ({}): the inventory is "
+                                    "not open -- send it while the menu is up",
+                                    a_why);
+                    return;
+                }
+                g_suppressByClient.store(true);
+            }
         } else {
-            g_suppressByClient = false;
+            // ★★GIVING BACK IS THE HOLDER'S TO DO, and it cuts BOTH ways.
+            //
+            // kEngine while a client holds: refused. The engine hands us a
+            // kShow whenever the stack thinks we are topmost again, and
+            // honouring it would put the board back on screen over a client
+            // window that is still up, silently, with no event the client
+            // could answer.
+            //
+            // kClient while the ENGINE holds: also refused, and this one is
+            // less obvious. A client that closes its window while a vanilla
+            // confirmation box happens to be up would otherwise lift the box's
+            // suppression too -- and the net never re-suppresses, it only
+            // releases, so the board would sit over that box until the player
+            // dismissed it. That is exactly the bug 1.5.1 was released to fix,
+            // reachable again through a release nobody meant to be about it.
+            const bool held = g_suppressByClient.load();
+            if (a_by == SuppressBy::kEngine && held)  return;
+            if (a_by == SuppressBy::kClient && !held) return;
+            g_suppressByClient.store(false);
         }
         if (g_suppressed.exchange(a_on) == a_on) return;
         if (a_on) {
@@ -3751,16 +3790,43 @@ namespace FUI::UIRoot
                 }
             }
             SKSE::log::info("[SUPPRESS] on ({}, {}) -- open menus:{}", a_why,
-                            g_suppressByClient ? "client-held" : "engine",
+                            g_suppressByClient.load() ? "client-held" : "engine",
                             open.empty() ? " (none)" : open.c_str());
         } else {
             SKSE::log::info("[SUPPRESS] off ({})", a_why);
         }
     }
 
+    void RequestClientSuppress(bool a_on, const char* a_who)
+    {
+        // Nothing here may touch the engine: see the header. Park and return.
+        std::scoped_lock lock(g_clientReqLock);
+        g_clientReqPending = true;
+        g_clientReqOn      = a_on;
+        g_clientReqWho     = a_who ? a_who : "api";
+    }
+
+    // Game thread, from Tick. Applies whatever the last message asked for --
+    // a suppress and a release in the same frame collapse to the release,
+    // which is the right answer for a boolean.
+    void ApplyPendingClientSuppress()
+    {
+        bool        on{};
+        std::string who;
+        {
+            std::scoped_lock lock(g_clientReqLock);
+            if (!g_clientReqPending) return;
+            g_clientReqPending = false;
+            on                 = g_clientReqOn;
+            who                = std::move(g_clientReqWho);
+            g_clientReqWho.clear();
+        }
+        Suppress(on, who.c_str(), SuppressBy::kClient);
+    }
+
     bool IsSuppressed() { return g_suppressed.load(std::memory_order_relaxed); }
 
-    bool IsSuppressedByClient() { return g_suppressByClient; }
+    bool IsSuppressedByClient() { return g_suppressByClient.load(); }
 
     bool IsSessionOpen()
     {
@@ -4649,6 +4715,9 @@ namespace FUI::UIRoot
         // window but the permanent furniture remains, nobody is there any
         // more and we come back. The grace lets a mod close one window and
         // open the next without us flashing in between.
+        // ★Before the net looks at anything: a client's request parked on
+        // another thread becomes real HERE, where the engine is safe to read.
+        ApplyPendingClientSuppress();
         if (IsSuppressed() && IsSuppressedByClient()) {
             // ★★★A CLIENT THAT ASKED BY NAME IS NOT A CLIENT THAT FORGOT.
             //
@@ -4677,6 +4746,18 @@ namespace FUI::UIRoot
             // its own window (checklist 6-1: the same pairing rule as an
             // injected key's IsUp). Ours are still ours: our close, a save
             // load and a new game all take it back.
+            //
+            // ★And ONE test remains, which is not a timer: a hold cannot
+            // outlive the session it was taken over. OnClose answers the
+            // ordinary close, but a menu torn down without a kForceHide would
+            // leave the hold standing, and the next open would come up
+            // invisible and unreachable for good. This is a structural
+            // question, not a clock, so it costs the client nothing and
+            // answers within one tick.
+            if (!IsSessionOpen()) {
+                Suppress(false, "the session it was held over is gone",
+                         SuppressBy::kOverride);
+            }
         } else if (IsSuppressed()) {
             // ★★A NAME LIST WOULD HAVE BEEN WRONG, and the first measurement
             // said so: a real session had BTPS, TrueHUD and SegmentedHUD open

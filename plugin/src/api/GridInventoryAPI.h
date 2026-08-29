@@ -125,6 +125,16 @@ namespace GridInvAPI
     // The only other things that take the hold back are the ones that end the
     // session your window was living over anyway: our own close, a save load,
     // and a new game.
+    //
+    // ★SEND IT WHILE THE INVENTORY IS OPEN. There is nothing to step aside
+    // from otherwise, and a hold banked against a session that has not started
+    // would surface at the next open as a board that never draws. So one taken
+    // with the inventory closed is refused, with a line in our log saying so.
+    // Check IsMenuOpen() first, or just send it when your window opens over us.
+    //
+    // ★DISPATCH FROM ANY THREAD. It is parked and applied on the next game
+    // frame, so the grid goes quiet a frame after you ask rather than inside
+    // your Dispatch call. Nothing here touches the engine on your thread.
     inline constexpr std::uint32_t kMsgSuppressUI      = 0x47495355;  // 'GISU'
 
     // ---- limits -----------------------------------------------------------
@@ -246,8 +256,14 @@ namespace GridInvAPI
         // any thread; the host only sets a flag.
         void (*RequestRebuild)();
 
-        // True while the grid menu is open. A provider that mutates inventory
-        // should check this before doing anything the user could be looking at.
+        // True while the grid MENU SESSION is open: its board, the item on the
+        // cursor and every sub-window are alive. Suppression (kMsgSuppressUI)
+        // does NOT move this -- a hidden grid is still an open one, and a
+        // client reading its own suppression back as a close is what this
+        // answering liveness caused in 1.5.1. A provider that mutates
+        // inventory should check this first; the session is what makes a
+        // mutation dangerous, not whether pixels are on screen.
+        // Main/game thread only (reads RE::UI's menu map, which is unlocked).
         bool (*IsMenuOpen)();
 
         // Grant-time tile snapshot: how many grid cells `base` occupies RIGHT NOW

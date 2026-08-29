@@ -99,7 +99,20 @@ namespace FUI::UIRoot
         kClient,
         kOverride,
     };
+    // ★GAME THREAD ONLY. It reads the engine's menu map (to decide, and to say
+    // what was open), and RE::UI walks that map without a lock.
     void Suppress(bool a_on, const char* a_why, SuppressBy a_by = SuppressBy::kEngine);
+
+    // ★★THE CLIENT'S DOOR, and the only one that is safe from anywhere.
+    //
+    // A mod dispatches its suppress on whatever thread it likes and SKSE runs
+    // the listener right there, so the ABI path must not touch the engine at
+    // all. This just parks the request; Tick picks it up on the game thread
+    // next frame and calls Suppress for real. One frame of latency buys the
+    // whole cross-thread hazard, which is the right trade -- the alternative
+    // is reading RE::UI's menu map while the game thread is editing it.
+    void RequestClientSuppress(bool a_on, const char* a_who);
+
     [[nodiscard]] bool IsSuppressed();
     // True while the current hold belongs to a named client (kClient above).
     [[nodiscard]] bool IsSuppressedByClient();
