@@ -220,6 +220,35 @@ namespace FUI
         return a_default;
     }
 
+    std::uint32_t WinManager::ReadWheelKey(bool a_pad)
+    {
+        // Same shape and the same reason as ReadWheelEnabled: the hotkey has to
+        // be right before the first press, which is long before any window
+        // exists to load the rest of this file.
+        const char* want = a_pad ? "!wheelkeypad" : "!wheelkey";
+        std::ifstream in(kUiIniPath);
+        if (!in) return 0;
+        std::string line;
+        while (std::getline(in, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            auto key = line.substr(0, eq);
+            while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+            if (key != want) continue;
+            try {
+                const int v = std::stoi(line.substr(eq + 1));
+                // Negative is nonsense and 0xFF is the engine's "not bound" --
+                // either would bind the wheel to nothing, which is worse than
+                // following the game.
+                if (v <= 0 || v == 0xFF) return 0;
+                return static_cast<std::uint32_t>(v);
+            } catch (...) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
     void WinManager::Load()
     {
         m_loaded = true;
@@ -525,6 +554,20 @@ namespace FUI
             }
             if (key == "!wheelon") {        // quick wheel on/off
                 try { Wheeler::SetEnabled(std::stoi(rest) != 0); } catch (...) {}
+                continue;
+            }
+            // ★The wheel's own key. Re-applied on every load precisely BECAUSE
+            // this file is re-read on every inventory open: the override has to
+            // outlive that, or the game's Favourites binding takes the wheel
+            // back the first time the player opens a bag.
+            if (key == "!wheelkey" || key == "!wheelkeypad") {
+                const bool pad = key == "!wheelkeypad";
+                try {
+                    const int v = std::stoi(rest);
+                    Wheeler::SetKeyOverride(
+                        pad, (v > 0 && v != 0xFF) ? static_cast<std::uint32_t>(v) : 0u);
+                } catch (...) {}
+                Wheeler::AdoptFavoritesKey();   // resolve it now, either way
                 continue;
             }
             if (key == "!merchgoldinf") {   // F3: unlimited merchant gold
@@ -889,9 +932,25 @@ namespace FUI
         out << "!wheelon = " << (Wheeler::Enabled() ? 1 : 0) << "\n";
         out << "!merchgoldinf = " << (LootBarter::MerchantGoldInfinite() ? 1 : 0) << "\n";
         out << "!merchbuyall = " << (LootBarter::MerchantBuysAll() ? 1 : 0) << "\n";
-        // ★No wheel hotkey written any more -- see the reader above. It lives
-        // in the game's own controls, and writing a second copy here is what
-        // let an old value climb back in.
+        // ★The wheel's key: the OVERRIDE, never the resolved value. Writing
+        // what the wheel is currently on is what let an old number climb back
+        // over the player's rebind, which is why the previous entry was
+        // removed. This one is only ever what the player typed here.
+        out << "\n";
+        out << "; Wheel hotkey. 0 = follow the game's Favourites binding (default).\n";
+        out << ";   Set a DirectInput scan code to give the wheel a key of its own --\n";
+        out << ";   needed if you put Inventory on the Favourites key, since the wheel\n";
+        out << ";   hides that key from the game and the bag would never open.\n";
+        out << ";   Common codes: Q=16 E=18 R=19 F=33 G=34 V=47 X=45 Z=44 CapsLock=58\n";
+        out << "; 휠 단축키. 0이면 게임의 즐겨찾기 키를 따라갑니다 (기본값).\n";
+        out << ";   DirectInput 스캔 코드를 넣으면 휠이 그 키를 씁니다. 즐겨찾기 키에\n";
+        out << ";   인벤토리를 배정했다면 반드시 옮겨야 합니다 -- 휠이 그 키를 게임에서\n";
+        out << ";   감추기 때문에 가방이 아예 열리지 않습니다.\n";
+        out << ";   자주 쓰는 코드: Q=16 E=18 R=19 F=33 G=34 V=47 X=45 Z=44 CapsLock=58\n";
+        out << "!wheelkey = " << Wheeler::KeyOverride(false) << "\n";
+        out << "; Gamepad button, same rule. 0 = follow the game.\n";
+        out << "; 게임패드 버튼, 규칙 동일. 0이면 게임을 따라갑니다.\n";
+        out << "!wheelkeypad = " << Wheeler::KeyOverride(true) << "\n\n";
         for (const auto& w : m_wins) {
             if (!w.posKnown) continue;
             out << w.key << " = "

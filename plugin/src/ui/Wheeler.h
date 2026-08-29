@@ -239,6 +239,14 @@ namespace FUI::Wheeler
     // has taken that menu's place, so it answers to that key and follows the
     // player when they rebind it in the game's own controls.
     void AdoptFavoritesKey();
+    // ★...unless the player has put the wheel somewhere of its own (!wheelkey
+    // in the ui ini). 0 restores "follow the game". Set before the first
+    // AdoptFavoritesKey and re-applied by every later one, so a rebind of the
+    // game's Favourites key can no longer drag the wheel back on top of it.
+    // Exists because Inventory rebound onto that key became unopenable: the
+    // wheel blanks its hotkey before any menu can see it.
+    void          SetKeyOverride(bool a_pad, std::uint32_t a_code);
+    [[nodiscard]] std::uint32_t KeyOverride(bool a_pad);
 
     // ---- persistence -----------------------------------------------------
     // ★The arrangement the player dragged every wheel into. Per save, like the

@@ -628,6 +628,39 @@ namespace
         spdlog::set_pattern("[%H:%M:%S] [%l] %v");
     }
 
+    // ★★WHICH KEY OPENS THE BAG, asked of the whole control map.
+    //
+    // ControlMap::GetMappedKey searches controlMap[ONE context] and returns
+    // 0xFF for anything it does not find there, so "not in the context you
+    // guessed" comes back indistinguishable from "not bound at all". The old
+    // call took the default context, got 0xFF (measured, it is in the log) and
+    // fell through to a hardcoded I -- which is fine until a player rebinds
+    // Inventory, and then the key that opened the grid cannot close it.
+    //
+    // So ask every context and take the first real answer. The hardcoded I
+    // stays as the last resort, because a wrong guess is better here than no
+    // way out at all.
+    [[nodiscard]] std::uint32_t MappedScanCode(std::string_view a_event,
+                                               std::uint32_t    a_fallback)
+    {
+        if (auto* cm = RE::ControlMap::GetSingleton()) {
+            using Ctx = RE::ControlMap::InputContextID;
+            for (std::uint32_t c = 0; c < static_cast<std::uint32_t>(Ctx::kTotal); ++c) {
+                const auto k = cm->GetMappedKey(a_event, RE::INPUT_DEVICE::kKeyboard,
+                                                static_cast<Ctx>(c));
+                if (k != 0xFF && k != 0xFFFFFFFF) return k;
+            }
+        }
+        return a_fallback;
+    }
+
+    [[nodiscard]] std::uint32_t InventoryScanCode()
+    {
+        auto* ue = RE::UserEvents::GetSingleton();
+        return MappedScanCode(ue ? std::string_view(ue->inventory) : "Inventory",
+                              0x17);   // I
+    }
+
     // ---- Input sink ----
     class InputSink : public RE::BSTEventSink<RE::InputEvent*>
     {
@@ -698,6 +731,8 @@ namespace
                     }
                 }
 
+                // (InventoryScanCode is defined above the sink -- see there for
+                // why one context is not enough.)
                 // A real mouse event hands the pointer back from the pad.
                 // This is the ONLY reliable signal — see UIRoot::NoteMouseInput.
                 if (e->GetDevice() == RE::INPUT_DEVICE::kMouse) {
@@ -770,13 +805,17 @@ namespace
                 // raw key while kMenuMode swallows the user event.
                 // hidden behind someone's window: the key is not ours to read
                 if (FUI::UIRoot::IsBoardLive()) {
-                    auto* cm = RE::ControlMap::GetSingleton();
-                    // NOTE: GetMappedKey returns 0xFF here (confirmed in
-                    // the log) - fall back to the default I scancode.
-                    auto scan = cm ? cm->GetMappedKey(
-                        RE::UserEvents::GetSingleton()->inventory,
-                        RE::INPUT_DEVICE::kKeyboard) : 0xFF;
-                    if (scan == 0xFF || scan == 0xFFFFFFFF) scan = 0x17;   // default I
+                    // ★★ASK EVERY CONTEXT, not just the default one.
+                    //
+                    // The old call took GetMappedKey's default context and got
+                    // 0xFF back, so it fell through to the hardcoded I -- and
+                    // a player who rebinds Inventory then cannot close the
+                    // grid with the key that opened it. GetMappedKey searches
+                    // controlMap[context] and nothing else, so "not in THIS
+                    // context" reads exactly like "not bound anywhere".
+                    // Reported alongside the wheel-key collision; the two
+                    // together are why rebinding Inventory looked broken.
+                    const auto scan = InventoryScanCode();
                     if (btn->GetIDCode() == scan) {
                         // input thread: defer state changes to the UI task
                         SKSE::GetTaskInterface()->AddUITask([]() {
@@ -796,10 +835,7 @@ namespace
                     // kItemMenu context never translates this key into a user
                     // event, so it is read raw here exactly like the
                     // Inventory key above (same 0xFF fallback story).
-                    static const RE::BSFixedString s_magicEvent("Magic");
-                    auto mscan = cm ? cm->GetMappedKey(s_magicEvent,
-                        RE::INPUT_DEVICE::kKeyboard) : 0xFF;
-                    if (mscan == 0xFF || mscan == 0xFFFFFFFF) mscan = 0x19;   // default P
+                    const auto mscan = MappedScanCode("Magic", 0x19);   // default P
                     if (btn->GetIDCode() == mscan) {
                         SKSE::GetTaskInterface()->AddUITask([]() {
                             if (FUI::UIRoot::IsTextInputActive()) {

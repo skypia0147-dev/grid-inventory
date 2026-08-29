@@ -64,6 +64,22 @@ namespace FUI
         // read earlier, for the one setting that is needed before any menu
         // exists. Returns the default when the file or key is absent.
         [[nodiscard]] static bool ReadWheelEnabled(bool a_default);
+        // ★The wheel's OWN key, and the reason it can be one again.
+        //
+        // The wheel follows the game's Favourites binding, and for a long time
+        // that was the whole story -- one source, no setting to own. Then a
+        // player rebound Inventory onto that key, and the wheel's pre-menu
+        // blanking (Wheeler MenuLock) erased it before the engine could open
+        // anything: the vanilla InventoryMenu never opened, so our intercept
+        // never fired, so the inventory could not be opened AT ALL. Reported.
+        //
+        // ★This is an OVERRIDE, not a copy of the live value -- which is what
+        // the old ini key was, and why it had to go: Save() wrote whatever the
+        // wheel was currently on, and the next open read that stale number
+        // back over the player's rebind. 0 means "follow the game", and
+        // re-reading 0 a hundred times cannot fight anything.
+        // a_pad: false = keyboard scan code, true = gamepad button.
+        [[nodiscard]] static std::uint32_t ReadWheelKey(bool a_pad);
         // GI46-48: NAMED share files. "Default" -> GridInventory_Default.ini,
         // "P1" -> GridInventory_P1.ini ... each beside its icon bundle
         // (GridInventory_<name>_icons.pak). One ini carries the style subset

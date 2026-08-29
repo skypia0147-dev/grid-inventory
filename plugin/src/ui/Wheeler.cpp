@@ -597,6 +597,11 @@ namespace FUI::Wheeler
         // Index 0 = keyboard, 1 = gamepad. A set of one is the ordinary case.
         std::uint32_t g_combo[2][kMaxCombo] = { { 0x2B }, { 0x0100 } };  // \ , LB
         int           g_comboN[2] = { 1, 1 };
+        // ★The player's own key, from !wheelkey in the ui ini. 0 = follow the
+        // game's Favourites binding, which is still the default. Never written
+        // by AdoptFavoritesKey -- see the note there for why that direction is
+        // the one that matters.
+        std::uint32_t g_keyOverride[2] = { 0, 0 };
         float         g_slowFactor = 0.25f;
 
         // What is physically down right now. ★Needed because a combination has
@@ -2690,8 +2695,36 @@ namespace FUI::Wheeler
     // ★Re-read on every open rather than cached: the control map is the
     // player's to change at any moment, and a wheel bound to a key they have
     // since moved is indistinguishable from a broken wheel.
+    // ★★★...UNLESS THE PLAYER HAS SAID OTHERWISE, which they now can.
+    //
+    // Following the game's binding is right until two of the game's bindings
+    // want the same key. The wheel's pre-menu blanking (MenuLock) erases its
+    // hotkey before MenuControls sees it, even while the wheel is closed --
+    // that is how the vanilla favourites menu is stopped from ever appearing.
+    // Put Inventory on that same key and the erasure takes the inventory with
+    // it: the vanilla InventoryMenu never opens, so our intercept never fires,
+    // so the bag cannot be opened AT ALL. Reported, and the same shape as the
+    // earlier F collision that ate the favourite-toggle key.
+    //
+    // No amount of cleverness inside the blanking fixes that -- one key cannot
+    // be eaten and passed on at once. The player needs somewhere else to put
+    // the wheel, so !wheelkey in the ui ini is that somewhere.
+    void SetKeyOverride(bool a_pad, std::uint32_t a_code)
+    {
+        g_keyOverride[a_pad ? 1 : 0] = a_code;
+    }
+
+    std::uint32_t KeyOverride(bool a_pad) { return g_keyOverride[a_pad ? 1 : 0]; }
+
     void AdoptFavoritesKey()
     {
+        // ★The override is applied FIRST and the adopt is skipped for that
+        // device, so re-reading it on every open is idempotent. That is the
+        // whole difference from the ini key this replaces, which stored the
+        // RESOLVED value and therefore climbed back over the player's rebind.
+        for (int d = 0; d < 2; ++d) {
+            if (g_keyOverride[d]) SetCombo(d == 1, &g_keyOverride[d], 1);
+        }
         auto* cm = RE::ControlMap::GetSingleton();
         auto* ue = RE::UserEvents::GetSingleton();
         if (!cm || !ue) return;
@@ -2699,8 +2732,8 @@ namespace FUI::Wheeler
         const auto pad = cm->GetMappedKey(ue->favorites, RE::INPUT_DEVICE::kGamepad);
         // 0xFF is the engine's "not bound". Leave the previous answer standing
         // rather than binding the wheel to nothing.
-        if (kb != 0xFF) { const std::uint32_t c = kb; SetCombo(false, &c, 1); }
-        if (pad != 0xFF) { const std::uint32_t c = pad; SetCombo(true, &c, 1); }
+        if (!g_keyOverride[0] && kb != 0xFF) { const std::uint32_t c = kb; SetCombo(false, &c, 1); }
+        if (!g_keyOverride[1] && pad != 0xFF) { const std::uint32_t c = pad; SetCombo(true, &c, 1); }
     }
 
     // ---- persistence ---------------------------------------------------------
@@ -2895,11 +2928,16 @@ namespace FUI::Wheeler
             SKSE::log::info("[WHEEL] disabled by settings");
             return;
         }
-        // ★★★ONE SOURCE. The ini used to carry the binding too, and that
-        // second copy is what broke the wheel the moment the inventory was
-        // opened: WinManager re-reads that file on every open and put the stale
-        // key back. The game's own Favorites binding is the answer, and nothing
-        // else is consulted.
+        // ★★★ONE SOURCE, and it is still one: the ini says WHERE the wheel
+        // lives, not what key it is currently on. The old ini entry stored the
+        // resolved value, which is what broke the wheel the moment the
+        // inventory was opened -- WinManager re-reads this file on every open
+        // and put the stale key back over the player's rebind. An override
+        // cannot do that: 0 means "follow the game", and re-reading it changes
+        // nothing. Anything else is a deliberate choice that has to survive
+        // exactly this re-read.
+        SetKeyOverride(false, WinManager::ReadWheelKey(false));
+        SetKeyOverride(true,  WinManager::ReadWheelKey(true));
         AdoptFavoritesKey();
         SKSE::log::info("[WHEEL] hotkey: {} / pad {}", ComboText(false), ComboText(true));
     }
