@@ -160,11 +160,6 @@ namespace FUI::Wheeler
         // pressed again, and the two live together -- hold past the threshold
         // and nothing about the old behaviour changes.
         bool  g_toggled = false;
-        // ★★DRAWN LIKE OPEN, BUT NOT OPEN. The editor shows the same wheel over
-        // the inventory so the player arranges the thing they will actually
-        // use -- but g_open is the flag that mutes the game and takes the
-        // keyboard, and the bag underneath needs both. See Draw's `live`.
-        bool  g_editing = false;
         // Milliseconds. Above this a press is a HOLD and the release applies;
         // below it the press is a TAP and the release does nothing.
         float g_tapMs = 250.0f;
@@ -3647,15 +3642,46 @@ namespace FUI::Wheeler
             if (pdir) {
                 const int pages = PageCount(g_group);
                 if (pages > 1) {
-                    g_page = (g_page + pdir + pages) % pages;
-                    FillPage();
+                    const int which = g_group == kItems ? 0
+                                    : g_group == kMagic ? 1 : -1;
+                    const int next = (g_page + pdir + pages) % pages;
+                    // ★★★A CARRIED THING TRAVELS WITH YOU. Turning the page
+                    // mid-drag used to drop it -- which meant nothing could
+                    // ever leave the page it was seated on, and a wheel you
+                    // cannot rearrange across its own pages is a wheel that
+                    // arranges itself.
+                    //
+                    // ★It is a move within ONE list, because that is what the
+                    // arrangement is: pages are windows on it, so page two's
+                    // slot three and page one's slot three are simply two
+                    // indices, and carrying between them is the same rotation
+                    // a drag already performs -- neighbours step aside, over
+                    // the page boundary as within it.
+                    if (g_dragFrom >= 0 && which >= 0) {
+                        auto& ord = OrderFor(which);
+                        const std::size_t from =
+                            static_cast<std::size_t>(g_page) * kSlots + g_dragFrom;
+                        const std::size_t to =
+                            static_cast<std::size_t>(next) * kSlots + g_dragFrom;
+                        if (from < ord.size() && to < ord.size()) {
+                            const RE::FormID id = ord[from];
+                            ord.erase(ord.begin() + static_cast<std::ptrdiff_t>(from));
+                            ord.insert(ord.begin() + static_cast<std::ptrdiff_t>(to), id);
+                            g_dragMoved = true;
+                            g_arranged = true;   // ...and the release must not act
+                        }
+                        g_page = next;
+                        FillPage();
+                        // the carried thing is at the same PLACE on the new page
+                        g_sel = g_dragFrom;
+                    } else {
+                        g_page = next;
+                        FillPage();
+                        g_dragFrom = -1;
+                        g_dragMoved = false;
+                        g_sel = -1;
+                    }
                     g_groupT = 0.0f;   // re-ink the ring for the new ten
-                    // ★A drag does not survive a page change, for exactly the
-                    // reason it does not survive a group change: slot 2 here
-                    // and slot 2 there are unrelated places.
-                    g_dragFrom = -1;
-                    g_dragMoved = false;
-                    g_sel = -1;
                     StepBlip();
                 } else {
                     Sfx::SelectOff();   // nothing to turn to
@@ -4107,54 +4133,12 @@ namespace FUI::Wheeler
         }
     }
 
-    // ★★★THE EDITOR DRAWS FROM THE INVENTORY'S FRAME, not the wheel's menu.
-    //
-    // The mod this feature is named after opens its wheel ON TOP of the
-    // inventory and greys the background; we cannot. The wheel's overlay menu
-    // and our inventory each run their OWN ImGui frame -- a NewFrame/Render
-    // pair apiece -- and two of those in one game frame leaves ImGui routing
-    // input to whichever ran last and fighting over widget ids. So the ring is
-    // drawn INSIDE the bag's frame instead, which costs nothing: Draw is a
-    // window and a draw list, and both are happy in someone else's frame.
-    //
-    // ★The aim is handed in as a POSITION. Open, the cursor is pinned and the
-    // wheel accumulates deltas; here the cursor is real and free, so writing
-    // it straight into the same two variables makes every line below --
-    // picking, the drag that rearranges as it travels, the blip on each new
-    // slot -- work unchanged.
-    void DrawEditor()
-    {
-        const auto& io = ImGui::GetIO();
-        const ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-        g_editing = true;
-        g_t = 1.0f;        // no open animation: it is simply here
-        g_groupT = 1.0f;
-        g_mx = io.MousePos.x - c.x;
-        g_my = io.MousePos.y - c.y;
-        // ★Drag comes from the real buttons rather than from our input sink,
-        // which is not listening while the bag owns the keyboard.
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && g_sel >= 0) {
-            g_dragFrom = g_sel;
-            g_dragMoved = false;
-        } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            g_dragFrom = -1;
-        }
-        Draw();
-        g_editing = false;
-    }
-
     void Draw()
     {
         if (g_t <= 0.001f) return;
 
-        // ★★★OPEN, OR BEING EDITED. Everything below draws the same wheel
-        // either way; what differs is who owns the mouse. While the wheel is
-        // OPEN it owns everything -- the game is muted and the aim comes from
-        // accumulated deltas, because the cursor is pinned. In the EDITOR the
-        // inventory owns the mouse and hands the aim in as a real position,
-        // so g_open must stay false or every input hook would take the
-        // keyboard away from the bag being edited.
-        const bool live = g_open || g_editing;
+        const bool live = g_open;
+
         const auto& io = ImGui::GetIO();
         const float S = Scale();
         const ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);

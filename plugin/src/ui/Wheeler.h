@@ -140,11 +140,6 @@ namespace FUI::Wheeler
     // ImGui pass, called only from the overlay menu's PostDisplay.
     void Draw();
 
-    // ★The same wheel, drawn from the INVENTORY's ImGui frame so it can be
-    // arranged with a free mouse. Not the same as being open: the bag keeps
-    // the keyboard and nothing is applied. See the note above the body.
-    void DrawEditor();
-
     // ---- hotkey ----------------------------------------------------------
     // ★The hotkey is a COMBINATION: every code in the set must be held for the
     // wheel to open, and letting go of any one of them closes it. One code is
