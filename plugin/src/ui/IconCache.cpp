@@ -3113,6 +3113,43 @@ namespace FUI
             }
         }
 
+        // ★★WHERE THE PICTURE'S WEIGHT ACTUALLY SITS.
+        //
+        // Reported: one spell icon looks off-centre on the wheel while the
+        // others look fine. Everything that draws a sprite centres its
+        // BOUNDING BOX, which is the right answer for a solid object -- the
+        // box IS the object. It stops being the right answer when the content
+        // is a light: a flame with a faint plume on one side has a box that
+        // reaches the plume, and the bright part everyone actually looks at
+        // then sits off to the other side of that box's middle.
+        //
+        // Whether that is what is happening cannot be told from outside, so
+        // the capture states it: the alpha-weighted centroid, in fractions of
+        // the sprite. 0.50 / 0.50 is centred content and the draw is at fault;
+        // anything far from it is the picture itself, and no draw-side change
+        // will move it.
+        {
+            double wsum = 0.0, cx = 0.0, cy = 0.0;
+            for (int y = 0; y < trimH; ++y) {
+                const auto* row = sprite.data() + static_cast<size_t>(y) * trimW * 4;
+                for (int x = 0; x < trimW; ++x) {
+                    // ★Weighted by alpha AND by brightness: an eye finds the
+                    // bright core, not the dim halo that alpha alone counts as
+                    // equal to it.
+                    const auto* px = row + x * 4;
+                    const double lum = (px[0] * 0.299 + px[1] * 0.587 + px[2] * 0.114) / 255.0;
+                    const double wgt = (px[3] / 255.0) * lum;
+                    wsum += wgt;
+                    cx += wgt * (x + 0.5);
+                    cy += wgt * (y + 0.5);
+                }
+            }
+            if (wsum > 0.0) {
+                SKSE::log::info("[ICONS] '{}' {}x{} centroid {:.2f} / {:.2f}",
+                                m_pending.obj->GetName(), trimW, trimH,
+                                cx / wsum / trimW, cy / wsum / trimH);
+            }
+        }
 
         // ★Store at the size the TILE can actually show, not the size we
         // captured at. Rendering the model large is what buys the detail

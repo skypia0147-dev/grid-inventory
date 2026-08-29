@@ -4050,6 +4050,28 @@ namespace FUI::Wheeler
                 // would have enlarged the aliasing along with the shape.
                 constexpr float kSigilScale = 0.92f;   // spell, of the medallion box
                 constexpr float kWordScale  = 1.00f;   // shout, ...along its length
+                // ★★★MAGIC KEEPS ITS SIGIL, UNDER THE PICTURE.
+                //
+                // The three branches below are an if/else CHAIN, so the moment
+                // the magic group grew a face the school sigil stopped being
+                // drawn at all -- which was not the intent and not what the
+                // player wants: the sigil says destruction or restoration at a
+                // glance, and the picture says which spell inside it. One
+                // answers "what kind", the other "which one", and losing
+                // either makes the ring harder to read, not easier.
+                //
+                // So for this group the mark is laid FIRST and the chain runs
+                // afterwards. A shout has no face, so it still reaches the mark
+                // through the chain -- hence the !magicUnder guard there, or it
+                // would be stamped twice and come out twice as dark.
+                const bool magicUnder = shownGroup == kMagic;
+                if (magicUnder) {
+                    // the verdict is the chain's business, not ours: here the
+                    // mark is a GROUND and a shout that draws none simply has
+                    // none under it
+                    (void)DrawMagicMark(dl, m, sz, shownGroup, i, a,
+                                        kSigilScale, kWordScale);
+                }
                 // Which of the two the group wants is the table's answer now.
                 if (auto* face = G(shownGroup).face(i)) {
                     auto* cache = IconCache::GetSingleton();
@@ -4094,16 +4116,57 @@ namespace FUI::Wheeler
                         // medallion fills its square in both directions, a 2x3
                         // sprite only fills one. Match what the eye sees, not the
                         // box -- and a capture carries its own margin on top.
-                        const float fit = (sz * 1.34f) / (std::max)(aw, ah);
+                        // ★★A SPELL'S PICTURE NEEDS MORE ROOM THAN AN ITEM'S,
+                        // and the reason is in the pixels rather than in taste.
+                        // An item capture is a solid object filling its trimmed
+                        // sprite. A spell's is its magic-menu display object --
+                        // a flame, a ward -- which renders as a small bright
+                        // core inside a wide dim glow, and the trim keeps that
+                        // glow because it is real content. Measured: 'Flames'
+                        // stores 160x155 and the part you can actually see on
+                        // black is a fifth of it. At the item's 1.34 the core
+                        // came out a dot (reported).
+                        const float faceFit = magicUnder ? 2.40f : 1.34f;
+                        const float fit = (sz * faceFit) / (std::max)(aw, ah);
                         const float hw = aw * fit, hh = ah * fit;
-                        const ImVec2 q0(m.x - hw, m.y - hh), q1(m.x + hw, m.y + hh);
+                        // ★★A PICTURE WHOSE MIDDLE IS NOT ITS CENTRE gets the
+                        // same nudge the board already has. fx/fy exist for
+                        // exactly this ("the auto rule is right for every
+                        // symmetric shape; this exists for the ones that are
+                        // not") and the wheel was the one surface that ignored
+                        // them.
+                        //
+                        // It is a spell that needed it. Measured: 'Flames'
+                        // stores its bright weight at 0.60 of its own height
+                        // while every other spell measured 0.50 -- the model is
+                        // a dim flame ABOVE a bright orb, so no centring rule
+                        // can put both where the eye wants them. One number in
+                        // the item ini can.
+                        //
+                        // Fractions of the drawn HALF-size, so a value reads
+                        // the same however large the ring is drawn.
+                        const auto fdef = cache->ResolveDef(face);
+                        const float nx = fdef.fx * hw;
+                        const float ny = fdef.fy * hh;
+                        const ImVec2 q0(m.x - hw + nx, m.y - hh + ny),
+                                     q1(m.x + hw + nx, m.y + hh + ny);
                         // ★★A menu-captured item is a DARK object and it lands on
                         // BLACK ink here. The grid already solved this: a shader
                         // that draws the sprite's alpha alone, stamped in white
                         // around it, gives a halo no tint can (black collapses
                         // the colour, white multiplies to the sprite itself).
+                        // ★★★...AND A SPELL IS NOT A DARK OBJECT, so it gets
+                        // none of it. The halo below stamps the sprite's ALPHA
+                        // in white eight times around itself, which is a clean
+                        // outline when the alpha has an edge -- a cuirass, a
+                        // potion. A spell's display object is a light: its
+                        // alpha is a wide soft gradient, and eight white copies
+                        // of a gradient is a smear, which is what it looked
+                        // like (reported). Nothing is lost by skipping it --
+                        // the premise the halo exists for, "dark thing on black
+                        // ink", is exactly backwards for something glowing.
                         constexpr int kSpokes = 8;
-                        if (UIRoot::BeginSilhouette(dl)) {
+                        if (!magicUnder && UIRoot::BeginSilhouette(dl)) {
                             // stacked alpha is not additive: solve per stamp or
                             // the middle of the halo goes solid white
                             const float want = 0.66f * (a / 255.0f);
@@ -4126,7 +4189,8 @@ namespace FUI::Wheeler
                         dl->AddImage(tex, q0, q1, ImVec2(0, 0), ImVec2(1, 1),
                             IM_COL32(255, 255, 255, a));
                     }
-                } else if (DrawMagicMark(dl, m, sz, shownGroup, i, a,
+                } else if (!magicUnder &&
+                           DrawMagicMark(dl, m, sz, shownGroup, i, a,
                                          kSigilScale, kWordScale)) {
                     // a spell's school sigil, or a shout's word in dragon script
                 } else if (const auto* med = Medallion(G(shownGroup).medallion(i))) {
