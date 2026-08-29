@@ -6763,7 +6763,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 if (it.inBag == a_bagKey) continue;      // already home
                 if (it.inBag == kTrashKey) continue;     // queued for deletion
                 if (it.def.bag) continue;                // E4: no bag inside a bag
-                if (it.coinValue >= 0) continue;         // coins answer to the ledger
+                // ★Coins are collectable like anything else now (see the
+                // spill pass). In practice a TYPED bag only takes them if some
+                // filter actually claims the coin form, so this mostly changes
+                // nothing -- but the three doors have to say the same thing or
+                // one of them becomes the next stale rule.
+
                 if (g_held && g_held->key == it.key) continue;   // riding the cursor
                 // ONLY from main and general-purpose bags. Pulling out of
                 // another TYPED bag would let two bags fight over the same item
@@ -7153,8 +7158,22 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 PlaceItems(probe, kCols, kMinRows, kMinRows,
                            g_cwBonusCells);   // hard board + CW bonus (W3)
                 for (auto* cand : probe) {
-                    // real items only (dummies have no obj); coins keep the ledger
-                    if (!(cand->obj && cand->overflow && cand->coinValue < 0)) continue;
+                    // ★★★COINS SPILL TOO, and the rule that said otherwise was
+                    // simply older than the mod. "Coins keep the ledger" was
+                    // written when money lived only on the main board; gold has
+                    // been allowed into bags and into containers since
+                    // (StoreToContainer, and a coin tile has carried its own
+                    // inBag through Rebuild for as long), so the exclusion was
+                    // the last place still holding the old shape.
+                    //
+                    // What it cost is exactly what was reported: a player over
+                    // the limit adds a bag, watches every ITEM move into it,
+                    // and stays overloaded because the overflow was money. The
+                    // one thing they did to fix it could not touch the one
+                    // thing that was wrong.
+                    //
+                    // Dummies still have no obj, and a bag still never nests.
+                    if (!(cand->obj && cand->overflow)) continue;
                     // E4: a bag never auto-nests. The sims already refuse this
                     // (ComputeOverloaded checks def.bag, MaxAcceptUnits gates on
                     // it) — this pass silently allowed it, which was the one
@@ -9954,16 +9973,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
             // B: hard-board overflow drains into bag space, open or closed
             // (mirrors Rebuild's spill) — an item a bag can hold is NOT
-            // overloaded. Coins and bag items can't spill: their overflow is a
-            // genuine overload. This MUST agree with MaxAcceptUnits, or an item
-            // it just accepted is judged overloaded the same frame (crimson
-            // space + the forced-walk debuff).
+            // overloaded. A bag still cannot nest inside a bag automatically,
+            // so that overflow is genuine. This MUST agree with the spill pass
+            // and with MaxAcceptUnits, or an item one of them just accepted is
+            // judged overloaded the same frame (crimson space + the
+            // forced-walk debuff).
+            //
+            // ★★COINS USED TO BE ON THAT LIST and no longer are. Money lives
+            // in bags and in containers now; the exclusion here was the third
+            // of three doors still holding a shape the mod had already left,
+            // and between them they produced the report: adding a bag while
+            // over the limit moved every item and left the gold, so the board
+            // stayed crimson and the player stayed slowed.
             std::vector<Item*> spill;
             bool hardOverflow = false;
             for (auto& it : tmp) {
                 if (!it.overflow) continue;
-                if (it.inBag.empty() && it.def.bag == 0 && it.obj &&
-                    !it.obj->IsGold() && !GoldCoins::IsCoinForm(it.obj->GetFormID())) {
+                if (it.inBag.empty() && it.def.bag == 0 && it.obj) {
                     spill.push_back(&it);
                 } else {
                     hardOverflow = true;
@@ -9972,7 +9998,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             !it.obj                    ? "unknown" :
                             it.def.bag != 0            ? "a bag cannot be put inside a bag automatically" :
                             !it.inBag.empty()          ? "already inside a bag" :
-                                                         "coins never spill into bags";
+                                                         "no bag would take it";
                         a_why->lines.push_back(std::format("'{}' -- {}",
                             it.obj ? it.obj->GetName() : "?", kind));
                     }
