@@ -95,12 +95,29 @@ namespace GridInvAPI
     // the request came from a MOD rather than from the game reads this one.
     //
     // The grid stays OPEN throughout: its board, the item on the cursor and
-    // every sub-window survive, and IsMenuOpen("GridInventoryMenu") keeps
-    // answering true. What stops is drawing and input.
+    // every sub-window survive, and IsMenuOpen() keeps answering true --
+    // it reports the SESSION, not whether the board is on screen, so it does
+    // not move when you suppress. (1.5.1 answered liveness there by mistake,
+    // which told a client its own suppression was the player closing the
+    // inventory; fixed in 1.5.2.)
     //
-    // ★Release it when your window closes. The host restores itself if
-    // nothing is left above it, but that costs a fraction of a second of
-    // nobody being able to see either window.
+    // ★★YOU OWN THE HOLD. This message is not the same as kHide in one way
+    // that matters: the host's safety net recovers a kHide by watching the
+    // MENU STACK, and your window may not be on it at all -- an overlay
+    // drawn outside the menu system is invisible to any such test, and the
+    // net used to revoke those suppressions about a fifth of a second in.
+    // A hold taken with this message is not second-guessed that way, and the
+    // host's own kShow will not break it either.
+    //
+    // What that buys costs one obligation: RELEASE IT (suppress = 0) when
+    // your window closes. Nothing else will, except --
+    //
+    //   * the player closing the inventory, or a save load / new game, both
+    //     of which end the session your window was living over anyway; and
+    //   * a ~10 minute backstop, which exists only so that a client that
+    //     DIES holding this cannot strand the player in front of a board
+    //     nobody can see. Re-send suppress = 1 at any time to restart it --
+    //     a session that legitimately runs longer just has to say so.
     inline constexpr std::uint32_t kMsgSuppressUI      = 0x47495355;  // 'GISU'
 
     // ---- limits -----------------------------------------------------------

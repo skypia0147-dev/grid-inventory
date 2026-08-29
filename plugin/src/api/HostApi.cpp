@@ -22,11 +22,23 @@ namespace FUI::HostApi
 
         bool Svc_IsMenuOpen()
         {
-            auto* ui = RE::UI::GetSingleton();
-            // ★IsBoardLive: the contract says "check this before doing
-            // anything the user could be looking at", and a suppressed menu
-            // is one nobody can see.
-            return UIRoot::IsBoardLive();
+            // ★★★NOT IsBoardLive, and the header two files over says so in as
+            // many words: "the grid stays OPEN throughout ... and
+            // IsMenuOpen("GridInventoryMenu") keeps answering true".
+            //
+            // Answering liveness here broke that promise, and the field found
+            // it immediately. A client suppressed us, read this back, saw
+            // false, concluded the menu it was living over had closed, and
+            // shut its own window 17ms later -- five times out of five. The
+            // grid had not closed at all; we told it that it had. A client
+            // cannot be asked to distinguish "you are suppressed, by you"
+            // from "the player closed the inventory" through one boolean that
+            // says false in both cases.
+            //
+            // So this answers the engine's question -- is the session on the
+            // stack -- which is the one the ABI documents and the one that
+            // survives suppression.
+            return UIRoot::IsSessionOpen();
         }
 
         // Grant-time tile snapshot. Counts only the TRUE cells of a polyomino
@@ -150,7 +162,14 @@ namespace FUI::HostApi
                     logger::warn("[API] suppress: malformed payload -- ignored");
                     return;
                 }
-                UIRoot::Suppress(p->suppress != 0, a_msg->sender ? a_msg->sender : "api");
+                // ★kClient: this sender named itself, so it OWNS the hold --
+                // the safety net stops second-guessing it against the menu
+                // stack (which cannot see a window that is not a menu), and
+                // only this sender's own release gives it back. A repeat
+                // suppress=1 is a heartbeat and restarts the backstop.
+                UIRoot::Suppress(p->suppress != 0,
+                                 a_msg->sender ? a_msg->sender : "api",
+                                 UIRoot::SuppressBy::kClient);
                 return;
             }
         }

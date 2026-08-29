@@ -79,8 +79,33 @@ namespace FUI::UIRoot
     // ★A suppressed menu is still OPEN: IsMenuOpen stays true, the board, the
     // carry and every sub-window are exactly where they were. What stops is
     // drawing and input -- see IsBoardLive.
-    void Suppress(bool a_on, const char* a_why);
+
+    // ★★WHO ASKED, because the safety net has to treat them differently.
+    //
+    //   kEngine   -- a kHide off the message queue, or a menu we noticed
+    //                opening over us. The asker is a MENU, so the net can
+    //                look at the menu stack to tell when it has gone.
+    //   kClient   -- a mod that named itself through kMsgSuppressUI. It may
+    //                have no menu at all (a Flick overlay is not one), so no
+    //                stack test can see it and none is applied. It owns the
+    //                hold: only its own release, a close, a load, or the
+    //                backstop takes it back.
+    //   kOverride -- release regardless of who holds it. The backstop, the
+    //                session reset and our own close speak with this.
+    enum class SuppressBy
+    {
+        kEngine,
+        kClient,
+        kOverride,
+    };
+    void Suppress(bool a_on, const char* a_why, SuppressBy a_by = SuppressBy::kEngine);
     [[nodiscard]] bool IsSuppressed();
+    // True while the current hold belongs to a named client (kClient above).
+    [[nodiscard]] bool IsSuppressedByClient();
+    // ★The engine's own question: is our menu on the stack at all. Suppression
+    // does not move this -- that is the whole point of suppression, and it is
+    // what the ABI's IsMenuOpen answers.
+    [[nodiscard]] bool IsSessionOpen();
     // ★"Is the player looking at our board right now." Distinct from
     // IsMenuOpen, which answers a question about the engine's menu stack.
     // Anything that consumes input, draws, or means "the user can see this"

@@ -2363,8 +2363,11 @@ namespace
         }
         g_planBPendingOpen = false;
         // ★suppression does not survive a load either: the window that
-        //  asked for it belongs to the session being left
-        FUI::UIRoot::Suppress(false, "session reset");
+        //  asked for it belongs to the session being left -- kOverride,
+        //  because a client hold refuses everything softer and its owner
+        //  is not there to release it.
+        FUI::UIRoot::Suppress(false, "session reset",
+                              FUI::UIRoot::SuppressBy::kOverride);
         // ★★★A DEBT OWED TO A SAVE THAT IS GONE. g_echoMenu names a vanilla
         // menu whose close we still have to announce; left set across a load,
         // MenuCloseEchoTick fires it on the FIRST unpaused frame of the new
@@ -2531,7 +2534,7 @@ namespace
 }
 
 SKSEPluginInfo(
-    .Version              = { 1, 5, 1, 0 },
+    .Version              = { 1, 5, 2, 0 },
     .Name                 = "GridInventory",
     .Author               = "Smooth",
     .RuntimeCompatibility = SKSE::VersionIndependence::AddressLibrary)

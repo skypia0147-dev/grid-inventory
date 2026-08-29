@@ -702,6 +702,9 @@ namespace FUI::UIRoot
         // Render reads it on the render thread.
         std::atomic<bool> g_suppressed{ false };
         int               g_suppressTicks = 0;   // safety-net age, in Ticks
+        // ★A named client holds this one (UIRoot.h SuppressBy). Game thread
+        // only -- every Suppress() call and the net's read are on it.
+        bool              g_suppressByClient = false;
 
         // Called from the input sink (game thread, but not the render pass) —
         // only flags are touched here; the cursor is seeded during the frame.
@@ -3708,8 +3711,29 @@ namespace FUI::UIRoot
         }
     }
 
-    void Suppress(bool a_on, const char* a_why)
+    void Suppress(bool a_on, const char* a_why, SuppressBy a_by)
     {
+        // ★★OWNERSHIP, and both halves of it run BEFORE the early-out.
+        //
+        // Taking: a client is allowed to re-send its suppress as a heartbeat,
+        // and a heartbeat arriving while already suppressed must still restart
+        // the backstop -- otherwise the clock would count from the first call
+        // and a long session would be cut off mid-way for being alive.
+        //
+        // Giving back: a hold belongs to whoever took it. The engine hands us
+        // a kShow whenever the stack thinks we are topmost again, and honouring
+        // that would put the board back on screen over a client window that is
+        // still up -- silently, with no event the client could answer.
+        if (a_on) {
+            if (a_by == SuppressBy::kClient) {
+                g_suppressByClient = true;
+                g_suppressTicks    = 0;
+            }
+        } else if (g_suppressByClient && a_by == SuppressBy::kEngine) {
+            return;
+        } else {
+            g_suppressByClient = false;
+        }
         if (g_suppressed.exchange(a_on) == a_on) return;
         if (a_on) {
             g_suppressTicks = 0;
@@ -3729,7 +3753,8 @@ namespace FUI::UIRoot
                     open += name.c_str();
                 }
             }
-            SKSE::log::info("[SUPPRESS] on ({}) -- open menus:{}", a_why,
+            SKSE::log::info("[SUPPRESS] on ({}, {}) -- open menus:{}", a_why,
+                            g_suppressByClient ? "client-held" : "engine",
                             open.empty() ? " (none)" : open.c_str());
         } else {
             SKSE::log::info("[SUPPRESS] off ({})", a_why);
@@ -3738,11 +3763,18 @@ namespace FUI::UIRoot
 
     bool IsSuppressed() { return g_suppressed.load(std::memory_order_relaxed); }
 
+    bool IsSuppressedByClient() { return g_suppressByClient; }
+
+    bool IsSessionOpen()
+    {
+        auto* ui = RE::UI::GetSingleton();
+        return ui && ui->IsMenuOpen(GridInventoryMenu::MENU_NAME);
+    }
+
     bool IsBoardLive()
     {
         if (IsSuppressed()) return false;
-        auto* ui = RE::UI::GetSingleton();
-        return ui && ui->IsMenuOpen(GridInventoryMenu::MENU_NAME);
+        return IsSessionOpen();
     }
 
     void OpenInspect(RE::TESBoundObject* a_obj, const std::string& a_key)
@@ -4084,6 +4116,13 @@ namespace FUI::UIRoot
 
     void OnClose()
     {
+        // ★★A HOLD MUST NOT OUTLIVE THE THING IT WAS HELD OVER, and since a
+        // client hold now refuses the engine's kShow, nothing else would ever
+        // clear it: the next open would come up suppressed, invisible, and
+        // stay that way until the backstop. The window it was covering is
+        // gone, so the hold is answered here -- with kOverride, because the
+        // client is not the one saying it.
+        Suppress(false, "menu closed", SuppressBy::kOverride);
         CloseInspect();           // release the pinned inspect model + engine scale
         Editor::OnMenuClosed();   // flush pending edits, drop selection
         // F2: closing the whole menu confirms every parked deletion; flush
@@ -4613,7 +4652,30 @@ namespace FUI::UIRoot
         // window but the permanent furniture remains, nobody is there any
         // more and we come back. The grace lets a mod close one window and
         // open the next without us flashing in between.
-        if (IsSuppressed()) {
+        if (IsSuppressed() && IsSuppressedByClient()) {
+            // ★★★A CLIENT THAT ASKED BY NAME IS NOT A CLIENT THAT FORGOT.
+            //
+            // The stack test below is structurally blind to it, and that was
+            // measured rather than argued: the author of Fitting Room / Menu
+            // Studio timed six suppressions and the net revoked every one of
+            // them 166-341ms in, always with "nothing left above us". Their
+            // editor is a Flick overlay, not a registered menu, so it never
+            // appears in the menu map at all -- "nothing above us" was true
+            // from the first frame, and no test over that map can ever say
+            // otherwise. The net was right about the stack and wrong about
+            // the screen.
+            //
+            // So the stack is not asked. What remains is the soft-lock
+            // backstop, which nothing may be exempt from: a client that dies
+            // still holding this would leave the player paused in front of a
+            // board nobody can see, with the keyboard belonging to a window
+            // that is gone. It is long, and ANY repeat suppress restarts it
+            // (see Suppress), so a session outliving it only has to say so.
+            constexpr int kClientBackstop = 60 * 60 * 10;   // ~10 min
+            if (++g_suppressTicks > kClientBackstop) {
+                Suppress(false, "client backstop", SuppressBy::kOverride);
+            }
+        } else if (IsSuppressed()) {
             // ★★A NAME LIST WOULD HAVE BEEN WRONG, and the first measurement
             // said so: a real session had BTPS, TrueHUD and SegmentedHUD open
             // the whole time. Any list I could write would go stale the next
@@ -4652,7 +4714,8 @@ namespace FUI::UIRoot
             ++g_suppressTicks;
             if ((!blocker && g_suppressTicks > kGrace) ||
                 g_suppressTicks > kBackstop) {
-                Suppress(false, !blocker ? "nothing left above us" : "backstop");
+                Suppress(false, !blocker ? "nothing left above us" : "backstop",
+                         SuppressBy::kOverride);
             }
         }
         Grid::ProcessBookRead();   // raise the Book Menu OUTSIDE the render pass
