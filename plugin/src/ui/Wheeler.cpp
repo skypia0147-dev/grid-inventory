@@ -146,6 +146,11 @@ namespace FUI::Wheeler
         // pressed again, and the two live together -- hold past the threshold
         // and nothing about the old behaviour changes.
         bool  g_toggled = false;
+        // ★★DRAWN LIKE OPEN, BUT NOT OPEN. The editor shows the same wheel over
+        // the inventory so the player arranges the thing they will actually
+        // use -- but g_open is the flag that mutes the game and takes the
+        // keyboard, and the bag underneath needs both. See Draw's `live`.
+        bool  g_editing = false;
         // Milliseconds. Above this a press is a HOLD and the release applies;
         // below it the press is a TAP and the release does nothing.
         float g_tapMs = 250.0f;
@@ -4154,9 +4159,54 @@ namespace FUI::Wheeler
         }
     }
 
+    // ★★★THE EDITOR DRAWS FROM THE INVENTORY'S FRAME, not the wheel's menu.
+    //
+    // The mod this feature is named after opens its wheel ON TOP of the
+    // inventory and greys the background; we cannot. The wheel's overlay menu
+    // and our inventory each run their OWN ImGui frame -- a NewFrame/Render
+    // pair apiece -- and two of those in one game frame leaves ImGui routing
+    // input to whichever ran last and fighting over widget ids. So the ring is
+    // drawn INSIDE the bag's frame instead, which costs nothing: Draw is a
+    // window and a draw list, and both are happy in someone else's frame.
+    //
+    // ★The aim is handed in as a POSITION. Open, the cursor is pinned and the
+    // wheel accumulates deltas; here the cursor is real and free, so writing
+    // it straight into the same two variables makes every line below --
+    // picking, the drag that rearranges as it travels, the blip on each new
+    // slot -- work unchanged.
+    void DrawEditor()
+    {
+        const auto& io = ImGui::GetIO();
+        const ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        g_editing = true;
+        g_t = 1.0f;        // no open animation: it is simply here
+        g_groupT = 1.0f;
+        g_mx = io.MousePos.x - c.x;
+        g_my = io.MousePos.y - c.y;
+        // ★Drag comes from the real buttons rather than from our input sink,
+        // which is not listening while the bag owns the keyboard.
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && g_sel >= 0) {
+            g_dragFrom = g_sel;
+            g_dragMoved = false;
+        } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            g_dragFrom = -1;
+        }
+        Draw();
+        g_editing = false;
+    }
+
     void Draw()
     {
         if (g_t <= 0.001f) return;
+
+        // ★★★OPEN, OR BEING EDITED. Everything below draws the same wheel
+        // either way; what differs is who owns the mouse. While the wheel is
+        // OPEN it owns everything -- the game is muted and the aim comes from
+        // accumulated deltas, because the cursor is pinned. In the EDITOR the
+        // inventory owns the mouse and hands the aim in as a real position,
+        // so g_open must stay false or every input hook would take the
+        // keyboard away from the bag being edited.
+        const bool live = g_open || g_editing;
         const auto& io = ImGui::GetIO();
         const float S = Scale();
         const ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
@@ -4166,7 +4216,7 @@ namespace FUI::Wheeler
         // ring re-inks slot by slot on a list switch; if the things standing on
         // it did not go with it, the old list's icons would hang in the air
         // over a ring that is being repainted underneath them.
-        const float ge = (std::min)(g_t, g_open ? g_groupT : 1.0f);
+        const float ge = (std::min)(g_t, live ? g_groupT : 1.0f);
         const float e = 1.0f - std::pow(1.0f - ge, 3.0f);
 
         ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -4195,7 +4245,7 @@ namespace FUI::Wheeler
         }
 
         // ---- where the pointer is -------------------------------------------
-        if (g_open) {
+        if (live) {
             const float d = std::sqrt(g_mx * g_mx + g_my * g_my);
             if (d > kDeadzone) {
                 float a = std::atan2(g_my, g_mx) * 57.29578f;   // screen degrees
@@ -4254,8 +4304,8 @@ namespace FUI::Wheeler
             }
         }
 
-        const int shown = g_open ? g_sel : g_pick;
-        const int shownGroup = g_open ? g_group : (g_pickGroup >= 0 ? g_pickGroup : g_group);
+        const int shown = live ? g_sel : g_pick;
+        const int shownGroup = live ? g_group : (g_pickGroup >= 0 ? g_pickGroup : g_group);
 
         if (!g_texOk) {
             Halo(dl, c, "GridInventory_wheel textures missing", 20.0f * S, kInkText, 255);
@@ -4268,7 +4318,7 @@ namespace FUI::Wheeler
         // click would land on a wheel of blanks and fill in a frame later. One
         // slot per frame: the whole list is ready inside ten frames, and no
         // single frame pays for nine texture uploads.
-        if (g_open) {
+        if (live) {
             g_warm = (g_warm + 1) % kSlots;
             if (Filled(kCostume, g_warm)) {
                 if (auto* face = G(kCostume).face(g_warm)) {
@@ -4339,7 +4389,7 @@ namespace FUI::Wheeler
             // change alone cannot say which one is travelling.
             const float home = i * kStep;
             const float shown = g_angleInit ? g_slotAngle[i] : home;
-            const bool carried = g_open && i == g_dragFrom && shownGroup == g_group;
+            const bool carried = live && i == g_dragFrom && shownGroup == g_group;
             if (carried) { carriedIdx = i; carriedLt = le; carriedA = a; continue; }
             DrawWheelTex(dl, g_slot[i], c, side * (0.62f + 0.38f * le), shown - home,
                 (kInk & 0x00FFFFFF) | (static_cast<ImU32>(a) << 24));
@@ -4497,7 +4547,7 @@ namespace FUI::Wheeler
         if (e > 0.55f && shown >= 0) {
             const int a = static_cast<int>(255 * (std::min)(1.0f, (e - 0.55f) / 0.3f));
             DrawArc(dl, c, side, shown * kStep,
-                    g_open ? g_arcT : 1.0f, a);
+                    live ? g_arcT : 1.0f, a);
         }
 
         // ---- medallions -------------------------------------------------------
@@ -4535,7 +4585,7 @@ namespace FUI::Wheeler
                 const float grow = 0.62f + 0.38f * ie;
                 // ...and up with the carried slot, which is lifted 1.10x.
                 const float lift =
-                    (g_open && i == g_dragFrom && shownGroup == g_group) ? 1.10f : 1.0f;
+                    (live && i == g_dragFrom && shownGroup == g_group) ? 1.10f : 1.0f;
                 const float r = (kRSegIn + kRSegOut) * 0.5f * k * grow * lift;
                 const ImVec2 m(c.x + r * std::cos(ang), c.y + r * std::sin(ang));
                 // ★Size follows more gently than position: the ink's full 0.62

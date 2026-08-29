@@ -33,6 +33,8 @@ namespace FUI::Lang
         X(Inventory, "Inventory")   /* main title — sentence case, like every bag title */                                                        \
         X(Edit, "EDIT")                                                                                     \
         X(Settings, "SETTINGS")                                                                             \
+        /* title bar: arrange the quick wheel. Absent when the wheel is off. */                      \
+        X(WheelEdit, "WHEEL")                                                                               \
         X(ScaleLabel, "SCALE")                                                                        \
         X(FontScaleLabel, "TEXT SIZE")   /* player's font multiplier over the automatic scale */      \
         X(SkinLabel, "SKIN")                                                                                \

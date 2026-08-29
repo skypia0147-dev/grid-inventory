@@ -200,6 +200,9 @@ namespace FUI::UIRoot
         // — both are the main thread today, but atomics cost nothing and the
         // assumption is now explicit
         std::atomic<bool> g_showSettings = false;
+        // ★The wheel editor, drawn from THIS frame -- see Wheeler::DrawEditor
+        // for why it cannot be the wheel's own overlay menu.
+        bool g_showWheelEdit = false;
         std::atomic<bool> g_textInputOn = false;   // ImGui WantTextInput mirror (no engine calls)
 
         // ---- INSPECT overlay (C key) ----
@@ -2699,7 +2702,8 @@ namespace FUI::UIRoot
         // sub-window cascade), with the close sound played up front.
         void DrawTitleBarControls(const ImVec2& a_mainSize,
                                   const char* a_editLbl, const char* a_setLbl,
-                                  float a_editW, float a_setW, float a_btnGap)
+                                  float a_editW, float a_setW, float a_btnGap,
+                                  const char* a_whlLbl, float a_whlW)
         {
             const ImVec2 wp = ImGui::GetWindowPos();
             // ★On the TITLE's own line, from the one accessor that knows how
@@ -2726,10 +2730,20 @@ namespace FUI::UIRoot
                                  closeW - TitleBtnBoxPad();
             const float xSet = xClose - a_btnGap - a_setW;
             const float xEdit = xSet - a_btnGap - a_editW;
+            const float xWhl = xEdit - a_btnGap - a_whlW;
             if (TitleBarTextButton(xEdit, ty, a_editLbl, a_editW, Editor::IsEditMode())) {
                 Editor::ToggleEditMode();
                 if (Editor::IsEditMode()) Sfx::SelectOn();
                 else                      Sfx::SelectOff();
+            }
+            // ★nullptr, not a disabled button: the wheel being off means the
+            // vanilla favourites menu is what exists, and a greyed control for
+            // arranging ours would be a promise we took back.
+            if (a_whlLbl && TitleBarTextButton(xWhl, ty, a_whlLbl, a_whlW,
+                                               g_showWheelEdit)) {
+                g_showWheelEdit = !g_showWheelEdit;
+                if (g_showWheelEdit) Sfx::SelectOn();
+                else                 Sfx::SelectOff();
             }
             if (TitleBarTextButton(xSet, ty, a_setLbl, a_setW, g_showSettings)) {
                 g_showSettings = !g_showSettings;
@@ -3366,16 +3380,26 @@ namespace FUI::UIRoot
             const char* setLbl = Lang::T(Lang::Str::Settings);
             const float editW = ImGui::CalcTextSize(editLbl).x;
             const float setW = ImGui::CalcTextSize(setLbl).x;
+            // ★★NOT HIDDEN -- ABSENT. Turning the wheel off in settings is not
+            // "hide a feature", it is "which of these two exists": the vanilla
+            // favourites menu comes back whole and the hotkey goes with it
+            // (see RowWheelEnable). A button to arrange a wheel that is not
+            // there would be a control with nothing behind it.
+            const bool wheelOn = Wheeler::Enabled();
+            const char* whlLbl = Lang::T(Lang::Str::WheelEdit);
+            const float whlW = wheelOn ? ImGui::CalcTextSize(whlLbl).x : 0.0f;
             const float btnGap = 18.0f * S;
             const float closeW = ImGui::CalcTextSize("\xC3\x97").x * TitleCloseMul();
             // strip excludes the right-aligned control zone (EDIT + SETTINGS
             // + ✕) so the buttons below actually receive their clicks
             wm->TitleBar("main", Lang::T(Lang::Str::Inventory),
-                pad + insX + editW + setW + closeW + 2.0f * btnGap + 14.0f * S);
+                pad + insX + editW + setW + whlW + closeW +
+                    (wheelOn ? 3.0f : 2.0f) * btnGap + 14.0f * S);
 
             const ImVec2 bodyTop = ImGui::GetCursorScreenPos();
 
-            DrawTitleBarControls(mainSize, editLbl, setLbl, editW, setW, btnGap);
+            DrawTitleBarControls(mainSize, editLbl, setLbl, editW, setW, btnGap,
+                                 wheelOn ? whlLbl : nullptr, whlW);
             ParkPreviewModel(mainSize);
 
             // controls moved the cursor — body starts back under the titlebar
@@ -4239,6 +4263,7 @@ namespace FUI::UIRoot
         // shows a dimmed board for a term the player has long forgotten typing.
         Grid::ClearSearch();
         g_showSettings = false;
+        g_showWheelEdit = false;   // ...and the wheel editor with it
         g_textInputOn = false;
         if (ImGui::GetCurrentContext()) {
             ImGui::ClearActiveID();   // drop text-field focus: a stale ActiveId
@@ -4681,6 +4706,14 @@ namespace FUI::UIRoot
         Grid::DrawBagWindows();   // one managed window per open bag (E2/E5)
         LootBarter::DrawWindows();  // container/merchant partner window (loot/barter)
         DrawSettingsWindow();     // ⚙ popup (scale / skin / language)
+        // ★★The ring, in THIS frame. It cannot be its own overlay menu -- two
+        // ImGui frames in one game frame is two frames' worth of input routing
+        // and widget ids over one context -- so the bag draws the wheel it is
+        // being used to arrange. See Wheeler::DrawEditor.
+        // ★After the settings window so a settings popup sits over it rather
+        // than under: the ring covers the screen and would otherwise swallow
+        // whatever it was opened on top of.
+        if (g_showWheelEdit && Wheeler::Enabled()) Wheeler::DrawEditor();
         Equip::DrawLoadoutWindows();   // L2: loadout +buy / delete confirm (top level)
         Grid::DrawPouchWindow();       // G2: coin-pouch withdraw (top level)
         Grid::DrawRechargeWindow();    // (1.3.1) soul-gem recharge (top level)
