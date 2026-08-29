@@ -628,8 +628,61 @@ namespace FUI
     // Items with ALTERNATE TEXTURES (same nif, different pixels) and items
     // without a model path keep the per-FormID slot. A stale hit would need a
     // full 64-bit collision incl. the rotation hash — effectively impossible.
-    static std::uint32_t ModelSlot32(RE::TESBoundObject* a_obj)
+    // ★★★A SPELL HAS NO MODEL, AND THE ENGINE ALREADY KNOWS WHAT TO SHOW.
+    //
+    // MDOB (BGSMenuDisplayObject) is the bound object the vanilla magic menu
+    // stands in its own 3D scene for a spell: a flame for Flames, a ward for a
+    // ward. SpellItem carries one and so does every magic EFFECT, which is
+    // where the game actually keeps most of them.
+    //
+    // Measured on a real load order before any of this was built: of 940
+    // pickable spells, 706 have their own MDOB with a model and 102 inherit
+    // one from their first effect. The 132 with none are script and creature
+    // spells -- "Bleeding Damage", "Werewolf Feed Victim" -- that never reach
+    // a wheel, so the real coverage of what a player can pick is effectively
+    // whole.
+    //
+    // ★★So the capture pipeline needs no new kind of asset. It needs to be
+    // told, in ONE place, that the thing to PHOTOGRAPH is not always the thing
+    // being asked about. Every site that reaches for a model asks this first:
+    // the key, the renderability probes, and the capture request itself. They
+    // have to agree -- a key taken from the spell and a capture taken from the
+    // flame would file the picture under a name nothing ever looks up.
+    //
+    // ★Spells sharing a display object share an icon, and that is correct
+    // rather than merely cheap: two spells the engine draws identically are
+    // two spells that look identical, and the wheel would be lying to show
+    // them apart. It also means Flames and its stronger cousins may come up
+    // the same picture, which is the honest cost of using the game's own art.
+    //
+    // Returns the object itself when there is nothing better -- so an item is
+    // untouched, and a spell with no display object falls through to the drawn
+    // category icon exactly as it does today.
+    static RE::TESBoundObject* CaptureSourceOf(RE::TESBoundObject* a_obj)
     {
+        auto* sp = a_obj ? a_obj->As<RE::SpellItem>() : nullptr;
+        if (!sp) return a_obj;
+        const auto renderable = [](RE::TESBoundObject* a_o) -> RE::TESBoundObject* {
+            if (!a_o) return nullptr;
+            const auto* m = a_o->As<RE::TESModel>();
+            return (m && m->GetModel() && m->GetModel()[0]) ? a_o : nullptr;
+        };
+        if (auto* own = renderable(sp->GetMenuDisplayObject())) return own;
+        // ★FIRST effect only, which is what the magic menu itself shows -- and
+        // a spell's identity in a list is its primary effect. Walking the rest
+        // would hand a fire spell the picture of the fear it also carries.
+        for (const auto* e : sp->effects) {
+            if (!e || !e->baseEffect) break;
+            if (auto* fx = renderable(e->baseEffect->GetMenuDisplayObject())) return fx;
+            break;
+        }
+        return a_obj;
+    }
+
+    static std::uint32_t ModelSlot32(RE::TESBoundObject* a_in)
+    {
+        // Key the PICTURE, not the asker -- see CaptureSourceOf.
+        RE::TESBoundObject* a_obj = CaptureSourceOf(a_in);
         const char* p = nullptr;
         const char* p2 = nullptr;   // armour: the OTHER sex's ground model
         std::uint32_t altCount = 0;
@@ -1504,6 +1557,86 @@ namespace FUI
             differ ? "  First few:" : "", sample);
     }
 
+    void IconCache::ReportSpellDisplayObjects()
+    {
+        auto* dh = RE::TESDataHandler::GetSingleton();
+        if (!dh) return;
+
+        // A model path is what a capture needs; an MDOB pointing at something
+        // with no nif is coverage on paper only.
+        const auto hasModel = [](RE::TESBoundObject* a_o) {
+            if (!a_o) return false;
+            const auto* m = a_o->As<RE::TESModel>();
+            return m && m->GetModel() && m->GetModel()[0];
+        };
+
+        int shown = 0, own = 0, viaEffect = 0, none = 0;
+        std::string sample;
+        int listed = 0;
+        for (auto* sp : dh->GetFormArray<RE::SpellItem>()) {
+            if (!sp) continue;
+            // Only what a player can actually pick in the wheel. Abilities,
+            // diseases and enchantments are carried by other things and never
+            // appear as a choice, so counting them would flatter the answer.
+            const auto t = sp->GetSpellType();
+            if (t != RE::MagicSystem::SpellType::kSpell &&
+                t != RE::MagicSystem::SpellType::kPower &&
+                t != RE::MagicSystem::SpellType::kLesserPower) {
+                continue;
+            }
+            const char* nm = sp->GetName();
+            if (!nm || !*nm) continue;
+            ++shown;
+
+            if (hasModel(sp->GetMenuDisplayObject())) { ++own; continue; }
+            // ★The spell's own MDOB is usually EMPTY in vanilla -- the picture
+            // lives on the magic EFFECT, which is what the magic menu falls
+            // back to. First effect: that is the one the menu shows, and a
+            // spell's identity in a list is its primary effect anyway.
+            bool viaFx = false;
+            for (const auto* e : sp->effects) {
+                if (!e || !e->baseEffect) continue;
+                if (hasModel(e->baseEffect->GetMenuDisplayObject())) { viaFx = true; }
+                break;   // FIRST effect only, like the menu
+            }
+            if (viaFx) { ++viaEffect; continue; }
+            ++none;
+            if (listed < 12) {
+                ++listed;
+                sample += "\n           ";
+                sample += nm;
+            }
+        }
+        SKSE::log::info(
+            "[ICONS] spell display objects: {} pickable spells -- {} have their "
+            "own MDOB with a model, {} inherit one from their first effect, {} "
+            "have none.{}{}",
+            shown, own, viaEffect, none,
+            none ? "  Without:" : "", sample);
+    }
+
+    void IconCache::QueueFavouriteSpells()
+    {
+        auto* fav = RE::MagicFavorites::GetSingleton();
+        if (!fav) return;
+        int asked = 0;
+        for (auto* form : fav->spells) {
+            // ★Shouts live in this list too and are NOT bound objects (TESShout
+            // is a TESForm), so they cannot be photographed by this path at
+            // all. They keep their drawn icon; asking would be a null deref.
+            auto* obj = form ? form->As<RE::TESBoundObject>() : nullptr;
+            if (!obj || !obj->As<RE::SpellItem>()) continue;
+            // Capturable() already refuses one with no display object, so the
+            // 132 script spells cost nothing but this loop.
+            QueueCapture(obj);
+            ++asked;
+        }
+        if (asked > 0) {
+            SKSE::log::info("[ICONS] {} favourite spell(s) offered to the "
+                            "capture queue", asked);
+        }
+    }
+
     bool IconCache::ExportShippingPak(const char* a_path)
     {
         // ★★★THE PAK THAT GOES TO OTHER PEOPLE, minus the icons that are only
@@ -1806,8 +1939,12 @@ namespace FUI
         // engine's NewInventoryMenuItemLoadTask deref a null model and CTD.
         // The grid never draws them (name/playable filtered), but Prefetch
         // walks raw GetInventory() output — gate every queue entry here.
-        bool Capturable(RE::TESBoundObject* a_obj)
+        bool Capturable(RE::TESBoundObject* a_in)
         {
+            // ★Judge the thing that will actually be rendered. A spell asked
+            // about itself answers "no model" and is refused for ever; asked
+            // about its display object it answers with a flame.
+            RE::TESBoundObject* a_obj = CaptureSourceOf(a_in);
             if (!a_obj || a_obj->Is(RE::FormType::LeveledItem)) return false;
             // GI52 flat style: nothing is ever drawn from a capture, so don't
             // spend a single engine render on one. This is what makes the
@@ -1852,8 +1989,12 @@ namespace FUI
         // rendered perfectly from its WNAM every run -- until a first draft of
         // this probe judged it on MODL alone and threw the working icon away.
         // ARMO likewise keeps its paths on TESBipedModelForm, one per sex.
-        void ModelPathsOf(RE::TESBoundObject* a_obj, std::vector<const char*>& a_out)
+        void ModelPathsOf(RE::TESBoundObject* a_in, std::vector<const char*>& a_out)
         {
+            // Same substitution the key makes -- a spell's nif is its display
+            // object's (CaptureSourceOf).
+            RE::TESBoundObject* a_obj = CaptureSourceOf(a_in);
+            if (!a_obj) return;
             const auto add = [&a_out](const char* p) {
                 if (p && p[0]) a_out.push_back(p);
             };
@@ -2230,7 +2371,12 @@ namespace FUI
         const float screenCap =
             ImGui::GetIO().DisplaySize.y / ItemPreview::kSafetyMargin - 8.0f;
         if (screenCap > 64.0f) boxPx = (std::min)(boxPx, screenCap);
-        pv->Request(m_pending.obj, ImVec2(0.0f, 0.0f),
+        // ★The LAST of the four sites that must agree (see CaptureSourceOf):
+        // the key, the two renderability probes, and the render itself. A key
+        // taken from the spell with a picture taken from the flame would file
+        // the capture under a name nothing ever looks up, and the icon would
+        // be re-photographed every single time it was asked for.
+        pv->Request(CaptureSourceOf(m_pending.obj), ImVec2(0.0f, 0.0f),
             ImVec2(boxPx, boxPx), -1.0f, 0.0f, 0.0f, &def);
         if (m_pending.boost > 0.0f) {
             pv->BoostCapture(m_pending.boost);   // B4: resume the clip-boost ladder

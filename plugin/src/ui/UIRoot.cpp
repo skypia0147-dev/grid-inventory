@@ -4173,6 +4173,11 @@ namespace FUI::UIRoot
             }
         }
 
+        // ★The wheel's magic side cannot photograph its own icons -- no 3D
+        // scene there -- and a spell is never in the bag, so nothing else
+        // would ever ask. Every open, because favourites change between them.
+        IconCache::GetSingleton()->QueueFavouriteSpells();
+
         SKSE::log::info("[UI] menu shown ({} icons cached)",
             IconCache::GetSingleton()->CachedCount());
 
@@ -4187,6 +4192,7 @@ namespace FUI::UIRoot
         if (!s_sexScanned) {
             s_sexScanned = true;
             IconCache::GetSingleton()->ReportSexSpecificArmour();
+            IconCache::GetSingleton()->ReportSpellDisplayObjects();
             // ★AUTHOR TOOLING, on the same watch-file idiom as the vanilla
             // passthrough: drop the file, open the bag once, and the shipping
             // pak is beside it. Nothing here runs for a player, and the file

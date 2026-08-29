@@ -205,6 +205,41 @@ namespace FUI
         // Main/game thread, after kDataLoaded (walks the form arrays).
         void ReportSexSpecificArmour();
 
+        // ★★DOES THE ENGINE ALREADY KEEP A PICTURE FOR EACH SPELL?
+        //
+        // Reported: the wheel's magic side has no per-spell icon, so picking
+        // one means reading names, which gets slow as a spell list grows. Our
+        // icons are captures of a MODEL, and a spell has none -- but MDOB
+        // (BGSMenuDisplayObject) is a TESBoundObject the vanilla magic menu
+        // renders for that spell, and BOTH SpellItem and EffectSetting carry
+        // one. That is the same type this cache already captures, so if the
+        // coverage is there the whole feature is a resolution change rather
+        // than a new asset pipeline.
+        //
+        // Measured before it is built, the way the armour count was: a feature
+        // that works for a fifth of the spell list is worse than none, because
+        // the fifth that works teaches the player to expect it.
+        // Main/game thread, after kDataLoaded.
+        void ReportSpellDisplayObjects();
+
+        // ★★★AND SOMETHING HAS TO ASK FOR THEM, or the resolution above is
+        // machinery nobody ever starts.
+        //
+        // The capture engine runs inside the GRID's render pass -- taking a
+        // picture means standing a model in a 3D scene, and the wheel has no
+        // such scene (Wheeler's own comment says so where it queues). Items
+        // reach the queue because they are IN the bag being drawn. A spell
+        // never is: it is not inventory at all, so opening the bag would never
+        // meet one, and a spell icon would be queued by nobody and captured
+        // never.
+        //
+        // So the bag's opening is where the magic favourites are handed over:
+        // the exact set the wheel's magic group is built from (the engine's
+        // MagicFavorites), photographed in the one place that can, while the
+        // player is doing something else. Cheap and idempotent -- QueueCapture
+        // already drops anything cached or queued.
+        void QueueFavouriteSpells();
+
         // ★Write the pak that goes to OTHER PEOPLE: this player's capture pak
         // minus every icon whose picture depends on who was wearing it. Those
         // records are then captured by each install on its own character,
