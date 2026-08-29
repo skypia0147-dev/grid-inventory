@@ -1260,7 +1260,34 @@ namespace FUI::Wheeler
                     if (form->Is(RE::FormType::Spell))      k = FavKind::kSpell;
                     else if (form->Is(RE::FormType::Shout)) k = FavKind::kShout;
                     else continue;   // scrolls and the like arrive as items above
-                    g_starredAll[1].insert(form->GetFormID());
+                    // ★★★ONE PLACE PER FORM, and the list is not ours to trust.
+                    //
+                    // Reported with a video: star ten-odd items, then star a
+                    // spell, and the spell lands on the ring TWICE. Nothing on
+                    // our side can put it there twice -- this loop writes one
+                    // entry per element and ApplyOrder marks each one taken --
+                    // so the duplicate has to already be in mf->spells, which
+                    // we only ever READ. Neither the reporter's steps nor any
+                    // variation of them reproduced it here, and a list we do
+                    // not own is not a list we can reason about from outside.
+                    //
+                    // A form appearing twice on one wheel is never right, so it
+                    // is refused here regardless of who put it there, and the
+                    // refusal says so once per session -- if the next report
+                    // carries that line, the engine's list was the answer.
+                    // g_starredAll is inserted BEFORE the check on purpose: it
+                    // is a set and answers "is this starred at all", which the
+                    // duplicate does not change.
+                    if (!g_starredAll[1].insert(form->GetFormID()).second) {
+                        static std::set<RE::FormID> s_said;
+                        if (s_said.insert(form->GetFormID()).second) {
+                            SKSE::log::warn("[WHEEL] '{}' ({:08X}) is in the game's "
+                                            "magic favourites TWICE -- shown once",
+                                            form->GetName() ? form->GetName() : "?",
+                                            form->GetFormID());
+                        }
+                        continue;
+                    }
                     if (g_magN >= kSlots) continue;   // seen, but no place to show it
                     // ★"Currently on" for magic is the hand, not the pack. A
                     // shout sits in the voice slot; a spell in either hand, and
