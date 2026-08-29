@@ -102,6 +102,10 @@ namespace FUI::Wheeler
 
         constexpr ImU32 kInk = IM_COL32(0x0a, 0x0a, 0x0b, 255);
         constexpr ImU32 kRed = IM_COL32(0xb5, 0x31, 0x2a, 255);
+        // ★The LEFT hand's check. Same ink family as the red -- it has to read
+        // as the same mark in a different hand, not as a different mark -- so
+        // it is the red walked toward amber rather than a fresh orange.
+        constexpr ImU32 kAmber = IM_COL32(0xd0, 0x7a, 0x22, 255);
         constexpr ImU32 kPaper = IM_COL32(0xd8, 0xc9, 0xa0, 255);
         constexpr ImU32 kDim = IM_COL32(0xa2, 0xa2, 0x9f, 255);
         constexpr ImU32 kInkText = IM_COL32(0xe6, 0xe3, 0xdd, 255);
@@ -845,6 +849,11 @@ namespace FUI::Wheeler
             // the gear wheel has stacks. Asked of the table rather than tested
             // by group id, for the same reason every other row here is.
             int  (*count)(int slot);
+            // ★WHICH HAND, as a mask: 1 = right, 2 = left, 3 = both, 0 = this
+            // is not a thing held in a hand (a cuirass, a preset) or is not out
+            // at all. `current` still answers "is it on" for everything; this
+            // answers the finer question only the two hand wheels can.
+            int  (*hands)(int slot);
             void (*apply)(int slot);               // what letting go does
             // ★There is no "slot to open on". Every wheel opens with nothing
             // chosen -- see SeedCursor. This used to be a per-group function
@@ -893,6 +902,36 @@ namespace FUI::Wheeler
             RE::TESBoundObject* costumeFace(int s);
             RE::TESBoundObject* itemFace(int s);
             int noCount(int) { return 0; }
+            int noHands(int) { return 0; }
+            // ★★★THE SAME QUESTION UseFav ASKS, and it must stay the same one.
+            // The click decides what to do by asking the engine which hand
+            // holds this; the check says which hand holds this. If these two
+            // ever disagree the wheel is drawing a lie about its own next
+            // click, so both go to the engine rather than to the snapshot.
+            int itemHands(int s)
+            {
+                if (s < 0 || s >= kSlots || !g_fav[s].obj) return 0;
+                auto* pc = RE::PlayerCharacter::GetSingleton();
+                if (!pc) return 0;
+                int m = 0;
+                if (pc->GetEquippedObject(false) == g_fav[s].obj) m |= 1;   // right
+                if (pc->GetEquippedObject(true) == g_fav[s].obj) m |= 2;   // left
+                return m;
+            }
+            // ★Spells too -- one spell in both hands is dual casting, and it is
+            // the state most worth being able to see at a glance. A voice-slot
+            // power answers 0: a shout is not held, and `current` says it is on.
+            int magicHands(int s)
+            {
+                if (s < 0 || s >= kSlots || !g_mag[s].form) return 0;
+                auto* pc = RE::PlayerCharacter::GetSingleton();
+                if (!pc || !pc->Is3DLoaded() || UsesVoiceSlot(g_mag[s].form)) return 0;
+                auto& rt = pc->GetActorRuntimeData();
+                int m = 0;
+                if (rt.selectedSpells[RE::Actor::SlotTypes::kRightHand] == g_mag[s].form) m |= 1;
+                if (rt.selectedSpells[RE::Actor::SlotTypes::kLeftHand] == g_mag[s].form) m |= 2;
+                return m;
+            }
             // ★★TWO OF THE SAME WEAPON ARE ONE PLACE ON THE WHEEL, and the
             // number is how the player knows there is a second one to put in
             // the other hand. The vanilla menu does exactly this -- one entry
@@ -905,6 +944,9 @@ namespace FUI::Wheeler
             RE::TESBoundObject* magicFace(int s);
             int noCount(int s);
             int itemCount(int s);
+            int noHands(int s);
+            int itemHands(int s);
+            int magicHands(int s);
             const char* itemMedallion(int s);
             const char* magicMedallion(int s);
         }
@@ -1030,16 +1072,16 @@ namespace FUI::Wheeler
             // ITEM icon, because a costume IS armour and the body piece is what
             // the player recognises; there is no weapon in it to name.
             { "PRESET", Preset::filled, Preset::eligible, Preset::name,
-              Preset::current, Art::noCount, Preset::apply,
+              Preset::current, Art::noCount, Art::noHands, Preset::apply,
               Art::presetMedallion, Art::noFace, Preset::click, Preset::reorder },
             { "COSTUME", Costume_::filled, Costume_::eligible, Costume_::name,
-              Costume_::current, Art::noCount, Costume_::apply,
+              Costume_::current, Art::noCount, Art::noHands, Costume_::apply,
               Art::noMedallion, Art::costumeFace, Costume_::click, Costume_::reorder },
             { "GEAR", Items::filled, Items::eligible, Items::name,
-              Items::current, Art::itemCount, Items::apply,
+              Items::current, Art::itemCount, Art::itemHands, Items::apply,
               Art::itemMedallion, Art::itemFace, Items::click, Items::reorder },
             { "MAGIC", Magic::filled, Magic::eligible, Magic::name,
-              Magic::current, Art::noCount, Magic::apply,
+              Magic::current, Art::noCount, Art::magicHands, Magic::apply,
               Art::magicMedallion, Art::magicFace, Magic::click, Magic::reorder },
         };
 
@@ -4295,10 +4337,35 @@ namespace FUI::Wheeler
                 if (IsCurrent(shownGroup, i) && g_tick.srv) {
                     const float ts = sz * 2.0f;   // half-extent, so 4x the medallion radius
                     const ImVec2 tc(m.x + sz * 0.72f, m.y - sz * 0.72f);
-                    dl->AddImage(reinterpret_cast<ImTextureID>(g_tick.srv),
-                        ImVec2(tc.x - ts, tc.y - ts), ImVec2(tc.x + ts, tc.y + ts),
-                        ImVec2(0, 0), ImVec2(1, 1),
-                        (kRed & 0x00FFFFFF) | (static_cast<ImU32>(a) << 24));
+                    // ★★WHICH HAND, IN THE MARK ITSELF.
+                    //
+                    // One check said "this is out" and stopped there, which was
+                    // enough while only one hand could hold a thing. Both hands
+                    // are reachable now, so the mark carries the answer: RED is
+                    // the right hand, AMBER the left, and a thing in both wears
+                    // two checks slightly apart -- overlapping, because they are
+                    // one item held twice rather than two items.
+                    //
+                    // ★The single-hand case keeps the OLD anchor exactly. The
+                    // common mark must not drift a pixel for a feature about
+                    // the uncommon one.
+                    const int hm = G(shownGroup).hands(i);
+                    const auto stamp = [&](ImVec2 c, ImU32 col) {
+                        dl->AddImage(reinterpret_cast<ImTextureID>(g_tick.srv),
+                            ImVec2(c.x - ts, c.y - ts), ImVec2(c.x + ts, c.y + ts),
+                            ImVec2(0, 0), ImVec2(1, 1),
+                            (col & 0x00FFFFFF) | (static_cast<ImU32>(a) << 24));
+                    };
+                    if (hm == 3) {
+                        // ★Left drawn FIRST so the right hand's red sits on top:
+                        // red is the one that was always there, and the eye
+                        // should still find it first.
+                        const float d = sz * 0.34f;
+                        stamp(ImVec2(tc.x - d, tc.y + d), kAmber);
+                        stamp(ImVec2(tc.x + d, tc.y - d), kRed);
+                    } else {
+                        stamp(tc, hm == 2 ? kAmber : kRed);
+                    }
                 }
                 // ★★HOW MANY, and only when there is more than one.
                 //
