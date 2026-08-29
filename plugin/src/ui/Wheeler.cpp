@@ -134,7 +134,9 @@ namespace FUI::Wheeler
         constexpr int kCostume = 1;
         constexpr int kItems   = 2;
         constexpr int kMagic   = 3;
-        constexpr int kGroups  = 4;
+        // ★The BUILT-IN groups. User groups are appended after these at
+        // runtime -- see GroupCount / G below.
+        constexpr int kBuiltinGroups = 4;
         int   g_group = kPreset;
         // ★On by default: the wheel is what this feature IS, and a player who
         // wants the vanilla screen back can say so once. See Wheeler.h.
@@ -195,6 +197,31 @@ namespace FUI::Wheeler
         FavItem g_mag[kSlots]{};
         int     g_magN = 0;
 
+        // ★★★A USER GROUP IS A PLACE, NOT A TYPE.
+        //
+        // Every accessor in the table takes a SLOT and nothing else -- which
+        // group it belongs to is implied by the global array it reads
+        // (Magic::filled asks g_mag). That is exact for four fixed groups and
+        // impossible for N: a user group's `filled` would have no way to know
+        // WHICH user group it is being asked about.
+        //
+        // Widening every accessor to take a group index would touch the whole
+        // table for the sake of one case. Instead there is ONE array for
+        // whichever user group is currently shown, refilled when A/D lands on
+        // a different one. The wheel already works this way -- it collects
+        // what it needs at the moment it opens -- and ten slots is nothing to
+        // refill.
+        struct UserGroup
+        {
+            std::string           name;
+            bool                  magic = false;   // draws from stars or spells
+            std::vector<RE::FormID> slot;          // kSlots entries, 0 = empty
+        };
+        std::vector<UserGroup> g_userGroups;
+        FavItem                g_user[kSlots]{};   // the one currently shown
+        int                    g_userN = 0;
+
+
         // defined with UseFav, needed by the snapshot above it
         [[nodiscard]] bool UsesVoiceSlot(RE::TESForm* a_form);
 
@@ -206,7 +233,23 @@ namespace FUI::Wheeler
         // the engine hands it over. A newly starred item therefore lands at the
         // end and stays put once moved, which is the only behaviour that does
         // not shuffle the wheel under a hand that has learned it.
-        std::vector<RE::FormID> g_order[2];   // [0] gear, [1] magic
+        // ★★ONE ARRANGEMENT PER GROUP, and it must GROW with them. [0] gear and
+        // [1] magic were the whole world while there were two item wheels; a
+        // user group is a third, a fourth, and it indexes this by its own group
+        // number. A fixed pair here and a group index of 5 is a write past the
+        // end of an array -- which is why this changed the moment user groups
+        // could be reached at all, rather than when they could be created.
+        std::vector<std::vector<RE::FormID>> g_order;
+
+        // The arrangement for a group, made to exist if it does not yet.
+        // ★Never a bare g_order[i]: the vector is grown lazily and every reader
+        // and writer has to agree on who does the growing.
+        [[nodiscard]] std::vector<RE::FormID>& OrderFor(int a_which)
+        {
+            const std::size_t i = static_cast<std::size_t>((std::max)(0, a_which));
+            if (g_order.size() <= i) g_order.resize(i + 1);
+            return g_order[i];
+        }
 
         // ★★★EVERY STAR, NOT JUST THE TEN THAT FIT.
         //
@@ -231,7 +274,7 @@ namespace FUI::Wheeler
         // potion runs out would move everything else.
         void ApplyOrder(FavItem* a_list, int a_n, int a_which)
         {
-            auto& want = g_order[a_which];
+            auto& want = OrderFor(a_which);
             if (want.empty()) return;
             // ★★★A PLACE IS HELD BY A STAR, NOT RESERVED BY A NAME. Anything in
             // the table that is not starred right now gives its place up, so
@@ -288,7 +331,7 @@ namespace FUI::Wheeler
         void RememberOrder(const FavItem* a_list, int a_n, int a_which)
         {
             (void)a_n;
-            auto& out = g_order[a_which];
+            auto& out = OrderFor(a_which);
             out.assign(kSlots, 0);
             for (int i = 0; i < kSlots; ++i) {
                 if (a_list[i].form) out[i] = a_list[i].form->GetFormID();
@@ -911,6 +954,41 @@ namespace FUI::Wheeler
             RE::TESBoundObject* itemFace(int s);
             int noCount(int) { return 0; }
             int noHands(int) { return 0; }
+            RE::TESBoundObject* userFace(int s)
+            {
+                return (s >= 0 && s < kSlots) ? g_user[s].obj : nullptr;
+            }
+            int userCount(int s)
+            {
+                return (s >= 0 && s < kSlots) ? g_user[s].count : 0;
+            }
+            // ★A user group can hold either kind, so the mark asks the ENTRY
+            // what it is rather than the group. Mixing them in one wheel is the
+            // point -- "combat" is a sword and a ward.
+            int userHands(int s)
+            {
+                if (s < 0 || s >= kSlots || !g_user[s].form) return 0;
+                auto* pc = RE::PlayerCharacter::GetSingleton();
+                if (!pc) return 0;
+                int m = 0;
+                if (g_user[s].obj) {
+                    if (pc->GetEquippedObject(false) == g_user[s].obj) m |= 1;
+                    if (pc->GetEquippedObject(true) == g_user[s].obj) m |= 2;
+                    return m;
+                }
+                if (!pc->Is3DLoaded() || UsesVoiceSlot(g_user[s].form)) return 0;
+                auto& rt = pc->GetActorRuntimeData();
+                if (rt.selectedSpells[RE::Actor::SlotTypes::kRightHand] == g_user[s].form) m |= 1;
+                if (rt.selectedSpells[RE::Actor::SlotTypes::kLeftHand] == g_user[s].form) m |= 2;
+                return m;
+            }
+            const char* userMedallion(int s)
+            {
+                // an entry with no picture borrows the spell mark, same rule
+                // the magic wheel uses for a shout
+                return (s >= 0 && s < kSlots && g_user[s].form && !g_user[s].obj)
+                           ? "spell" : nullptr;
+            }
             // ★★★THE SAME QUESTION UseFav ASKS, and it must stay the same one.
             // The click decides what to do by asking the engine which hand
             // holds this; the check says which hand holds this. If these two
@@ -1060,6 +1138,27 @@ namespace FUI::Wheeler
             bool reorder(int from, int to);
         }
 
+        // ★★ONE SET OF ACCESSORS FOR EVERY USER GROUP. They read g_user, which
+        // holds whichever group A/D last landed on -- see the UserGroup note
+        // above for why the table is not widened to take a group index.
+        //
+        // A user group is GEAR or MAGIC in miniature: the same click, the same
+        // tick, the same rearranging. What differs is only which stars are in
+        // it, and that is decided before this is ever asked.
+        namespace User
+        {
+            bool filled(int s) { return s >= 0 && s < kSlots && g_user[s].form; }
+            bool eligible(int s) { return filled(s); }
+            const char* name(int s)
+            {
+                return filled(s) && g_user[s].form ? g_user[s].form->GetName() : "";
+            }
+            bool current(int s);
+            void apply(int slot);
+            void click(int slot, bool leftHand);
+            bool reorder(int from, int to);
+        }
+
         namespace Magic
         {
             bool filled(int s) { return s >= 0 && s < kSlots && g_mag[s].form; }
@@ -1074,7 +1173,7 @@ namespace FUI::Wheeler
             bool reorder(int from, int to);
         }
 
-        constexpr GroupDesc kGroup[kGroups] = {
+        constexpr GroupDesc kGroup[kBuiltinGroups] = {
             // ★PRESET gets the drawn weapon medallion -- a sword captured in 3D
             // and squeezed into this circle is a hairline. COSTUME gets the real
             // ITEM icon, because a costume IS armour and the body piece is what
@@ -1093,9 +1192,26 @@ namespace FUI::Wheeler
               Art::magicMedallion, Art::magicFace, Magic::click, Magic::reorder },
         };
 
+        // ★The one descriptor every user group is drawn through. `title` is a
+        // placeholder -- the banner asks the group's own name (see TitleOf).
+        const GroupDesc kUserGroup = {
+            "", User::filled, User::eligible, User::name,
+            User::current, Art::userCount, Art::userHands, User::apply,
+            Art::userMedallion, Art::userFace, User::click, User::reorder,
+        };
+
+        // How many wheels A/D can reach right now.
+        [[nodiscard]] int GroupCount()
+        {
+            return kBuiltinGroups + static_cast<int>(g_userGroups.size());
+        }
+
+        // Declared here, defined with the other Art:: bodies: one descriptor
+        // serves every user group, reading g_user.
         [[nodiscard]] const GroupDesc& G(int a_group)
         {
-            return kGroup[std::clamp(a_group, 0, kGroups - 1)];
+            if (a_group >= kBuiltinGroups && a_group < GroupCount()) return kUserGroup;
+            return kGroup[std::clamp(a_group, 0, kBuiltinGroups - 1)];
         }
 
         [[nodiscard]] bool Filled(int a_group, int a_slot)
@@ -2340,6 +2456,33 @@ namespace FUI::Wheeler
             }
             return false;
         }
+        // ★★A user group holds BOTH KINDS, so every one of these asks the entry
+        // what it is rather than the group. That is the whole point of letting
+        // a player make their own: "combat" is a sword and a ward, and the two
+        // built-in wheels cannot express that because each IS a kind.
+        bool User::current(int s)
+        {
+            if (!User::filled(s)) return false;
+            auto* pc = RE::PlayerCharacter::GetSingleton();
+            if (!pc || !pc->Is3DLoaded()) return g_user[s].worn;
+            if (g_user[s].obj) return g_user[s].worn;
+            auto* form = g_user[s].form;
+            auto& rt = pc->GetActorRuntimeData();
+            if (UsesVoiceSlot(form)) return rt.selectedPower == form;
+            for (auto* sel : rt.selectedSpells) {
+                if (sel == form) return true;
+            }
+            return false;
+        }
+        void User::apply(int slot) { UseFav(g_user, g_userN, slot, /*leftHand*/ false); }
+        void User::click(int slot, bool leftHand) { UseFav(g_user, g_userN, slot, leftHand); }
+        // ★The group index is not passed in, so this writes to whichever user
+        // group is currently shown -- which is the one the hand is on. g_group
+        // is the authority for that everywhere else too.
+        bool User::reorder(int from, int to)
+        {
+            return MoveSlot(g_user, g_userN, g_group, from, to);
+        }
         bool Items::reorder(int from, int to) { return MoveSlot(g_fav, g_favN, 0, from, to); }
         bool Magic::reorder(int from, int to) { return MoveSlot(g_mag, g_magN, 1, from, to); }
 
@@ -2924,8 +3067,9 @@ namespace FUI::Wheeler
         if (!g_setInit) ResetSetOrder();
         if (!a_intfc->OpenRecord(kRecordType, kVersion)) return;
         for (int w = 0; w < 2; ++w) {
-            a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_order[w].size()));
-            for (const auto id : g_order[w]) a_intfc->WriteRecordData(id);
+            const auto& ord = OrderFor(w);
+            a_intfc->WriteRecordData(static_cast<std::uint32_t>(ord.size()));
+            for (const auto id : ord) a_intfc->WriteRecordData(id);
         }
         // ★The set wheels' arrangement, as TAB INDICES rather than FormIDs. A
         // preset exists only inside this save, so its index means exactly one
@@ -2963,8 +3107,8 @@ namespace FUI::Wheeler
                 SKSE::log::warn("[WHEEL] cosave order count {} is impossible -- record ignored", n);
                 return;
             }
-            g_order[w].clear();
-            g_order[w].reserve(n);
+            OrderFor(w).clear();
+            OrderFor(w).reserve(n);
             for (std::uint32_t i = 0; i < n; ++i) {
                 RE::FormID id = 0;
                 if (!a_intfc->ReadRecordData(id)) return;
@@ -2980,7 +3124,7 @@ namespace FUI::Wheeler
                 // learned rotates by a slot.
                 RE::FormID resolved = 0;
                 if (!a_intfc->ResolveFormID(id, resolved)) resolved = 0;
-                g_order[w].push_back(resolved);
+                OrderFor(w).push_back(resolved);
             }
         }
         if (a_version < 2) return;   // no set arrangement in that save
@@ -2995,14 +3139,15 @@ namespace FUI::Wheeler
         if (a_version < 3) return;   // no remembered group in that save
         std::int32_t grp = 0;
         if (a_intfc->ReadRecordData(grp)) {
-            g_group = std::clamp(static_cast<int>(grp), 0, kGroups - 1);
+            g_group = std::clamp(static_cast<int>(grp), 0, GroupCount() - 1);
         }
     }
 
     void RevertGame(SKSE::SerializationInterface*)
     {
-        g_order[0].clear();
-        g_order[1].clear();
+        // ★All of them, not the two that used to exist. A user group's
+        // arrangement is written in the outgoing save's language too.
+        g_order.clear();
         // ★★Cleared, not left alone. Revert fires before every load, and a tab
         // index from the outgoing save names a different set in the incoming
         // one -- the arrangement is the only thing here that is written in a
@@ -3403,7 +3548,7 @@ namespace FUI::Wheeler
             else if (pad && id == kRT) dir = 1;
             else if (pad && id == kBack) dir = 1;
             if (dir) {
-                g_group = (g_group + dir + kGroups) % kGroups;
+                g_group = (g_group + dir + GroupCount()) % GroupCount();
                 g_groupT = 0.0f;   // re-ink the ring for the new list
                 // ★★★A DRAG DOES NOT SURVIVE A GROUP CHANGE. Slot 2 of PRESET
                 // and slot 2 of GEAR are unrelated, so carrying an index across
