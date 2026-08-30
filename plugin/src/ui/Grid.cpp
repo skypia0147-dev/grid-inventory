@@ -1187,6 +1187,10 @@ namespace FUI::Grid
 
         DefResolver                                    g_resolver;
 
+        // Mouse over the player's own board or one of its bag windows this
+        // frame. Raised by DrawGridView, re-armed by Draw.
+        bool                                           g_playerBoardHovered = false;
+
         // ONE tile holds at most this many units (Phase 2: the former 8-site
         // `(baseCap>1 && stack>0) ? stack : baseCap` copies converge here):
         // gear/coins = 1, else the editor per-item override (stack:N) if any,
@@ -4099,6 +4103,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
         void DrawGridView(View& a_view, int a_viewIdx)
         {
+            // ★★IS THE CURSOR OVER SOMETHING OF THE PLAYER'S? Both callers are
+            // player-side (the board and the bag windows), so noting it here
+            // covers every window where R already means something else --
+            // "drop one" on a hovered tile. The container's take-all asks this
+            // to know when it must stand down, instead of demanding to be
+            // hovered itself.
+            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows)) {
+                g_playerBoardHovered = true;
+            }
             const float gridW = a_view.cols * CellPx();
             const float gridH = a_view.rows * CellPx();
             const ImVec2 base = ImGui::GetCursorScreenPos();
@@ -4147,6 +4160,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     {
         return g_held.has_value();
     }
+
+    bool PlayerBoardHovered() { return g_playerBoardHovered; }
 
     bool HeldCanRotate()
     {
@@ -12546,6 +12561,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
     void Draw()
     {
+        // ★Re-armed every frame, before anything draws -- a stale "yes" would
+        // silence the container's take-all for a frame the cursor had already
+        // left. The views below raise it again if it is still true.
+        g_playerBoardHovered = false;
         RotateHeldItem();   // GI62: A / D, before any grid reads the footprint
         if (g_views.empty()) return;
         const float gridW = g_views[0].cols * CellPx();

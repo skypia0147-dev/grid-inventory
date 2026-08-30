@@ -5871,12 +5871,22 @@ namespace
         {
             // R = take everything that FITS (loot). Gold ignores space; other
             // items consume free cells (approximate — ignores fragmentation, but
-            // never over-takes). Stops once the grid is full. Gated on THIS window
-            // being hovered — the key is global, so an ungated R also fired while
-            // the cursor was over the PLAYER window (whose hover+R means "drop
-            // one"), taking the whole container by accident (user-reported).
+            // never over-takes). Stops once the grid is full.
+            //
+            // ★★GUARD THE COLLISION, NOT THE WHOLE KEY. The key is global and
+            // R over one of the PLAYER's own tiles already means "drop one", so
+            // an ungated R emptied the container by accident. The first answer
+            // was to demand this window be hovered -- which fixed the accident
+            // and made the shortcut nearly unreachable: the cursor had to be
+            // parked on the container, so the one key meant to save the player
+            // a journey required the journey. (Reported 2026-08-31.)
+            //
+            // Only the player's own windows can disagree with us about what R
+            // means, so only they need to say no. Anywhere else -- the
+            // container, the gap between windows, the world behind them -- take
+            // all is the only reading there is.
             if (IsLootMode(g_mode) && !g_slider.active &&
-                ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows) &&
+                !Grid::PlayerBoardHovered() &&
                 ImGui::IsKeyPressed(ImGuiKey_R, false) && !ImGui::GetIO().WantTextInput) {
                 // total/used already span the bags (open or closed) — adding
                 // bag room on top of that double-counted it and over-took

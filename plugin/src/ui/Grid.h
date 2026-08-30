@@ -109,6 +109,11 @@ namespace FUI::Grid
     // for square footprints, where pressing them does nothing.
     [[nodiscard]] bool HeldCanRotate();
 
+    // ★Is the cursor over the player's own board or a bag window this frame?
+    // Asked by the container's take-all, which must not fire where R already
+    // means "drop one".
+    [[nodiscard]] bool PlayerBoardHovered();
+
     // GI63: what the tooltip is describing THIS FRAME, for the prompt bar.
     // ★Recorded by DrawItemTooltip, which every board shares (grid, doll,
     // partner), so the bar needs to know nothing about who is hovering what.
