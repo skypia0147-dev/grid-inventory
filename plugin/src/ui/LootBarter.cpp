@@ -1582,6 +1582,144 @@ namespace FUI::LootBarter
                                  "unit of '{}'", a_tag, a_obj->GetName());
             }
         }
+
+        // ---- W1: TAKE THE WORN LIST OUT OF THE ENGINE'S REACH ---------------
+        //
+        // ★★★THE PLAIN POOL HAS NO NAME. Having no ExtraDataList is what
+        // "plain" MEANS, so there is no pointer to hand RemoveItem and it gets
+        // nullptr -- at which point it picks the units itself, and it picks the
+        // worn list. Reported as: fifty arrows equipped, fifty stored, and the
+        // quiver comes back holding one. Measured, three times in one session:
+        //   [XFER] TRIPWIRE store: engine fallback moved a WORN unit of 'Steel Arrow'
+        //
+        // The tripwire above has watched this happen since it was written. It
+        // reports; it was never able to prevent.
+        //
+        // So the fix is not to out-argue the engine about which unit to take.
+        // It is to make sure that when the engine looks, there is no worn list
+        // there: take it off, do the transfer, put it back. Measured first --
+        // UnequipObject clears the list where it is called, not later
+        // (AMMOPROBE, four trials, "0 worn list(s) still present") -- because
+        // if it were deferred this would leave the player disarmed and fix
+        // nothing.
+        //
+        // ★NOT ammo-only. Ammo is where it shows, because a quiver is the one
+        // worn list that carries a big count. But the shape is "a worn list and
+        // a spare of the same form", and a torch (cap 20, equippable) or a
+        // second identical sword is the same story -- Grid.cpp:9461 already
+        // records it walking a TEMPERED spare out instead of the clicked one.
+        //
+        // ★ONLY when sxl is null, and that is a safety property rather than an
+        // optimisation: unequipping REWRITES the entry's lists, so a named sxl
+        // taken before this would be a pointer to something else afterwards.
+        // Where we have a name we do not need this, and where we need this
+        // there is no name to invalidate.
+        struct WornSave
+        {
+            int units = 1;
+            int hand = 1;   // 1 right / 2 left
+        };
+
+        [[nodiscard]] bool HasWorn(RE::TESObjectREFR* a_who, RE::TESBoundObject* a_obj)
+        {
+            auto* entry = Grid::LiveEntryOf(a_who, a_obj);
+            if (!entry || !entry->extraLists) return false;
+            for (auto* xl : *entry->extraLists) {
+                if (xl && (xl->HasType<RE::ExtraWorn>() ||
+                           xl->HasType<RE::ExtraWornLeft>())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        std::vector<WornSave> ShieldWorn(RE::Actor* a_actor, RE::TESBoundObject* a_obj)
+        {
+            std::vector<WornSave> saved;
+            auto* em = RE::ActorEquipManager::GetSingleton();
+            if (!em || !a_actor || !a_obj) return saved;
+            // ★Collect the lists BEFORE unequipping any of them. The first
+            // unequip rewrites the entry, and a walk that is still holding
+            // iterators into it is walking freed memory.
+            std::vector<std::pair<RE::ExtraDataList*, WornSave>> worn;
+            if (auto* entry = Grid::LiveEntryOf(a_actor, a_obj);
+                entry && entry->extraLists) {
+                for (auto* xl : *entry->extraLists) {
+                    if (!xl) continue;
+                    const bool left = xl->HasType<RE::ExtraWornLeft>();
+                    if (!left && !xl->HasType<RE::ExtraWorn>()) continue;
+                    worn.push_back({ xl,
+                        { (std::max)(1, static_cast<int>(xl->GetCount())),
+                          left ? 2 : 1 } });
+                }
+            }
+            for (auto& [xl, s] : worn) {
+                em->UnequipObject(a_actor, a_obj, xl,
+                                  static_cast<std::uint32_t>(s.units),
+                                  nullptr, false, false, false, true);
+                saved.push_back(s);
+            }
+            return saved;
+        }
+
+        void RestoreWorn(RE::Actor* a_actor, RE::TESBoundObject* a_obj,
+                         const std::vector<WornSave>& a_saved)
+        {
+            if (a_saved.empty()) return;
+            auto* em = RE::ActorEquipManager::GetSingleton();
+            if (!em || !a_actor || !a_obj) return;
+            for (const auto& s : a_saved) {
+                // ★What is LEFT decides, not what was worn. The transfer just
+                // took units out, and asking for more than remains is how a
+                // restore turns into a second bug.
+                const int have = HeldCount(a_actor, a_obj);
+                if (have <= 0) break;
+                const int n = (std::min)(s.units, have);
+                const auto* slot = s.hand == 2
+                    ? RE::TESForm::LookupByID<RE::BGSEquipSlot>(0x13F43)   // LeftHand
+                    : nullptr;
+                em->EquipObject(a_actor, a_obj, nullptr,
+                                static_cast<std::uint32_t>(n), slot,
+                                false, false, false, true);
+            }
+            // ★★AND SAY SO IF IT DID NOT TAKE. The player is left disarmed by a
+            // silent failure here, and "my arrows come off when I use a chest"
+            // is a report nobody could act on. This cannot force the engine --
+            // it can refuse to be quiet about it.
+            if (!HasWorn(a_actor, a_obj) && HeldCount(a_actor, a_obj) > 0) {
+                SKSE::log::error("[XFER] W1: '{}' was unequipped for the transfer "
+                                 "and did NOT go back on ({} left in the pack)",
+                                 a_obj->GetName(), HeldCount(a_actor, a_obj));
+                return;
+            }
+            // ★★COSMETIC, AND ONLY COSMETIC. The inventory was never wrong --
+            // measured: the worn list is back before this line runs, and the
+            // failure log above stays silent. What the player saw was the MESH:
+            // the unequip takes the quiver off the back at once, while the
+            // re-equip's rebuild waits for the game to run again, so the arrows
+            // vanished on storing and returned when the chest closed.
+            //
+            // ★★★FLAG, THEN ASK. Both halves are required, and Actor::Update3DModel()
+            // on its own is the half that does nothing -- Costume.cpp:790 has the
+            // whole story, having lost time to exactly this: "Update3DModel had
+            // done nothing because NOTHING WAS FLAGGED; it had no opinion about
+            // the addon swap at all." It was tried alone here too, and did
+            // nothing here too, for the same reason.
+            //
+            // ★DoReset3D is the heavier route and is not wanted: the same note
+            // records it leaving the player INVISIBLE when leaned on. The
+            // flagged path is the engine's own, and it is what a real equip
+            // change already travels.
+            //
+            // ★Reached only when something was actually shielded, which is a
+            // transfer of a form the player is wearing -- not the common path.
+            if (auto* proc = a_actor->GetActorRuntimeData().currentProcess) {
+                proc->Set3DUpdateFlag(static_cast<RE::RESET_3D_FLAGS>(
+                    static_cast<std::uint32_t>(RE::RESET_3D_FLAGS::kModel) |
+                    static_cast<std::uint32_t>(RE::RESET_3D_FLAGS::kSkin)));
+                proc->Update3DModel(a_actor);
+            }
+        }
     }
 
     void ProcessTransfers()
@@ -1926,10 +2064,14 @@ namespace FUI::LootBarter
                     SKSE::log::warn("[XFER] !simrefuse: engine call SKIPPED for "
                                     "store '{}' x{}", r.obj->GetName(), r.count);
                 } else {
+                    const bool shield = sxl == nullptr && HasWorn(player, r.obj);
+                    const auto saved = shield ? ShieldWorn(player, r.obj)
+                                              : std::vector<WornSave>{};
                     GuardedRemove(player, r.obj, sxl == nullptr, "store", [&]() {   // GI42
                         player->RemoveItem(r.obj, r.count,
                             RE::ITEM_REMOVE_REASON::kStoreInContainer, sxl, source);
                     });
+                    RestoreWorn(player, r.obj, saved);
                 }
                 if (provable) {
                     const int moved = (std::min)(r.count,
@@ -1977,10 +2119,14 @@ namespace FUI::LootBarter
                 {
                 auto* sxl = Grid::ResolveExitUnit(r.obj, r.uid, r.sig, r.count,   // GI36
                                                   r.fav ? r.count : 0, r.xlIdx);
+                const bool shield = sxl == nullptr && HasWorn(player, r.obj);
+                const auto saved = shield ? ShieldWorn(player, r.obj)
+                                          : std::vector<WornSave>{};
                 GuardedRemove(player, r.obj, sxl == nullptr, "sell", [&]() {   // GI42
                     player->RemoveItem(r.obj, r.count, RE::ITEM_REMOVE_REASON::kSelling,
                         sxl, source);
                 });
+                RestoreWorn(player, r.obj, saved);
                 }
                 if (gold && r.price > 0) {
                     player->AddObjectToContainer(gold, nullptr, r.price, nullptr);
@@ -2115,10 +2261,14 @@ namespace FUI::LootBarter
                     // leave the star exactly where it was.
                     auto* sxl = Grid::ResolveExitUnit(r.obj, r.uid, r.sig, r.count,
                                                       r.fav ? r.count : 0, r.xlIdx);
+                    const bool shield = sxl == nullptr && HasWorn(player, r.obj);
+                    const auto saved = shield ? ShieldWorn(player, r.obj)
+                                              : std::vector<WornSave>{};
                     GuardedRemove(player, r.obj, sxl == nullptr, "plant", [&]() {   // GI42
                         player->RemoveItem(r.obj, r.count,
                             RE::ITEM_REMOVE_REASON::kStoreInContainer, sxl, source);
                     });
+                    RestoreWorn(player, r.obj, saved);
                 }
                 // (B4-3c: whichever branch moved the item -- the attempt
                 // itself or our RemoveItem above -- its container event has

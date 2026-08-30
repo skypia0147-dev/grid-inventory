@@ -1402,6 +1402,13 @@ namespace FUI::Equip
                     SKSE::log::info("[EQUIP] quiver swap: unequip {} x{}",
                                     obj->GetName(), (std::max)(1, xl->GetCount()));
                 }
+                // ★A probe lived here and has been retired. It asked whether
+                // UnequipObject clears the worn list where it is called or only
+                // later, because LootBarter's transfer shield turns on the
+                // answer. Measured over four trials: immediate, every time
+                // ("0 worn list(s) still present"). The shield is built on that
+                // and its tripwire re-checks it on every transfer, so the
+                // question no longer needs asking on every ammo click.
             }
 
             // D4: a one-hander (or staff) dropped on the shield slot = left hand
