@@ -352,6 +352,14 @@ namespace FUI::UIRoot
             static unsigned s_lastChars = 0;
             static int      s_contradictions = 0;
 
+            // A press waiting one frame to see whether the window road answers
+            // it -- see the doubt block below. Modifiers travel WITH the press,
+            // because by the time it is judged the player may have let shift go.
+            struct Pending { int vk; bool shift; bool caps; };
+            static Pending  s_pend[8] = {};
+            static int      s_pendN = 0;
+            static unsigned s_pendBase = 0;
+
             // Only ever while a text field is waiting. Outside one there is
             // nothing to type into, and ToUnicodeEx is stateful (dead keys) --
             // calling it for every key at all times would leave half-composed
@@ -369,13 +377,19 @@ namespace FUI::UIRoot
             if (!a_io.WantTextInput || !IsBoardLive() ||
                 !ui || ui->IsMenuOpen(RE::Console::MENU_NAME)) {
                 for (auto& d : s_down) d = false;
+                s_pendN = 0;   // nothing left to type into; drop the doubt too
                 return;
             }
 
             const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
             const bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool alt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            const bool caps  = (GetKeyState(VK_CAPITAL) & 1) != 0;
 
+            // The count as of the PREVIOUS sweep. A press detected now happened
+            // somewhere between that sweep and this one, so this is the mark a
+            // later WM_CHAR has to beat to prove it belongs to that press.
+            const unsigned prevChars = s_lastChars;
             const unsigned chars = g_wmCharSeen.load(std::memory_order_relaxed);
             const bool     wmAlive = chars != s_lastChars;
             s_lastChars = chars;
@@ -407,14 +421,48 @@ namespace FUI::UIRoot
                 }
             }
 
-            BYTE ks[256] = {};
-            if (g_kbFallback) {
+            auto synth = [&a_io](int a_vk, bool a_shift, bool a_caps) {
                 // ToUnicodeEx reads the WHOLE table, so the modifiers have to be
-                // in it or every letter comes out lower case.
-                if (shift) { ks[VK_SHIFT] = 0x80; ks[VK_LSHIFT] = 0x80; }
-                if (ctrl)  { ks[VK_CONTROL] = 0x80; }
-                if (alt)   { ks[VK_MENU] = 0x80; }
-                if (GetKeyState(VK_CAPITAL) & 1) ks[VK_CAPITAL] = 0x01;
+                // in it or every letter comes out lower case. Ctrl and Alt are
+                // never here: a shortcut is filtered out before it can queue.
+                BYTE ks[256] = {};
+                if (a_shift) { ks[VK_SHIFT] = 0x80; ks[VK_LSHIFT] = 0x80; }
+                if (a_caps)  { ks[VK_CAPITAL] = 0x01; }
+                const UINT sc = MapVirtualKeyW(static_cast<UINT>(a_vk), MAPVK_VK_TO_VSC);
+                WCHAR     buf[8] = {};
+                const int n = ToUnicodeEx(static_cast<UINT>(a_vk), sc, ks, buf,
+                                          static_cast<int>(std::size(buf)), 0,
+                                          GetKeyboardLayout(0));
+                for (int i = 0; i < n && i < static_cast<int>(std::size(buf)); ++i) {
+                    if (buf[i] >= 0x20) a_io.AddInputCharacterUTF16(buf[i]);
+                }
+            };
+
+            // ★★★ONE FRAME OF DOUBT, AND THE DOUBLING BECOMES IMPOSSIBLE.
+            //
+            // The latch above is evidence, and evidence can be stale: it was
+            // gathered at some earlier moment and the road may have been fine
+            // ever since. Acting on it the instant a key goes down is what let a
+            // wrongly-latched session put the FIRST letter in twice -- the spare
+            // road spoke in the same frame as the press, and the real WM_CHAR
+            // for it only arrived on the next.
+            //
+            // So a press is not answered where it is seen. It waits one sweep,
+            // and is spoken for only if no WM_CHAR turned up in the meantime.
+            // On a healthy machine one always does, so nothing is ever
+            // synthesised and the un-latch above happens off the same evidence:
+            // not one doubled character, not even the first.
+            //
+            // On a machine whose road really is dead, nothing turns up, every
+            // press is spoken for, and the whole cost is one frame -- sixteen
+            // milliseconds of a keystroke nobody was going to receive at all.
+            if (s_pendN > 0) {
+                if (chars == s_pendBase) {
+                    for (int i = 0; i < s_pendN; ++i) {
+                        synth(s_pend[i].vk, s_pend[i].shift, s_pend[i].caps);
+                    }
+                }
+                s_pendN = 0;
             }
 
             for (int vk = 0; vk < 256; ++vk) {
@@ -458,13 +506,16 @@ namespace FUI::UIRoot
                     continue;
                 }
 
-                const UINT sc = MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC);
-                WCHAR     buf[8] = {};
-                const int n = ToUnicodeEx(static_cast<UINT>(vk), sc, ks, buf,
-                                          static_cast<int>(std::size(buf)), 0,
-                                          GetKeyboardLayout(0));
-                for (int i = 0; i < n && i < static_cast<int>(std::size(buf)); ++i) {
-                    if (buf[i] >= 0x20) a_io.AddInputCharacterUTF16(buf[i]);
+                // Queued, not spoken. Judged on the next sweep against the mark
+                // taken before the press. The overflow arm can only be reached
+                // by eight printable keys going down inside one frame, and a
+                // keystroke that cannot be queued is spoken immediately rather
+                // than lost.
+                if (s_pendN < static_cast<int>(std::size(s_pend))) {
+                    s_pendBase = prevChars;
+                    s_pend[s_pendN++] = { vk, shift, caps };
+                } else {
+                    synth(vk, shift, caps);
                 }
             }
         }
