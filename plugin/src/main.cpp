@@ -901,6 +901,54 @@ namespace
         return key + buf;
     }
 
+    // ★★★ONE RECORD, TWO GROUND MODELS, AND ONLY EVER ONE ANGLE.
+    //
+    // An armour record carries a world model per sex, and 268 of 4386 in this
+    // load order carry two DIFFERENT ones. The tuning key is the FORM, so both
+    // sexes were handed the same rx/ry/rz -- and where the two nifs are laid
+    // out differently, an angle chosen while looking at one of them is simply
+    // wrong on the other. The shipped file was tuned on a female character, so
+    // it is male players who would see those items come out askew.
+    //
+    // The icon PIXELS were already dealt with: these records are left out of
+    // the shipped pak, so every install photographs its own character's model.
+    // That fixed the picture and left the angle behind, which is this.
+    //
+    // ★Both models must exist. Thousands of records fill only one side, and
+    // the game shows that one to everybody -- one model cannot disagree with
+    // itself, so those are not split and must not pay for this.
+    [[nodiscard]] bool SexSplitArmour(RE::TESBoundObject* a_obj)
+    {
+        auto* armo = a_obj ? a_obj->As<RE::TESObjectARMO>() : nullptr;
+        if (!armo) return false;
+        // ★Cached: this is a property of the RECORD and cannot change, while
+        // the ask sits under DefFor, which runs per tile.
+        static std::unordered_map<RE::FormID, bool> s_split;
+        const auto id = a_obj->GetFormID();
+        if (const auto it = s_split.find(id); it != s_split.end()) return it->second;
+        const char* m = armo->worldModels[RE::TESBipedModelForm::Sexes::kMale].GetModel();
+        const char* f = armo->worldModels[RE::TESBipedModelForm::Sexes::kFemale].GetModel();
+        const bool split = m && *m && f && *f && _stricmp(m, f) != 0;
+        s_split.emplace(id, split);
+        return split;
+    }
+
+    // "|F" / "|M" for a split record, nullptr for everything else. ★Read live
+    // rather than cached: showracemenu can change the answer mid-session, and
+    // two pointer hops are cheaper than being wrong until a reload.
+    [[nodiscard]] const char* SexSuffix(RE::TESBoundObject* a_obj)
+    {
+        if (!SexSplitArmour(a_obj)) return nullptr;
+        auto* pc = RE::PlayerCharacter::GetSingleton();
+        auto* base = pc ? pc->GetActorBase() : nullptr;
+        if (!base) return nullptr;
+        return base->GetSex() == RE::SEX::kFemale ? "|F" : "|M";
+    }
+
+    // ★Set at load if the file carries even one sex-suffixed line. On a fresh
+    // install nothing does, and DefFor's whole branch costs one bool test.
+    bool g_haveSexDefs = false;
+
     RE::TESBoundObject* FormFromKey(const std::string& a_key)
     {
         const auto bar = a_key.find('|');
@@ -1047,6 +1095,11 @@ namespace
         std::sort(keys.begin(), keys.end(),
             [](const std::string* a, const std::string* b) { return *a < *b; });
         for (const auto* k : keys) {
+            // ★Sex-suffixed lines do not donate. ModelPathOf reads the MALE
+            // model, so a female-only angle entering this map would be handed
+            // to every sibling sharing that male nif -- the same leak this
+            // whole mechanism exists to close, coming back by the side door.
+            if (k->find('|', k->find('|') + 1) != std::string::npos) continue;
             auto* obj = FormFromKey(*k);
             if (!obj) continue;
             auto mp = ModelPathOf(obj);
@@ -1241,6 +1294,10 @@ namespace
         if (lines.empty()) {
             lines.push_back("; GridInventory item overrides (edited in-game via the EDIT mode)");
             lines.push_back("; key = w:, h:, rx:, ry:, rz:, scale:   or   shape:11|10|10 (rows of 1/0)");
+            lines.push_back(";");
+            lines.push_back("; An armour whose male and female ground models are DIFFERENT nifs can take a");
+            lines.push_back("; second line ending in |F or |M, which applies only to that sex; the plain key");
+            lines.push_back("; stays the default for both.");
         }
         bool done = false;
         for (auto it = lines.begin(); it != lines.end(); ++it) {
@@ -1282,6 +1339,20 @@ namespace
 
     ItemDef DefFor(RE::TESBoundObject* a_obj)
     {
+        // ★★A SEX-SPECIFIC LINE WINS, AND THE PLAIN ONE IS STILL THE DEFAULT.
+        // Purely additive: until somebody tunes a split record while playing
+        // one sex, nothing here matches and every item resolves exactly as it
+        // did. That is the point -- the file already shipped with a value for
+        // all 268 of these, and starting them over at the factory angle would
+        // trade a sometimes-wrong picture for a reliably-wrong one.
+        if (g_haveSexDefs) {
+            if (const char* sfx = SexSuffix(a_obj)) {
+                if (auto it = g_itemDefs.find(FormKey(a_obj) + sfx);
+                    it != g_itemDefs.end()) {
+                    return it->second;
+                }
+            }
+        }
         if (auto it = g_itemDefs.find(FormKey(a_obj)); it != g_itemDefs.end()) {
             return it->second;
         }
@@ -1364,6 +1435,12 @@ namespace
                 std::string key = line.substr(0, eq);
                 key.erase(0, key.find_first_not_of(" \t"));
                 key.erase(key.find_last_not_of(" \t") + 1);
+                // ★A second '|' is the sex marker ("Skyrim.esm|0x0136D5|F").
+                // Noting it here is what lets DefFor skip the whole lookup on
+                // every install that has never written one.
+                if (key.find('|', key.find('|') + 1) != std::string::npos) {
+                    g_haveSexDefs = true;
+                }
                 // shared metatable parser (ui/ItemDef.h) over factory defaults
                 g_itemDefs[key] = ParseItemDef(line.substr(eq + 1), ItemDef{});
             }
@@ -2173,25 +2250,44 @@ namespace
             FUI::Editor::Hooks hooks;
             hooks.getEffective = [](RE::TESBoundObject* o) { return DefFor(o); };
             hooks.getDefault = [](RE::TESBoundObject* o) { return DefaultDef(o); };
-            hooks.hasOverride = [](RE::TESBoundObject* o) {
-                return g_itemDefs.contains(FormKey(o));
+            // ★★EDITING A SPLIT RECORD WRITES FOR THE BODY IN FRONT OF YOU.
+            // The angle was chosen against the model this character wears, so
+            // that is the only body it can be claimed for. Everything else --
+            // the 3357 records with one model, and every non-armour -- keeps
+            // the plain key it has always had.
+            const auto editKey = [](RE::TESBoundObject* o) {
+                std::string k = FormKey(o);
+                if (const char* sfx = SexSuffix(o)) k += sfx;
+                return k;
             };
-            hooks.setOverride = [](RE::TESBoundObject* o, const FUI::Editor::FullDef& f,
-                                   bool a_persist) {
-                const std::string key = FormKey(o);
+            hooks.hasOverride = [editKey](RE::TESBoundObject* o) {
+                return g_itemDefs.contains(editKey(o)) || g_itemDefs.contains(FormKey(o));
+            };
+            hooks.setOverride = [editKey](RE::TESBoundObject* o,
+                                          const FUI::Editor::FullDef& f, bool a_persist) {
+                const std::string key = editKey(o);
                 ItemDef d = f;
                 DeriveShapeBounds(d);   // the editor may have repainted the mask
                 g_itemDefs[key] = d;   // live: the resolvers see it immediately
+                if (key.size() != FormKey(o).size()) g_haveSexDefs = true;
                 g_modelDefsDirty = true;
                 if (a_persist) {
                     UpsertDefLine(key, &d, o->GetName() ? o->GetName() : "");
                 }
             };
-            hooks.resetOverride = [](RE::TESBoundObject* o) {
-                const std::string key = FormKey(o);
-                g_itemDefs.erase(key);
+            hooks.resetOverride = [editKey](RE::TESBoundObject* o) {
+                // ★Both, and in that order. Reset means "stop overriding this
+                // item", and leaving the plain line behind after clearing the
+                // sex-specific one would look like the reset did nothing.
+                const std::string key = editKey(o);
+                const std::string base = FormKey(o);
+                if (key != base) {
+                    g_itemDefs.erase(key);
+                    UpsertDefLine(key, nullptr, "");
+                }
+                g_itemDefs.erase(base);
                 g_modelDefsDirty = true;
-                UpsertDefLine(key, nullptr, "");
+                UpsertDefLine(base, nullptr, "");
             };
             hooks.saveAsCategory = [](RE::TESBoundObject* o, const FUI::Editor::FullDef& f) {
                 ItemDef d = f;
