@@ -750,6 +750,31 @@ namespace FUI
         if (p2 && *p2) {
             h = (h ^ 0x1Fu) * 16777619u;
             fold(p2);
+            // ★★★AND WHEN THE TWO PATHS DIFFER, WHICH BODY IS WEARING IT.
+            //
+            // The line above says this key names the picture. For a record
+            // whose two ground models are different nifs, the sex is PART of
+            // which picture it is: we do not choose the model, the engine does,
+            // and it draws the one belonging to the character standing there.
+            // One slot for both therefore held whichever sex photographed it
+            // first -- fine while a character keeps the body they started with,
+            // wrong the moment showracemenu says otherwise, and wrong for the
+            // items ini's own new |F / |M lines whenever the two angles happen
+            // to agree (equal rotations hash equal, so the tuning alone could
+            // not tell the two pictures apart).
+            //
+            // ★Only when they DIFFER. Thousands of records name the same nif
+            // twice or fill one side, and the engine shows that one model to
+            // everybody -- splitting those would double their captures to
+            // store the same pixels under two names.
+            if (_stricmp(p, p2) != 0) {
+                if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
+                    if (auto* base = pc->GetActorBase()) {
+                        h = (h ^ (base->GetSex() == RE::SEX::kFemale ? 0xF1u : 0x4Du))
+                          * 16777619u;
+                    }
+                }
+            }
         }
         // ★★1.0.5 — the base-form ENCHANTMENT deliberately does NOT join this
         // hash, though it looks like it should: Iron Sword and Iron Sword of
