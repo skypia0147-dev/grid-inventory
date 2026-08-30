@@ -767,13 +767,22 @@ namespace FUI
             // twice or fill one side, and the engine shows that one model to
             // everybody -- splitting those would double their captures to
             // store the same pixels under two names.
+            // ★★AND IT FOLDS EVEN WHEN NOBODY IS THERE TO ASK. Skipping the
+            // fold on a null player was a THIRD key -- neither the male one nor
+            // the female one -- so a capture taken in that moment is written to
+            // disk under a name no later lookup can produce, and the item is
+            // re-shot forever. main.cpp's SexSuffix already answers this
+            // question the other way, falling back to the plain (both-sexes)
+            // line, and the two must not disagree about the same record.
+            //
+            // ★Male is the right default for BOTH of them, because ModelPathOf
+            // reads the male path -- the same rule the model-level def map
+            // follows (main.cpp, "Sex-suffixed lines do not donate").
             if (_stricmp(p, p2) != 0) {
-                if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
-                    if (auto* base = pc->GetActorBase()) {
-                        h = (h ^ (base->GetSex() == RE::SEX::kFemale ? 0xF1u : 0x4Du))
-                          * 16777619u;
-                    }
-                }
+                auto* pc = RE::PlayerCharacter::GetSingleton();
+                auto* base = pc ? pc->GetActorBase() : nullptr;
+                const bool female = base && base->GetSex() == RE::SEX::kFemale;
+                h = (h ^ (female ? 0xF1u : 0x4Du)) * 16777619u;
             }
         }
         // ★★1.0.5 — the base-form ENCHANTMENT deliberately does NOT join this
@@ -2168,6 +2177,49 @@ namespace FUI
             }
             return true;
         }
+
+        // ★★★SAY IT ONCE -- AND STOP MAKING THE QUEUE FIND OUT.
+        //
+        // The probe above was consulted in exactly ONE place, the queue drain,
+        // and its verdict was written NOWHERE. Every other outcome in this
+        // pipeline lands somewhere a later caller can see it -- m_icons,
+        // m_failed, m_queued -- and a bare `continue` lands in none of them. So
+        // QueueCapture's six gates all read clear on the very next frame and
+        // the entry came straight back:
+        //
+        //   draw a tile -> Get() is null -> QueueCapture -> push
+        //     -> drain pops, m_queued.erase, mesh missing, warn, continue
+        //     -> draw the same tile next frame -> ...
+        //
+        // A draw loop asks per tile per frame, so the note below's "re-deciding
+        // every SESSION costs nothing" -- the right intention -- was really
+        // re-deciding at frame rate. Measured: 1345 of one session's 1629 lines
+        // were this one message, burying the diagnostics it was competing with
+        // (it is what made the rotation investigation unreadable).
+        //
+        // ★No cache is needed for the ANSWER. PathMissing memoises per path, as
+        // its own note says, so asking again is a hash lookup. The only thing
+        // that has to be remembered is whether we have SAID it.
+        //
+        // ★And deliberately NOT the persisted fail list, for exactly the reason
+        // the drain gives: install the missing mesh and the item should heal.
+        // A set that dies with the process keeps that -- one restart, not a
+        // cache wipe.
+        //
+        // ★Keyed by FORM, not by icon key: the message names the record and its
+        // nif, and neither of those moves when a def is edited. An icon key
+        // carries the rotation, so keying on it would say the same thing again
+        // the first time somebody turned the item in EDIT.
+        bool MeshMissingQuiet(RE::TESBoundObject* a_obj)
+        {
+            if (!a_obj || !MeshMissing(a_obj)) return false;
+            static std::unordered_set<RE::FormID> s_said;
+            if (s_said.insert(a_obj->GetFormID()).second) {
+                SKSE::log::warn("[ICONS] '{}' skipped: mesh not found ('{}')",
+                    a_obj->GetName(), ModelPathOf(a_obj));
+            }
+            return true;
+        }
     }
 
     void IconCache::QueueCapture(RE::TESBoundObject* a_obj)
@@ -2202,6 +2254,18 @@ namespace FUI
             return;
         }
 
+        // ★★★AFTER THE DISK, NEVER BEFORE IT. This gate is "do not QUEUE a
+        // capture that cannot succeed", not "this item has no picture" -- and
+        // the two are different for exactly the case the shipped pak exists to
+        // serve: an icon rendered on a machine that HAD the mesh. Asked above
+        // the LoadFromDisk lines, it would throw that icon away and report a
+        // skip about an item the player can see perfectly well.
+        //
+        // ★So it belongs here, where the drain's copy effectively sat all
+        // along: an entry only ever reached the drain after the disk had been
+        // asked and had nothing.
+        if (MeshMissingQuiet(a_obj)) return;
+
         // ★GI51: FRONT of the queue. QueueCapture means "something on screen
         // right now has no sprite" — Prefetch means "we may need this later".
         // Draining them in insertion order filled the cache with items the
@@ -2231,6 +2295,9 @@ namespace FUI
             legacy != key && g_pakIndex.contains(legacy)) {
             return;
         }
+        // ★Below the pak checks for the same reason QueueCapture's copy is
+        // below the disk ones: a shipped icon outranks a missing mesh.
+        if (MeshMissingQuiet(a_obj)) return;
         m_queue.push_back({ a_obj, a_obj->GetFormID(), key, a_evictAfter });
         m_queued.insert(key);
     }
@@ -2342,6 +2409,23 @@ namespace FUI
                 }
                 return;   // nothing dropped; the next frame simply asks again
             }
+            // ★★★THE PROBE THE QUEUE HAS ALWAYS DONE, WHICH THIS ARM NEVER DID.
+            // MeshMissing was called from one place in the whole file, and it
+            // was not this one -- so an inspect of a record whose nif is not
+            // there armed anyway, waited out kTimeoutFrames, and was abandoned.
+            // The abandon releases the slot without recording anything (an
+            // inspect carries no cache key, correctly), UnloadCurrent nulls
+            // m_current, and InspectShotStale answers "stale" forever while
+            // m_inspectValid is false -- so the next frame armed it again.
+            //
+            // ★This one is dearer than the queue's version of the same fault.
+            // The note above names what is being repeated: "the most expensive
+            // request this plugin makes, a 900px model at 3x scale, going into
+            // the same engine NIF loader the reported crash died inside."
+            //
+            // ★Same function, same one-shot report, so the message reads
+            // identically whichever side reached it first.
+            if (m_inspect && MeshMissingQuiet(m_inspect)) return;
             if (InspectShotStale()) {
                 m_pending = Pending{ m_inspect, m_inspect ? m_inspect->GetFormID() : 0u, 0 };
                 m_pendingInspect = true;
@@ -2415,11 +2499,11 @@ namespace FUI
                 // fail list on purpose: the probe is instant, so re-deciding
                 // every session costs nothing and the item heals itself the
                 // moment the missing mesh is installed.
-                if (MeshMissing(p.obj)) {
-                    SKSE::log::warn("[ICONS] '{}' skipped: mesh not found ('{}')",
-                        p.obj->GetName(), ModelPathOf(p.obj));
-                    continue;
-                }
+                // ★The queueing side now asks the same question first, so this
+                // is a net rather than the decision -- it catches whatever a
+                // future queueing path forgets to ask. Reporting moved into
+                // MeshMissingQuiet so the two sites cannot say it twice.
+                if (MeshMissingQuiet(p.obj)) continue;
                 if (!m_icons.contains(p.key)) {
                     m_pending = p;
                     m_pendingInspect = false;

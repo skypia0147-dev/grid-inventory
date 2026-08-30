@@ -1083,7 +1083,26 @@ namespace FUI::Equip
         // ★Re-read every pass. Unequipping rewrites the entry, so a list
         // collected before the previous call points at something else. The
         // bound is a runaway stop, not an expected count.
-        for (int pass = 0; pass < 8 && wornTotal() > 0; ++pass) {
+        //
+        // ★★AND THE STOP IS COUNTED, NOT GUESSED. It was the literal 8, which
+        // invited a question nobody could answer -- a merge leaves a worn list
+        // behind each time, so the real ceiling is however many are up there
+        // right now, and "is 8 enough?" could only be settled by going and
+        // counting. So count them here instead. Two spare covers a list the
+        // engine splits while we work; anything past that is not a deep quiver,
+        // it is a loop that is not converging, and the check below says so.
+        int lists = 0;
+        if (auto* entry = Grid::LiveEntryOf(player, obj);
+            entry && entry->extraLists) {
+            for (auto* xl : *entry->extraLists) {
+                if (xl && (xl->HasType<RE::ExtraWorn>() ||
+                           xl->HasType<RE::ExtraWornLeft>())) {
+                    ++lists;
+                }
+            }
+        }
+        const int passCap = lists + 2;
+        for (int pass = 0; pass < passCap && wornTotal() > 0; ++pass) {
             RE::ExtraDataList* one = nullptr;
             int                n = 0;
             if (auto* entry = Grid::LiveEntryOf(player, obj);
@@ -1101,6 +1120,22 @@ namespace FUI::Equip
             if (!one) break;
             em->UnequipObject(player, obj, one, static_cast<std::uint32_t>(n),
                               nullptr, false, false, false, true);
+        }
+        // ★★★A RUNAWAY STOP IS NOT A LICENCE TO CARRY ON. This fell straight
+        // through to the equip below whatever the loop had managed, so a quiver
+        // that refused to come off was handed `cap` MORE on top of what was
+        // still up there: entered to fix an overrun, left with a bigger one.
+        // And then said "re-seated at cap", which was not true.
+        //
+        // ★The bound above is a symptom detector, so reaching it is the one
+        // state this function must not act on. Leave what is there, name it,
+        // and let the next delta try again from a state nobody made worse.
+        if (const int stuck = wornTotal(); stuck > 0) {
+            SKSE::log::error("[EQUIP] quiver normalise GAVE UP on '{}': {} still "
+                             "worn after {} pass(es) (cap {}) -- left as found "
+                             "rather than equipping {} more on top",
+                             obj->GetName(), stuck, passCap, cap, cap);
+            return;
         }
         em->EquipObject(player, obj, nullptr, static_cast<std::uint32_t>(cap),
                         nullptr, false, false, false, true);

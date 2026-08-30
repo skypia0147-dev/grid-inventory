@@ -5107,6 +5107,36 @@ namespace
                     // the shape the player asked for.
                     if (it.w != it.h) it.SetRot(it.rot ^ 1);
                 }
+                // ★★★WIDER THAN THE BOARD IS NOT "NOT YET" -- IT IS "NEVER",
+                // AND THE LOOP BELOW HAS NO WAY OF SAYING SO. `fits` refuses
+                // every column once w > cols, so the loop grows `r` forever and
+                // the frame never comes back. Not a slow pass: a hang.
+                //
+                // ★The player board has had exactly this guard since it was
+                // written -- Grid.cpp's tryFit opens with `if (m.w > a_cols)
+                // return false;` and answers with `overflow`. This is the same
+                // guard and the same answer: the cell is left UNPLACED (col
+                // -1), which every consumer here already skips (pass 1, pass 3,
+                // the draw, PartnerHasRoomFor, QueryStoreDrop).
+                //
+                // ★Reachable from items.ini alone, with no mod and no bug:
+                // ItemDef clamps w/h to 1..16 while kCols is 10, so `w:12` is a
+                // supported value that no board can seat.
+                //
+                // ★Turn it before giving up. A 12x2 lying down is a 2x12, which
+                // a ten-wide board holds perfectly well -- and the growth rows
+                // below have no height limit for it to run out of.
+                if (it.w > cols) {
+                    if (it.w != it.h) it.SetRot(it.rot ^ 1);   // ...and w/h follow
+                }
+                if (it.w > cols) {
+                    SKSE::log::error("[LOOT] '{}' is {}x{} and the shelf is {} wide "
+                                     "-- no square can hold it either way round, "
+                                     "left off the board (check items.ini w:/h:)",
+                        it.obj && it.obj->GetName() ? it.obj->GetName() : "?",
+                        it.w, it.h, cols);
+                    continue;
+                }
                 for (int r = companionBoard ? kCompanionRows : 0; it.col < 0; ++r) {
                     for (int c = 0; c < cols; ++c) {
                         if (fits(c, r, it.w, it.h)) {
@@ -5885,7 +5915,25 @@ namespace
             // means, so only they need to say no. Anywhere else -- the
             // container, the gap between windows, the world behind them -- take
             // all is the only reading there is.
-            if (IsLootMode(g_mode) && !g_slider.active &&
+            // ★★AND THE THINGS THAT ARE NOT WINDOWS. Widening the gate from
+            // "this window is hovered" to "the player's board is not" left two
+            // states uncovered, because neither is a window the cursor has to
+            // be over:
+            //
+            // ★A POPUP IS AN ANSWER BEING ASKED FOR. The favourite-sale confirm
+            // and the shelf's own sub-windows sit ABOVE this board, so an R
+            // typed at one of them emptied the container behind it. Only the
+            // slider was named here; `IsPopupOpen` (this file, beside
+            // CloseTopPopup) is the list that already knows all four, and the
+            // right-click path at the other end of this file has been asking it
+            // together with IsHolding for as long as it has existed.
+            //
+            // ★A CARRY IS AN UNFINISHED SENTENCE. Take-all reads free space off
+            // a board whose carried tile still owns its square, and hands the
+            // arrivals to a fill path the carry is suppressing ("partial add
+            // declined: carried"). Put the tile down first -- a far smaller ask
+            // than the parked cursor this gate used to demand.
+            if (IsLootMode(g_mode) && !IsPopupOpen() && !Grid::IsHolding() &&
                 !Grid::PlayerBoardHovered() &&
                 ImGui::IsKeyPressed(ImGuiKey_R, false) && !ImGui::GetIO().WantTextInput) {
                 // total/used already span the bags (open or closed) — adding
