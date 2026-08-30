@@ -4295,27 +4295,29 @@ namespace FUI::UIRoot
         SKSE::log::info("[UI] menu shown ({} icons cached)",
             IconCache::GetSingleton()->CachedCount());
 
-        // ★Once per session, on the first open: how many armours have a
-        // picture that depends on who is wearing them. It answers whether the
-        // shipped icon pak can simply LEAVE those out (each install then
-        // captures them on its own character, correctly) or whether that
-        // would cost the player a visible wait. Here rather than at
-        // kDataLoaded because it walks the form arrays and the first open is
-        // already a covered moment. See IconCache.h for the whole argument.
-        static bool s_sexScanned = false;
-        if (!s_sexScanned) {
-            s_sexScanned = true;
-            IconCache::GetSingleton()->ReportSexSpecificArmour();
-            IconCache::GetSingleton()->ReportSpellDisplayObjects();
-            // ★AUTHOR TOOLING, on the same watch-file idiom as the vanilla
-            // passthrough: drop the file, open the bag once, and the shipping
-            // pak is beside it. Nothing here runs for a player, and the file
-            // is removed afterwards so a forgotten one cannot rewrite the pak
-            // every session.
+        // ★AUTHOR TOOLING, on the same watch-file idiom as the vanilla
+        // passthrough: drop the file, open the bag once, and the shipping pak
+        // is beside it. Nothing here runs for a player, and the file is removed
+        // afterwards so a forgotten one cannot rewrite the pak every session.
+        //
+        // ★★THE TWO SURVEYS MOVED IN HERE, and that is the whole change. They
+        // asked how many armours have a picture that depends on who wears them,
+        // and how many spells the engine already draws an object for. Both
+        // questions are ANSWERED -- 268 of 4386, and 813 of 947 -- and both
+        // answers were acted on: the sex-dependent ones are left out of the pak
+        // and the spells got their icons. What was left was a form-array walk
+        // and thirteen lines of internal arithmetic in the log of every player
+        // who ever opened a bag, reporting a decision that had already been
+        // taken. They belong with the tool that consumes them, behind its file.
+        static bool s_authorRan = false;
+        if (!s_authorRan) {
+            s_authorRan = true;
             std::error_code ec;
             constexpr const char* kFlag =
                 "Data/SKSE/Plugins/GridInventory_makeshippingpak.txt";
             if (std::filesystem::exists(kFlag, ec)) {
+                IconCache::GetSingleton()->ReportSexSpecificArmour();
+                IconCache::GetSingleton()->ReportSpellDisplayObjects();
                 IconCache::GetSingleton()->ExportShippingPak(
                     "Data/SKSE/Plugins/GridInventory_icons.shipping.pak");
                 std::filesystem::remove(kFlag, ec);

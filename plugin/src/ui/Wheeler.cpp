@@ -686,12 +686,6 @@ namespace FUI::Wheeler
         // to eat. See the header for why that distinction is not cosmetic.
         std::uint32_t g_openedBy = 0;
 
-        // rebinding
-        int           g_capDev = -1;          // -1 = off, 0 = keyboard, 1 = pad
-        std::uint32_t g_capCode[kMaxCombo] = {};
-        int           g_capN = 0;
-        int           g_capHeld = 0;          // still-down count; 0 = commit
-
         [[nodiscard]] float Scale()
         {
             const auto& io = ImGui::GetIO();
@@ -1544,6 +1538,42 @@ namespace FUI::Wheeler
             g_favN = g_magN = 0;
             SeatStars(0, g_allFav);
             SeatStars(1, g_allMag);
+
+            // ★★★A PAGE THAT HOLDS NOTHING IS NOT A PAGE.
+            //
+            // The list only ever grew. SeatStars frees a place whose star went
+            // away by zeroing it, and nothing shrank the list afterwards --
+            // but PageCount is ceil(size / kSlots), so the pages a burst of
+            // stars created outlived the stars themselves. Star twenty-five
+            // things and unstar twenty, and the wheel still offered three
+            // pages: one with your five, and two blank rings W/S would walk
+            // you through. It never healed, because nothing ever shortened
+            // the list.
+            //
+            // ★Trim to a PAGE boundary, never to the last star. Cutting to the
+            // exact count would close the gaps a wheel exists to keep -- the
+            // free places on the last page are where the next star lands, and
+            // the hand is entitled to find them empty.
+            const auto trim = [](int a_which) {
+                auto& ord = OrderFor(a_which);
+                std::size_t used = 0;   // one past the last occupied place
+                for (std::size_t i = 0; i < ord.size(); ++i) {
+                    if (ord[i]) used = i + 1;
+                }
+                const std::size_t slots = static_cast<std::size_t>(kSlots);
+                const std::size_t keep =
+                    (std::max)(slots, ((used + slots - 1) / slots) * slots);
+                if (ord.size() > keep) ord.resize(keep);
+            };
+            trim(0);
+            trim(1);
+            // ★And the page the player is standing on has to come back inside.
+            // The windows below clamp for THEMSELVES, but RememberOrder writes
+            // at raw g_page * kSlots and resizes to reach it -- so a stale page
+            // survived by having the next drag rebuild the very pages this just
+            // removed.
+            g_page = std::clamp(g_page, 0, PageCount(g_group) - 1);
+
             const auto window = [](int a_which, const std::vector<FavItem>& a_all,
                                    FavItem* a_out, int& a_n, int a_page) {
                 const auto& ord = OrderFor(a_which);
@@ -2998,29 +3028,6 @@ namespace FUI::Wheeler
         return out;
     }
 
-    // ★NO CALLER as of the Favorites-key move: the settings row that armed this
-    // is gone, and AdoptFavoritesKey overwrites whatever the ini or a capture
-    // produced. Kept because the machinery is correct and the day someone wants
-    // the wheel on its own key -- or on a combination, which the game's own
-    // controls cannot express -- this is what that costs. Delete it if that day
-    // does not come.
-    void BeginCapture(bool a_pad)
-    {
-        g_capDev = a_pad ? 1 : 0;
-        g_capN = 0;
-        g_capHeld = 0;
-    }
-
-    void CancelCapture() { g_capDev = -1; }
-    bool Capturing() { return g_capDev >= 0; }
-
-    const char* CaptureText()
-    {
-        static char s_buf[96];
-        ComboToText(g_capDev == 1, g_capCode, g_capN, s_buf, sizeof(s_buf));
-        return s_buf;
-    }
-
     // ---- lifetime ------------------------------------------------------------
     void RegisterMenu()
     {
@@ -3543,32 +3550,6 @@ namespace FUI::Wheeler
             else if (id < 256) g_kbDown[id] = false;
         }
 
-        // ---- rebinding ----------------------------------------------------
-        if (g_capDev >= 0) {
-            if ((g_capDev == 1) != pad) return false;   // other device: not ours
-            if (!pad && id == 1 && a_event->IsDown()) { // Esc cancels
-                g_capDev = -1;
-                return true;
-            }
-            if (a_event->IsDown()) {
-                bool seen = false;
-                for (int i = 0; i < g_capN; ++i) seen |= g_capCode[i] == id;
-                if (!seen && g_capN < kMaxCombo) g_capCode[g_capN++] = id;
-                if (!seen) ++g_capHeld;
-            } else if (a_event->IsUp()) {
-                // ★Commit when the LAST one comes up. Committing on the first
-                // release would take "Shift" out of Shift+X the instant a hand
-                // came off the modifier -- and a hand comes off the modifier
-                // first about half the time.
-                if (g_capHeld > 0 && --g_capHeld == 0 && g_capN > 0) {
-                    SetCombo(pad, g_capCode, g_capN);
-                    g_capDev = -1;
-                    WinManager::GetSingleton()->Save();
-                }
-            }
-            return true;   // nothing else in the game sees these
-        }
-
         // ---- cycling the groups while the wheel is up ----------------------
         // ★★A/D -- the keys the hand is already on. They are the movement keys,
         // which is exactly why they were unusable before: the wheel used to let
@@ -3881,28 +3862,6 @@ namespace FUI::Wheeler
         return g_open && id == g_openedBy;
     }
 
-    void Mute(RE::InputEvent* a_event)
-    {
-        if (!a_event || !g_open) return;
-        if (auto* b = a_event->AsButtonEvent()) {
-            // See the header: zeroing the value is what lets the engine
-            // release a key it was already holding instead of holding it
-            // forever. heldDownSecs is deliberately left alone -- it is the
-            // thing that tells those two cases apart.
-            b->GetRuntimeData().value = 0.0f;
-            return;
-        }
-        if (auto* m = a_event->AsMouseMoveEvent()) {
-            m->mouseInputX = 0;
-            m->mouseInputY = 0;
-            return;
-        }
-        if (auto* t = a_event->AsThumbstickEvent()) {
-            t->xValue = 0.0f;
-            t->yValue = 0.0f;
-        }
-    }
-
     bool OnThumbstick(const RE::ThumbstickEvent* a_event)
     {
         // ★(1.3.2) the RIGHT stick aims the wheel now (user request); the
@@ -4078,18 +4037,6 @@ namespace FUI::Wheeler
         if (!g_open && (g_keyMs += dt) >= 1000.0f) {
             g_keyMs = 0.0f;
             AdoptFavoritesKey();
-        }
-        // ★★Disarm capture the moment the panel it belongs to is gone. While it
-        // is armed EVERY key is swallowed, so a menu closed by Esc, by a load,
-        // or by anything else that does not route through the settings row
-        // would leave the game deaf to the keyboard with nothing on screen to
-        // explain it. Checked here because Tick is the one thing that runs
-        // whatever else happens.
-        if (g_capDev >= 0) {
-            // ★...and the settings row is equally gone when the menu is merely
-            // suppressed, so the same disarm applies: an armed capture eats
-            // every key, and it must never outlive the panel it belongs to.
-            if (!UIRoot::IsBoardLive()) g_capDev = -1;
         }
         // ★★The brush advances BEFORE the "nothing is moving" early-out. It used
         // to sit after it, so the stroke could only ever be laid down while the
