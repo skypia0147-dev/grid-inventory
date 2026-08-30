@@ -13611,7 +13611,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         // not a merge: swap. The cells exchange positions and
                         // the occupant comes to the cursor.
                         const auto occ = sd;   // copy: reset() invalidates it
-                        LootBarter::SwapHeldCellWith(occ.occSpotKey);
+                        LootBarter::SwapHeldCellWith(occ.occSpotKey, occ.col,
+                                                     occ.row, a_held.rot);
                         if (g_sound) g_sound(a_held.obj, false);
                         g_held.reset();
                         // GI24: the displaced occupant keeps its OWN identity
@@ -14087,7 +14088,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
         bool StackFragStore(Held& a_held)
         {
-            if (!LootBarter::PartnerHasRoomFor(a_held.obj, a_held.count)) {
+            // ★The aim is read first here too -- a fragment can land on an
+            // occupant just as a whole tile can, and the square that occupant
+            // is about to give up counts as room. (Same note as WholeStore.)
+            const auto sdRoom = LootBarter::QueryStoreDrop();
+            if (!LootBarter::PartnerHasRoomFor(a_held.obj, a_held.count, a_held.rot,
+                                               sdRoom.occ ? sdRoom.occSpotKey
+                                                          : std::string{})) {
                 Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));   // (1.3.3)
                 return true;   // the fragment keeps riding the cursor
             }
@@ -14099,7 +14106,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             const auto sd = LootBarter::QueryStoreDrop();
             LootBarter::RequestStore(a_held.obj, a_held.count,
                                      HeldUidOf(a_held.key, a_held.uid), a_held.sig,
-                                     a_held.fav, -1, a_held.key);   // (3) store
+                                     a_held.fav, -1, a_held.key,
+                                     a_held.rot);   // (3) store
             if (sd.onCell && sd.freeSpot) {
                 LootBarter::PlaceStoredCell(a_held.obj, a_held.count,
                                             sd.col, sd.row, a_held.rot,
@@ -14689,11 +14697,19 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             }
             // (no quest guard: storing CHANGES CONTAINERS -- see PoolIsQuest)
             bool queued = false;   // O-2: did anything actually leave?
-            if (!LootBarter::PartnerHasRoomFor(a_held.obj, a_held.count)) {
+            // ★★ASKED BEFORE THE ROOM TEST, because a SWAP changes the answer.
+            // The occupant leaves as the carry arrives, so its square is part
+            // of the room available -- and measuring with it still in place
+            // refused trades the pack had space for (reported: a 1x2 sitting in
+            // a 2x3 hole, traded for a 2x3, called full).
+            // ★A pure query -- mouse position against the drawn board -- so
+            // asking it earlier costs nothing and changes nothing.
+            const auto sd = LootBarter::QueryStoreDrop();   // F7 (dead outside kLoot/kSteal)
+            if (!LootBarter::PartnerHasRoomFor(a_held.obj, a_held.count, a_held.rot,
+                                               sd.occ ? sd.occSpotKey : std::string{})) {
                 // (1.3.3) a follower's pack is 10 x 8 -- keep carrying
                 Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
             } else if (!(GoldCoins::IsCoinForm(fid) && !GoldCoins::IsPouch(fid))) {
-                const auto sd = LootBarter::QueryStoreDrop();   // F7 (dead outside kLoot/kSteal)
                 {
                     // ★(1.5.x stack flow) NO QUANTITY WINDOW, AND THE STACK
                     // INHERITS THE SINGLE UNIT'S MANNERS.
@@ -14714,7 +14730,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // the cursor, which is what shift+left split is for.
                     LootBarter::RequestStore(a_held.obj, a_held.count,
                                              HeldUidOf(a_held.key, a_held.uid), a_held.sig,
-                                             a_held.fav, a_held.xlIdx, a_held.key);
+                                             a_held.fav, a_held.xlIdx, a_held.key,
+                                             a_held.rot);
                     NotePendingRemove(a_held.obj, a_held.key, a_held.count, a_held.xlIdx);
                     queued = true;   // O-2: this tile really is leaving
                     if (a_held.isBag) {
@@ -14741,8 +14758,19 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             // rule 4: swap — the stored item takes the
                             // occupant's square, the occupant rides the cursor
                             const auto occ = sd;   // copy: reset invalidates it
+                            // ★★THE SQUARE THE PLAYER AIMED AT, not the
+                            // occupant's anchor. "The stored item takes the
+                            // occupant's square" is the same statement only
+                            // while the two are the same SIZE -- drop a 2x1 on
+                            // the bottom of a 2x4 and the occupant's anchor is
+                            // four rows up, so the item jumped to the top of
+                            // something it was carefully placed under.
+                            // ★Safe by construction: a swap is EXACTLY ONE
+                            // blocker, so every other square under the aimed
+                            // footprint was already free, and the one that was
+                            // not is the occupant now leaving.
                             LootBarter::PlaceStoredCell(a_held.obj, a_held.count,
-                                occ.occCol, occ.occRow, a_held.rot,
+                                occ.col, occ.row, a_held.rot,
                                 HeldUidOf(a_held.key, a_held.uid), HeldInstanceSig());
                             g_held.reset();
                             // GI24: same as the rearrange swap — the occupant

@@ -184,6 +184,22 @@ namespace FUI::LootBarter
             int seenAt = 0;
         };
         std::map<std::string, InUnits>        g_in;
+
+        // ★★★THE ANGLE OUTLIVES THE PROMISE, and it has to.
+        //
+        // g_in is retired the instant the engine confirms the move -- ClearIn
+        // runs inside ProcessTransfers, right after RemoveItem. The reconcile
+        // that mints a cell for those units runs AFTER that, so by the time
+        // there is something to write an angle on, the record holding it is
+        // already gone. Keeping the angle inside the promise looked right and
+        // measured wrong: a turned item stored without an aimed square still
+        // came to rest standing.
+        //
+        // So it lives here instead, keyed the same way, and is taken by the
+        // mint rather than by the confirmation. Latest wins when two stores of
+        // one pool are in flight: one number cannot answer for both, and the
+        // later drop is the more recent statement of intent.
+        std::map<std::string, int>            g_inRot;
         std::chrono::steady_clock::time_point g_inWhen{};
 
         // How many of a_obj a reference is holding right now.
@@ -199,7 +215,7 @@ namespace FUI::LootBarter
         }
 
         void NoteIn(RE::TESBoundObject* a_obj, std::uint16_t a_uid, std::uint16_t a_sig,
-                    int a_count)
+                    int a_count, int a_rot = 0)
         {
             if (!a_obj || a_count <= 0) return;
             const auto k = OutKey(a_obj->GetFormID(), a_uid, a_sig);
@@ -209,6 +225,10 @@ namespace FUI::LootBarter
             e.uid = a_uid;
             e.sig = a_sig;
             e.count += a_count;
+            // ★Kept beside the promise, not inside it -- see g_inRot. Only a
+            // real turn is recorded: an upright store has nothing to say, and
+            // writing 0 would overwrite a turn still owed on the same pool.
+            if ((a_rot & 3) != 0) g_inRot[k] = a_rot & 3;
             // ★Only a FRESH promise takes a baseline: a second store while the
             // first is still in flight is more units owed against the same
             // starting point, not a new starting point.
@@ -230,7 +250,10 @@ namespace FUI::LootBarter
         void SweepIn()
         {
             if (g_in.empty()) return;
-            if (std::chrono::steady_clock::now() - g_inWhen > kOutTTL) g_in.clear();
+            if (std::chrono::steady_clock::now() - g_inWhen > kOutTTL) {
+                g_in.clear();
+                g_inRot.clear();   // the angles go with the promises
+            }
         }
 
         // Vanilla speech XP for a barter transaction: the skill-use points are
@@ -1104,6 +1127,7 @@ namespace FUI::LootBarter
         g_slider.active = false;
         g_confirm.active = false;
         g_in.clear();            // promises whose transfers were just flushed
+        g_inRot.clear();         // ...and the angles they were carrying
         // ★A merchant's board lives exactly as long as the visit. It is a real
         // board while the window is open -- one code path with a chest -- and
         // it is never written to a save, because a shop restocks and its shelf
@@ -1331,14 +1355,15 @@ namespace FUI::LootBarter
 
     void RequestStore(RE::TESBoundObject* a_obj, int a_count,
                       std::uint16_t a_uid, std::uint16_t a_sig, bool a_fav,
-                      int a_xlIdx, const std::string& a_srcKey)
+                      int a_xlIdx, const std::string& a_srcKey, int a_rot)
     {
         if (a_obj && a_count > 0) {
             g_xfer.push_back({ XferReq::kStore, a_obj, a_count, 0, 0, a_srcKey,
                                a_uid, a_sig, false, a_fav, a_xlIdx });
             // ★the units are the container's from this instant, whatever the
-            // engine has got round to (see g_in)
-            NoteIn(a_obj, a_uid, a_sig, a_count);
+            // engine has got round to (see g_in) -- and at the angle they were
+            // carried at, which is the only moment that knows it
+            NoteIn(a_obj, a_uid, a_sig, a_count, a_rot);
             // ★B4-3b: the ledger's books open when the PLAYER commits -- the
             // same moment the removal counters arm (NotePendingRemove rides
             // beside every caller of this function). Submitting from the
@@ -2236,6 +2261,7 @@ namespace FUI::LootBarter
                     g_outPool.clear();
                     g_outForm.clear();
                     g_in.clear();   // ...and nothing was promised to them either
+                    g_inRot.clear();
                     // B4-3c: the counter drains that lived here went with the
                     // counters. r rides in g_xfer too -- its own ledger entry
                     // cancels with the queue's in one sweep.
@@ -4478,8 +4504,13 @@ namespace
             int                 xlIdx = -1;
             bool                worn = false;
             int                 count = 0;
+            // ★w/h are the UPRIGHT footprint from the def; rot is how the cell
+            // minted for these units should lie. They are kept apart on
+            // purpose -- swapping the two numbers here would leave nothing to
+            // tell a turned 1x2 from an upright 2x1.
             int                 w = 1;
             int                 h = 1;
+            int                 rot = 0;
         };
 
         void ReconcileContainer(ContLayout& a_cl, RE::TESObjectREFR* a_source,
@@ -4650,8 +4681,28 @@ namespace
                         nc.xlIdx = sp.xlIdx;
                         nc.worn = sp.worn;
                         nc.count = take;
-                        nc.w = sp.w;
-                        nc.h = sp.h;
+                        // ★★LAY IT THE WAY IT WAS CARRIED. This minted every
+                        // cell upright, so a turned item stored without an
+                        // aimed square came to rest standing -- the turn
+                        // survived the drop, the queue and the engine, and died
+                        // here. Same arithmetic as PlaceStoredCell, which had
+                        // it right for the aimed case all along.
+                        // ★Taken HERE, at the mint, because this is the first
+                        // moment there is a cell to lay down -- and it is
+                        // consumed, so one turn dresses one cell and a later
+                        // arrival of the same pool starts upright.
+                        int rotWanted = 0;
+                        if (sp.obj) {
+                            const auto rk = OutKey(sp.obj->GetFormID(), sp.uid, sp.sig);
+                            if (const auto ri = g_inRot.find(rk); ri != g_inRot.end()) {
+                                rotWanted = ri->second & 3;
+                                g_inRot.erase(ri);
+                            }
+                        }
+                        const bool turned = (rotWanted & 1) != 0;
+                        nc.rot = rotWanted & 3;
+                        nc.w = turned ? sp.h : sp.w;
+                        nc.h = turned ? sp.w : sp.h;
                         // col/row left at -1: the placement pass first-fits it
                         const std::string k = MintCellKey(a_cl, sp.obj);
                         // ★A bag arriving on the shelf claims the bundle its
@@ -5002,7 +5053,20 @@ namespace
                 } else {
                     it.col = -1;
                     it.row = -1;
-                    if (it.rot != 0) it.SetRot(0);   // stand it up rather than lose it
+                    // ★★★A TAKEN SQUARE IS NOT A REASON TO STAND IT UP. This
+                    // straightened anything that did not fit where it was, and
+                    // pass 2 below then first-fit it upright -- so a turned
+                    // item swapped onto an occupant's square lost its turn on
+                    // the way in. The occupant's anchor is the RIGHT place to
+                    // aim (rule 4), but a 2x2 occupant does not leave a 3x2
+                    // hole, so the aim missed and the turn was blamed for it.
+                    //
+                    // ★The straightening is kept for the one case that needs
+                    // it: turned WIDER THAN THE BOARD, where pass 2's last
+                    // loop grows rows forever and would never find a fit. That
+                    // is "this turn cannot be honoured anywhere", which is a
+                    // different statement from "not here".
+                    if (it.rot != 0 && it.w > cols) it.SetRot(0);
                 }
             }
 
@@ -5013,16 +5077,35 @@ namespace
             // player may add; it never hides what is already inside.
             for (auto& it : cells) {
                 if (companionBoard) {
-                    for (int r = 0; r + it.h <= kCompanionRows && it.col < 0; ++r) {
-                        for (int c = 0; c < cols; ++c) {
-                            if (!fits(c, r, it.w, it.h)) continue;
-                            it.col = c;
-                            it.row = r;
-                            mark(c, r, it.w, it.h);
-                            break;
+                    // ★★TRY IT BOTH WAYS INSIDE THE PACK. The gate that let
+                    // this item in green-lights either orientation
+                    // (PartnerHasRoomFor), so refusing to turn it here breaks
+                    // the promise that gate made: a 2x3 right-clicked into a
+                    // pack with only a 3x2 hole was admitted and then sailed
+                    // past the hole into the growth rows -- or, when the gate
+                    // still asked one way, was refused outright with the hole
+                    // in plain sight. The player board settled this same
+                    // argument the same way; see its "mirror fallback".
+                    for (int pass = 0; pass < 2 && it.col < 0; ++pass) {
+                        if (pass == 1) {
+                            if (it.w == it.h) break;   // nothing to turn
+                            it.SetRot(it.rot ^ 1);     // ...and w/h follow
+                        }
+                        for (int r = 0; r + it.h <= kCompanionRows && it.col < 0; ++r) {
+                            for (int c = 0; c < cols; ++c) {
+                                if (!fits(c, r, it.w, it.h)) continue;
+                                it.col = c;
+                                it.row = r;
+                                mark(c, r, it.w, it.h);
+                                break;
+                            }
                         }
                     }
                     if (it.col >= 0) continue;
+                    // ★Neither way fitted the pack: put the turn back as it was
+                    // before the growth rows take it, so what lands below is
+                    // the shape the player asked for.
+                    if (it.w != it.h) it.SetRot(it.rot ^ 1);
                 }
                 for (int r = companionBoard ? kCompanionRows : 0; it.col < 0; ++r) {
                     for (int c = 0; c < cols; ++c) {
@@ -6045,7 +6128,8 @@ namespace
 
     // ★(1.3.3) reads g_lastCells -- this frame's partner placement -- so it
     // lives down here with the other consumers of it.
-    bool PartnerHasRoomFor(RE::TESBoundObject* a_obj, int a_count)
+    bool PartnerHasRoomFor(RE::TESBoundObject* a_obj, int a_count, int a_rot,
+                           const std::string& a_freeing)
     {
         // only a living follower is bounded; chests, corpses and merchants
         // answer yes as they always have
@@ -6067,11 +6151,21 @@ namespace
         // ...otherwise it needs a free rect inside the 10 x kCompanionRows
         // pack, measured against the board the player is looking at.
         const auto d = Grid::ResolveDef(a_obj);
-        const int w = (std::max)(1, d.w), h = (std::max)(1, d.h);
+        // ★★MEASURED AT THE ANGLE IT IS BEING CARRIED AT. This asked upright,
+        // always, so a dagger the player had turned on its side was tested for
+        // a standing dagger's square -- and answered "the pack is full" with a
+        // row free to lie down in. The last of two turned daggers was refused
+        // exactly this way (reported 2026-08-31).
+        const bool turned = (a_rot & 1) != 0;
+        const int  w = (std::max)(1, turned ? d.h : d.w);
+        const int  h = (std::max)(1, turned ? d.w : d.h);
         const int cols = Grid::kCols;
         std::vector<char> occ(static_cast<std::size_t>(cols) * kCompanionRows, 0);
         for (const auto& c : g_lastCells) {
             if (c.col < 0) continue;
+            // ★The square a swap is handing back counts as FREE -- it is, by
+            // the time the carry needs it. See the header note.
+            if (!a_freeing.empty() && c.spotKey == a_freeing) continue;
             for (int y = 0; y < c.h; ++y) {
                 const int rr = c.row + y;
                 if (rr < 0 || rr >= kCompanionRows) continue;
@@ -6082,20 +6176,35 @@ namespace
                 }
             }
         }
-        for (int r = 0; r + h <= kCompanionRows; ++r) {
-            for (int c = 0; c + w <= cols; ++c) {
-                bool free = true;
-                for (int y = 0; y < h && free; ++y) {
-                    for (int x = 0; x < w; ++x) {
-                        if (occ[static_cast<std::size_t>(r + y) * cols + c + x]) {
-                            free = false;
-                            break;
+        const auto fits = [&](int a_w, int a_h) {
+            for (int r = 0; r + a_h <= kCompanionRows; ++r) {
+                for (int c = 0; c + a_w <= cols; ++c) {
+                    bool free = true;
+                    for (int y = 0; y < a_h && free; ++y) {
+                        for (int x = 0; x < a_w; ++x) {
+                            if (occ[static_cast<std::size_t>(r + y) * cols + c + x]) {
+                                free = false;
+                                break;
+                            }
                         }
                     }
+                    if (free) return true;
                 }
-                if (free) return true;
             }
-        }
+            return false;
+        };
+        if (fits(w, h)) return true;
+        // ★★★AND THE OTHER WAY ROUND, which is the promise the player board
+        // already makes. Its capacity gate green-lights a pickup by trying BOTH
+        // orientations, and its landing turns the tile to honour that (see
+        // Grid.cpp's "the mirror fallback"). The shelf gate only ever asked one
+        // way, so a 2x3 right-clicked into a pack with a 3x2 hole was told
+        // there was no room -- an answer the player could see was wrong,
+        // because they could see the hole. (Reported 2026-08-31.)
+        //
+        // ★A square footprint has no other way round; asking twice would just
+        // cost the same walk again.
+        if (w != h) return fits(h, w);
         return false;
     }
 
@@ -6187,15 +6296,33 @@ namespace
         return true;
     }
 
-    bool SwapHeldCellWith(const std::string& a_otherKey)
+    bool SwapHeldCellWith(const std::string& a_otherKey, int a_col, int a_row,
+                          int a_rot)
     {
         auto* cl = BoardFor();
         if (!cl || g_actingSpot.empty() || a_otherKey == g_actingSpot) return false;
         const auto mine = cl->cells.find(g_actingSpot);
         const auto other = cl->cells.find(a_otherKey);
         if (mine == cl->cells.end() || other == cl->cells.end()) return false;
-        std::swap(mine->second.col, other->second.col);
-        std::swap(mine->second.row, other->second.row);
+        // ★The occupant inherits the square the carry came from -- it is about
+        // to be lifted onto the cursor anyway, so this is bookkeeping, but a
+        // cell with nowhere to be is a cell the reconcile will move for us.
+        const int wasCol = mine->second.col;
+        const int wasRow = mine->second.row;
+        other->second.col = wasCol;
+        other->second.row = wasRow;
+        // ★...and the carry lands where it was AIMED, at the angle it is being
+        // held at. Both were missing: the old swap traded the two anchors (right
+        // only for equal sizes) and never touched the turn at all, so a 1x2
+        // turned on its side and dropped low on a 2x4 stood back up at the top.
+        // (ContCell keeps the footprint as plain numbers -- the parity change
+        // is what swaps them, the same arithmetic PlaceStoredCell uses)
+        if (((mine->second.rot ^ a_rot) & 1) != 0) {
+            std::swap(mine->second.w, mine->second.h);
+        }
+        mine->second.rot = a_rot & 3;
+        mine->second.col = a_col;
+        mine->second.row = a_row;
         g_actingSpot.clear();
         return true;
     }
@@ -6667,6 +6794,7 @@ namespace
         g_contLayouts.clear();
         g_barterBoard.cells.clear();   // a shop shelf never outlives its visit
         g_in.clear();                  // promises from the previous save
+        g_inRot.clear();
         g_contStamp = 0;
         g_pendingBundles.clear();   // (1.3.0-D) bundles from the previous save
         g_incomingBundles.clear();

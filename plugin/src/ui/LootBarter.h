@@ -95,10 +95,19 @@ namespace FUI::LootBarter
     // (see XferReq::xlIdx). -1 = unknown, historical behaviour.
     // a_srcKey: the tile the units leave (B3-b) -- rides the ledger request so
     // the engine's confirmation retires THAT cell and no other. "" = fragment.
+    // ★★★a_rot: THE ANGLE THE PLAYER WAS CARRYING IT AT, and it has to travel
+    // with the request. PlaceStoredCell already knew how to lay a cell on its
+    // side, but that only fires when the drop lands on a square the board can
+    // give. When it does not -- an aimed footprint overlapping two items, a
+    // right-click store, take-all -- the units arrive with nothing said about
+    // them and the reconcile mints a fresh cell UPRIGHT. So a turned dagger
+    // stored itself standing, and the turn the player made was thrown away
+    // somewhere between the drop and the shelf.
     void RequestStore(RE::TESBoundObject* a_obj, int a_count,
                       std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
                       bool a_fav = false, int a_xlIdx = -1,
-                      const std::string& a_srcKey = {});   // player -> partner (GI36: a_fav)
+                      const std::string& a_srcKey = {},
+                      int a_rot = 0);   // player -> partner (GI36: a_fav)
     // barter (Phase 5): item move + gold settlement + speech xp, all on Tick.
     // a_baseTotal = total BASE value of the goods — vanilla speech XP points
     // (the haggled price doesn't matter for XP).
@@ -271,7 +280,17 @@ namespace FUI::LootBarter
     // merchants are unbounded and always answer true; a companion answers
     // from THIS frame's placement (partial stacks count as room). Every
     // player -> partner store asks before it queues.
-    [[nodiscard]] bool PartnerHasRoomFor(RE::TESBoundObject* a_obj, int a_count = 1);
+    // ★a_rot: measured at the angle it is being CARRIED at. Asking upright for
+    // an item the player has turned on its side is how "the pack is full"
+    // came back for a dagger lying down with a row free to lie down in.
+    // ★★a_freeing: the spot a SWAP is about to empty. A swap is not an
+    // addition -- the occupant leaves as the carry arrives -- so measuring the
+    // pack with that occupant still in it asks the wrong question. Put a 1x2
+    // into a 2x3 hole, then drop a 2x3 on the 1x2 to trade them, and the answer
+    // was "the pack is full" about a square the swap was going to hand back.
+    [[nodiscard]] bool PartnerHasRoomFor(RE::TESBoundObject* a_obj, int a_count = 1,
+                                         int a_rot = 0,
+                                         const std::string& a_freeing = {});
 
     // Quantity slider (Shift+right-click on a stack). Opens a small popup to
     // pick how many to move; confirm queues the transfer.
@@ -402,7 +421,13 @@ namespace FUI::LootBarter
     bool MoveHeldCell(int a_col, int a_row, int a_rot);
 
     // ...or lands on another cell, and the two trade places.
-    bool SwapHeldCellWith(const std::string& a_otherKey);
+    // ★★a_col/a_row/a_rot: where the carry was AIMED and how it is being held.
+    // Exchanging the two anchors was only ever right for two cells of the same
+    // size, and it never carried the turn at all -- so a rearrange inside a
+    // chest stood the item back up and threw it to the occupant's corner.
+    // The occupant takes the carry's old square; the carry takes the aim.
+    bool SwapHeldCellWith(const std::string& a_otherKey, int a_col, int a_row,
+                          int a_rot);
 
     // ...or lands on a cell holding the same thing, and they become one up to
     // the cap. Returns what would not fit (0 = all of it went, -1 = not a
