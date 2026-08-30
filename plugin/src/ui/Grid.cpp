@@ -14165,9 +14165,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // test said "same unit" (uid 0, sig 0, same form, same hand), the
             // displaced one was never handed to the cursor, and it fell back into
             // the pack -- taking the parked star's slot on the way.
-            const bool swapping = worn && !(worn == a_held.obj && wsig == a_held.sig &&
-                                            a_held.fromDoll && !a_held.swappedOut &&
-                                            a_held.hand == wornHand);
+            // ★★★A MERGE DISPLACES NOTHING, so nothing may ride back out.
+            // Dropping arrows on a quiver of the same kind ADDS to it -- the
+            // slot had an occupant, so every test below said "swap", and the
+            // swap handed the cursor an occupant that had not gone anywhere.
+            // A phantom stack followed the mouse for the rest of the session
+            // (user report, straight after the merge landed).
+            // ★The room is asked of Equip::AmmoMergeRoom, which is also what
+            // the equip itself asks. Two copies of this rule could disagree
+            // about whether a given drop merges or replaces, and either answer
+            // is a bug on one side of the pair -- a full quiver DOES replace,
+            // and that swap is correct and stays.
+            const bool ammoMerge = worn && worn == a_held.obj &&
+                                   Equip::AmmoMergeRoom(a_held.obj) > 0;
+            const bool swapping = !ammoMerge && worn &&
+                                  !(worn == a_held.obj && wsig == a_held.sig &&
+                                    a_held.fromDoll && !a_held.swappedOut &&
+                                    a_held.hand == wornHand);
 
             // C6: dropped on an equip slot — the gate decides; a reject
             // snaps the item back (its layout entry is intact).

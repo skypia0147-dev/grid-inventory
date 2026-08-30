@@ -1020,6 +1020,30 @@ namespace FUI::Equip
                    : 1;
     }
 
+    int AmmoMergeRoom(RE::TESBoundObject* a_obj)
+    {
+        if (!a_obj || !a_obj->Is(RE::FormType::Ammo)) return 0;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return 0;   // 원칙 4
+        int worn = 0;
+        if (auto* entry = Grid::LiveEntryOf(player, a_obj);
+            entry && entry->extraLists) {
+            for (auto* xl : *entry->extraLists) {
+                if (!xl) continue;
+                if (xl->HasType<RE::ExtraWorn>() || xl->HasType<RE::ExtraWornLeft>()) {
+                    worn += (std::max)(1, static_cast<int>(xl->GetCount()));
+                }
+            }
+        }
+        // ★Nothing on the back is not a merge either -- there is no quiver to
+        // add to, so the tile simply goes on and the board's ordinary
+        // "the slot was empty" path is right about it.
+        if (worn <= 0) return 0;
+        // ★StackCap, never a literal: it is EffectiveCap underneath, so an
+        // item tuned to a different stack size in EDIT is respected.
+        return (std::max)(0, Grid::StackCap(a_obj) - worn);
+    }
+
     RE::TESAmmo* EquippedAmmo(RE::Actor* a_actor)
     {
         if (!a_actor) return nullptr;
@@ -1245,14 +1269,46 @@ namespace FUI::Equip
                 // GI53: name the HAND too (worn-unit identity needs it), and
                 // hand the engine the left-hand slot so identical copies in
                 // both hands cannot resolve to the wrong side.
-                auto* wornList = Grid::WornExtraMatching(Grid::LiveEntryOf(player, obj),
-                                                         act.uid, act.sig, act.hand);
                 const RE::BGSEquipSlot* unSlot = act.hand == 2
                     ? RE::TESForm::LookupByID<RE::BGSEquipSlot>(0x13F43)
                     : nullptr;
-                // ★The same quantity rule as equipping: a quiver comes off
-                // whole. Taking one arrow back per click would leave the rest
-                // worn with no tile to click.
+                // ★★★A QUIVER COMES OFF WHOLE, AND IT IS NOW MADE OF SEVERAL
+                // LISTS. Merging a tile into the quiver leaves the engine
+                // holding TWO worn lists of the same arrow (that is what a
+                // merge is -- the engine marks the second list worn as well),
+                // and naming one of them took fifty off and left fifty on. Two
+                // clicks to unequip one quiver, which is not what the doll is
+                // showing: it sums the worn lists into a single number.
+                //
+                // ★Collected BEFORE any of them is unequipped -- the first call
+                // rewrites the entry, and a walk still holding iterators into
+                // it is walking freed memory. The same lesson as the transfer
+                // shield in LootBarter.
+                if (obj->Is(RE::FormType::Ammo)) {
+                    std::vector<std::pair<RE::ExtraDataList*, int>> all;
+                    if (auto* entry = Grid::LiveEntryOf(player, obj);
+                        entry && entry->extraLists) {
+                        for (auto* xl : *entry->extraLists) {
+                            if (!xl) continue;
+                            if (xl->HasType<RE::ExtraWorn>() ||
+                                xl->HasType<RE::ExtraWornLeft>()) {
+                                all.push_back({ xl,
+                                    (std::max)(1, static_cast<int>(xl->GetCount())) });
+                            }
+                        }
+                    }
+                    int took = 0;
+                    for (auto& [xl, n] : all) {
+                        em->UnequipObject(player, obj, xl, static_cast<std::uint32_t>(n),
+                                          unSlot, false, false, true, true);
+                        took += n;
+                    }
+                    SKSE::log::info("[EQUIP] unequip {} x{} ({} worn list(s))",
+                                    obj->GetName(), took, all.size());
+                    continue;
+                }
+                auto* wornList = Grid::WornExtraMatching(Grid::LiveEntryOf(player, obj),
+                                                         act.uid, act.sig, act.hand);
                 em->UnequipObject(player, obj, wornList, act.count, unSlot,
                     false, false, true, true);
                 SKSE::log::info("[EQUIP] unequip {} x{}", obj->GetName(), act.count);
@@ -1388,27 +1444,69 @@ namespace FUI::Equip
             // ★Before srcList is resolved, never after — unequipping rewrites
             // the entry's lists, and a pointer taken across that is a pointer
             // to something else.
+            // ★★★A QUIVER FILLS; IT DOES NOT GET SWAPPED FOR ANOTHER ONE.
+            //
+            // Reported: fifty on the back, drop fifty more, and instead of a
+            // hundred you get the new fifty on and the old fifty in the pack.
+            // The note above is why -- every same-form equip took the whole
+            // quiver off first, "one tileful on the back at a time, like every
+            // other slot". Ammo is not like every other slot: a hundred arrows
+            // are a hundred arrows wherever they were standing a moment ago.
+            //
+            // ★THE REASON FOR THE SWAP HAS EXPIRED. It was there because both
+            // tiles then read as VANISHED -- worn units leave the board, and at
+            // the time the doll could not show what was really on the back
+            // (it printed the whole stock, so a quiver of 100 with 100 spare
+            // claimed 200). The doll sums the WORN LISTS now, so two worn lists
+            // read as one quiver of a hundred, which is the truth. Nothing is
+            // hidden by letting them both be worn.
+            //
+            // ★Same form only, which is what this block always was
+            // (LiveEntryOf is asked about the INCOMING form). Steel arrows over
+            // iron ones still swap, by the engine's own conflict pass -- a
+            // quiver holds one kind.
+            //
+            // ★The cap is Grid::StackCap, never a literal: it is EffectiveCap
+            // underneath, so an item tuned to another stack size in EDIT is
+            // respected. Steel Arrow ships with stack:100 written out.
+            int equipCount = act.count;
             if (obj->Is(RE::FormType::Ammo)) {
+                int worn = 0;
                 std::vector<RE::ExtraDataList*> wornNow;
                 if (auto* entry = Grid::LiveEntryOf(player, obj);
                     entry && entry->extraLists) {
                     for (auto* xl : *entry->extraLists) {
-                        if (xl && xl->HasType<RE::ExtraWorn>()) wornNow.push_back(xl);
+                        if (!xl) continue;
+                        if (xl->HasType<RE::ExtraWorn>() ||
+                            xl->HasType<RE::ExtraWornLeft>()) {
+                            worn += (std::max)(1, static_cast<int>(xl->GetCount()));
+                            wornNow.push_back(xl);
+                        }
                     }
                 }
-                for (auto* xl : wornNow) {
-                    em->UnequipObject(player, obj, xl, (std::max)(1, xl->GetCount()),
-                                      nullptr, false, false, false, true);
-                    SKSE::log::info("[EQUIP] quiver swap: unequip {} x{}",
-                                    obj->GetName(), (std::max)(1, xl->GetCount()));
+                const int cap = Grid::StackCap(obj);
+                // ★ONE rule, asked here and by the board -- see AmmoMergeRoom.
+                const int room = AmmoMergeRoom(obj);
+                if (room <= 0) {
+                    // ★★A FULL QUIVER KEEPS THE OLD BEHAVIOUR, deliberately.
+                    // There is no room to merge into, so the click can only
+                    // mean "carry this one instead" -- and doing it the old way
+                    // avoids refusing the action outright, which would leave
+                    // the request's board-side suppression waiting for an equip
+                    // that never came.
+                    for (auto* xl : wornNow) {
+                        em->UnequipObject(player, obj, xl,
+                                          (std::max)(1, xl->GetCount()),
+                                          nullptr, false, false, false, true);
+                    }
+                    SKSE::log::info("[EQUIP] quiver full ({} of {}) -- '{}' "
+                                    "replaces it", worn, cap, obj->GetName());
+                } else {
+                    if (equipCount > room) equipCount = room;
+                    SKSE::log::info("[EQUIP] quiver merge '{}': worn {} + asked "
+                                    "{} -> equipping {} (cap {})",
+                                    obj->GetName(), worn, act.count, equipCount, cap);
                 }
-                // ★A probe lived here and has been retired. It asked whether
-                // UnequipObject clears the worn list where it is called or only
-                // later, because LootBarter's transfer shield turns on the
-                // answer. Measured over four trials: immediate, every time
-                // ("0 worn list(s) still present"). The shield is built on that
-                // and its tripwire re-checks it on every transfer, so the
-                // question no longer needs asking on every ammo click.
             }
 
             // D4: a one-hander (or staff) dropped on the shield slot = left hand
@@ -1530,8 +1628,29 @@ namespace FUI::Equip
                     [&](RE::TESBoundObject& o) { return &o == obj; });
                 for (auto& [o2, d2] : inv) before = d2.first;
             }
-            em->EquipObject(player, obj, srcList, act.count, slot,
+            // ★equipCount, not act.count: a quiver merge clamps it to the room
+            // left on the back (see the ammo block above). Identical to
+            // act.count for everything else.
+            em->EquipObject(player, obj, srcList, equipCount, slot,
                             false, false, true, true);
+            // ★★DID A PARTIAL EQUIP ACTUALLY SPLIT THE LIST? Asking rather than
+            // assuming: equipping 20 units out of a 50 tile is a shape nothing
+            // here has needed before, and "the engine wore all fifty" and "the
+            // engine wore twenty" are told apart only by counting afterwards.
+            if (obj->Is(RE::FormType::Ammo)) {
+                int after = 0;
+                if (auto* entry = Grid::LiveEntryOf(player, obj);
+                    entry && entry->extraLists) {
+                    for (auto* xl : *entry->extraLists) {
+                        if (xl && (xl->HasType<RE::ExtraWorn>() ||
+                                   xl->HasType<RE::ExtraWornLeft>())) {
+                            after += (std::max)(1, static_cast<int>(xl->GetCount()));
+                        }
+                    }
+                }
+                SKSE::log::info("[EQUIP] quiver now holds {} (asked for {})",
+                                after, equipCount);
+            }
 
             // Rule 13: equipping forgets the cell, exactly like selling or
             // storing. A stack that stays visible keeps its tile -- only the

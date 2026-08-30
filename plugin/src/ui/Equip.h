@@ -35,6 +35,19 @@ namespace FUI::Equip
     // Everything else stays at one: a tile of ten potions is ten drinks.
     [[nodiscard]] int EquipCountFor(RE::TESBoundObject* a_obj, int a_tileCount);
 
+    // ★★★HOW MANY MORE ARROWS THE QUIVER WILL TAKE. 0 means it will not merge
+    // -- either this is not ammo, or the back is already full and the next
+    // tile REPLACES what is up there.
+    //
+    // ★It lives here, in one place, because TWO sides ask it and they must not
+    // answer differently. The equip itself asks so it knows how much to put on;
+    // the board asks so it knows whether anything was DISPLACED, and a swap
+    // hands the displaced unit back to the cursor. A merge displaces nothing,
+    // so a board that guessed "swap" left a phantom riding the cursor -- which
+    // is exactly what a second copy of this rule, drifting from the first,
+    // would put back.
+    [[nodiscard]] int AmmoMergeRoom(RE::TESBoundObject* a_obj);
+
     // ★★USING is not WEARING, and only the first has a type gate that makes
     // sense. EquipItem's whitelist answers "will a doll slot take this?" —
     // asking it "does clicking this do anything?" made us answer ON BEHALF OF
