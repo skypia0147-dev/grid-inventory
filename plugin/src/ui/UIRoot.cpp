@@ -356,7 +356,18 @@ namespace FUI::UIRoot
             // nothing to type into, and ToUnicodeEx is stateful (dead keys) --
             // calling it for every key at all times would leave half-composed
             // accents lying around for the next field that opens.
-            if (!a_io.WantTextInput) {
+            //
+            // ★And only while the board actually owns the keyboard. This is the
+            // SECOND road for characters, so the guard the thunk carries has to
+            // sit on it too -- "blocking one road and calling it done is the
+            // whole bug" is written thirty lines up, about this very pair. With
+            // the console up, or somebody else's overlay holding us suppressed,
+            // WantTextInput can still read true from the frame before, and an
+            // unguarded road would put the player's console command into our
+            // search box.
+            auto* ui = RE::UI::GetSingleton();
+            if (!a_io.WantTextInput || !IsBoardLive() ||
+                !ui || ui->IsMenuOpen(RE::Console::MENU_NAME)) {
                 for (auto& d : s_down) d = false;
                 return;
             }
@@ -368,6 +379,33 @@ namespace FUI::UIRoot
             const unsigned chars = g_wmCharSeen.load(std::memory_order_relaxed);
             const bool     wmAlive = chars != s_lastChars;
             s_lastChars = chars;
+
+            // ★★A WM_CHAR JUST ARRIVED, AND THAT HAS TO BE ACTED ON.
+            // The build that only ever counted upward is why a reporter saw
+            // every letter typed twice. Two things follow from one arrival:
+            //
+            //   1. The tally goes back to zero. The latch below reasons "one
+            //      frame could be a race; three cannot" -- true of three IN A
+            //      ROW, and this counter never reset, so it was three IN A
+            //      LIFETIME. Races an hour apart added up on a machine whose
+            //      WM_CHAR was never broken for a moment.
+            //   2. The fallback lets go. It is the second road; it exists only
+            //      while the first is dead, and the first just spoke. Both alive
+            //      means both deliver, and ImGui cannot tell that the two
+            //      characters were one keystroke.
+            //
+            // Order matters: this runs BEFORE the sweep, so on the frame the
+            // window road comes back it is already the only road.
+            if (wmAlive) {
+                s_contradictions = 0;
+                if (g_kbFallback) {
+                    g_kbFallback = false;
+                    SKSE::log::info(
+                        "[UI] input: WM_CHAR is arriving again (chars {}). Polled "
+                        "characters off -- the window road has the keyboard.",
+                        chars);
+                }
+            }
 
             BYTE ks[256] = {};
             if (g_kbFallback) {
@@ -386,13 +424,26 @@ namespace FUI::UIRoot
                 s_down[vk] = now;
                 if (!now) continue;
 
+                // ★A SHORTCUT IS NOT A CHARACTER, and it must not be judged as
+                // one. This sat below, inside the fallback branch only, so the
+                // latch above it saw every shortcut as evidence: Ctrl+A and
+                // Ctrl+V in the search box arrive as control codes, and ANY Alt
+                // combination arrives as WM_SYSCHAR -- which the thunk does not
+                // count at all, making each one a guaranteed "contradiction".
+                // Selecting-all and pasting a search term could latch the
+                // doubling road by itself. It belongs above BOTH branches.
+                if (ctrl || alt) continue;
+
                 if (!g_kbFallback) {
                     // ★THE LATCH, and it is a CONTRADICTION rather than a
                     // timeout: a printable key went down while a text field was
                     // focused, and no WM_CHAR arrived for it. One such frame
-                    // could be a race; three cannot. On a healthy setup this can
-                    // never fire, so the road stays inert -- one sweep a frame
-                    // while typing, and no events at all.
+                    // could be a race -- GetAsyncKeyState is true the instant the
+                    // key is physically down, while the count above only rises
+                    // when the game's message pump dispatches, so a key pressed
+                    // after this frame's pump reads as a contradiction and is
+                    // answered next frame. Three CONSECUTIVE cannot be that; the
+                    // reset above is what makes the word consecutive true.
                     if (!wmAlive && ++s_contradictions >= 3) {
                         g_kbFallback = true;
                         SKSE::log::warn(
@@ -407,7 +458,6 @@ namespace FUI::UIRoot
                     continue;
                 }
 
-                if (ctrl || alt) continue;   // a shortcut, not a character
                 const UINT sc = MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC);
                 WCHAR     buf[8] = {};
                 const int n = ToUnicodeEx(static_cast<UINT>(vk), sc, ks, buf,
