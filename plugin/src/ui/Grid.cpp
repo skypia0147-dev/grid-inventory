@@ -13303,6 +13303,39 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 g_held.reset();
             }
         }
+
+        // ★★A FULL PURSE EXCHANGES, it does not silently absorb nothing.
+        //
+        // The same rule the stack tiles just got, and gold needed saying
+        // separately because it never reaches that decision -- coins have their
+        // own drop route. Dropped on a purse already at the cap, MergeGoldInto
+        // sums, clamps back to exactly what was there, and hands the whole
+        // carried value back to the cursor: the tile keeps its number, the
+        // cursor keeps its number, and the click did nothing a player can see.
+        //
+        // ★Same primitives as the merge above, values exchanged instead of
+        // summed -- a coin tile's FORM follows its value band, so "swap" here
+        // means re-minting both sides, which is exactly what the leftover path
+        // already does.
+        void SwapGoldWith(Held& a_held, const std::string& a_tgtKey, int a_tgtValue,
+                          const LayoutEntry& a_fallbackPos)
+        {
+            LayoutEntry pos = a_fallbackPos;
+            if (auto li = g_layout.find(a_tgtKey); li != g_layout.end()) pos = li->second;
+            const int mine = a_held.coinValue;
+            g_layout.erase(a_tgtKey);
+            g_layout.erase(a_held.key);
+            PlacePin(mine, pos.col, pos.row, pos.bag);
+            if (g_sound) g_sound(a_held.obj, false);
+            auto* tf = GoldCoins::CoinForTier(GoldCoins::BandTier(a_tgtValue));
+            const std::string tk = NextTileKey(FormKey(tf));
+            SetCoinRecord(tk, a_tgtValue);
+            a_held.key = tk;
+            a_held.obj = tf;
+            a_held.coinValue = a_tgtValue;
+            a_held.preSplit = true;   // fragment rules from here on
+            a_held.mask = MaskOf(g_resolver ? g_resolver(tf) : GridDef{});
+        }
     }
 
     // ================= Phase 3: drop-target dispatch table =================
@@ -13877,8 +13910,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             } else if (tgtGold) {
                 // (2) merge onto ANY gold tile (pin or auto) — the value
                 // lands as a pinned purse at the target's cell
-                MergeGoldInto(a_held, tgt.key, tgt.coinValue,
-                    { g_target.col, g_target.row, v.bagKey, 1 });
+                // ★A full target exchanges instead: see SwapGoldWith. The pin
+                // route needs this as much as the whole-tile one -- it is the
+                // same purse and the same cap.
+                if (tgt.coinValue >= GoldCoins::kCoinCap) {
+                    SwapGoldWith(a_held, tgt.key, tgt.coinValue,
+                        { g_target.col, g_target.row, v.bagKey, 1 });
+                } else {
+                    MergeGoldInto(a_held, tgt.key, tgt.coinValue,
+                        { g_target.col, g_target.row, v.bagKey, 1 });
+                }
             } else {
                 // (2d) non-gold item -> SWAP (same rule as a whole tile):
                 // the pin anchors at the drop cell, the displaced item
@@ -14363,8 +14404,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // C4-G: a WHOLE gold tile dropped on another gold tile
                     // merges — shared MergeGoldInto (pouch mechanism,
                     // remainder rides the cursor as a pin)
-                    MergeGoldInto(a_held, disp.key, disp.coinValue,
-                        { g_target.col, g_target.row, v.bagKey, 1 });
+                    // ★...unless the target is already full, where a merge
+                    // absorbs nothing and the drop reads as ignored. See
+                    // SwapGoldWith.
+                    if (disp.coinValue >= GoldCoins::kCoinCap) {
+                        SwapGoldWith(a_held, disp.key, disp.coinValue,
+                            { g_target.col, g_target.row, v.bagKey, 1 });
+                    } else {
+                        MergeGoldInto(a_held, disp.key, disp.coinValue,
+                            { g_target.col, g_target.row, v.bagKey, 1 });
+                    }
                     RequestRebuild();
                 } else if (!heldCoin && !dispCoin && disp.key != a_held.key &&
                            !a_held.isBag && disp.def.bag == 0 &&
@@ -14403,9 +14452,21 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                         "(cap {}), carrying {}",
                             a_held.key, disp.key, absorbed, cap, a_held.count);
                     }
-                    // target full: swapping two same-form tiles only
-                    // exchanged their positions (pointless churn) — keep
-                    // carrying instead
+                    // ★★A FULL TARGET SWAPS, like every other occupied cell.
+                    //
+                    // This used to keep carrying, reasoning that two same-form
+                    // tiles trading places is churn. That is true when the two
+                    // are IDENTICAL, which is the case it was written against
+                    // -- and it is the only case where it is true. Carry fifty
+                    // onto a full hundred and refusing means the drop does
+                    // nothing at all, which does not read as "there is no room
+                    // here"; it reads as the board ignoring the click.
+                    //
+                    // Every other occupied cell answers a drop by swapping, and
+                    // a stack that happens to be full is not a reason to be the
+                    // one exception to that. (Reported 2026-08-30, against all
+                    // stack items -- this is not an ammo rule.)
+                    if (absorbed <= 0) doSwap = true;
                 } else {
                     doSwap = true;
                 }
@@ -15398,6 +15459,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             { DropWhere::kVoid, GoldFragToVoid },
         };
         constexpr DropRoute kStackFragRoutes[] = {
+            // ★★A FRAGMENT CAN BE WORN. This row was simply absent, so a split
+            // handful of arrows or a torch taken off a stack matched no route
+            // at the doll and stayed stuck to the cursor -- the drop did
+            // nothing, with no reason given. (Reported 2026-08-30.)
+            //
+            // ★The whole-tile handler serves it unchanged. A fragment carries
+            // no key, and nothing in that path needs one: the tile it came
+            // from was already shortened when the split was taken, the
+            // bookkeeping calls no-op on an empty key, and every fragment drop
+            // rebuilds anyway (alwaysRebuild below), which is also what
+            // restores the units if the slot refuses them.
+            { DropWhere::kEquipSlot, WholeOnEquipSlot },
             { DropWhere::kTrashArea, StackFragIntoTrash },   // F2 (before kEmptyCell)
             { DropWhere::kEmptyCell, StackFragOnEmptyCell },
             { DropWhere::kBlockerSingle, StackFragOnBlocker },
