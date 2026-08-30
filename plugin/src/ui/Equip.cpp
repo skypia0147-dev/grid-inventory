@@ -1044,6 +1044,80 @@ namespace FUI::Equip
         return (std::max)(0, Grid::StackCap(a_obj) - worn);
     }
 
+    void NormaliseWornAmmo(RE::FormID a_form)
+    {
+        auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(a_form);
+        if (!obj || !obj->Is(RE::FormType::Ammo)) return;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* em = RE::ActorEquipManager::GetSingleton();
+        if (!player || !em || !player->Is3DLoaded()) return;   // 원칙 4
+        const int cap = Grid::StackCap(obj);
+        if (cap <= 0) return;
+        const auto wornTotal = [&]() {
+            int n = 0;
+            if (auto* entry = Grid::LiveEntryOf(player, obj);
+                entry && entry->extraLists) {
+                for (auto* xl : *entry->extraLists) {
+                    if (!xl) continue;
+                    if (xl->HasType<RE::ExtraWorn>() ||
+                        xl->HasType<RE::ExtraWornLeft>()) {
+                        n += (std::max)(1, static_cast<int>(xl->GetCount()));
+                    }
+                }
+            }
+            return n;
+        };
+        const int worn = wornTotal();
+        if (worn <= cap) return;
+
+        // ★★★ALL OFF, THEN THE CAP BACK ON -- because a PARTIAL UNEQUIP DOES
+        // NOT SPLIT. Measured: two hundred worn against a cap of a hundred,
+        // asked for a hundred off the list, and the whole list came down. The
+        // quiver read zero and two tiles of a hundred sat in the pack.
+        //
+        // ★Partial EQUIP does split -- W3's overflow case proved it (eighty on
+        // the back, a fifty tile dropped, twenty went on and thirty stayed
+        // behind). So the two halves of the pair behave differently, and this
+        // is built only on the half that is known to work.
+        //
+        // ★Re-read every pass. Unequipping rewrites the entry, so a list
+        // collected before the previous call points at something else. The
+        // bound is a runaway stop, not an expected count.
+        for (int pass = 0; pass < 8 && wornTotal() > 0; ++pass) {
+            RE::ExtraDataList* one = nullptr;
+            int                n = 0;
+            if (auto* entry = Grid::LiveEntryOf(player, obj);
+                entry && entry->extraLists) {
+                for (auto* xl : *entry->extraLists) {
+                    if (!xl) continue;
+                    if (xl->HasType<RE::ExtraWorn>() ||
+                        xl->HasType<RE::ExtraWornLeft>()) {
+                        one = xl;
+                        n = (std::max)(1, static_cast<int>(xl->GetCount()));
+                        break;
+                    }
+                }
+            }
+            if (!one) break;
+            em->UnequipObject(player, obj, one, static_cast<std::uint32_t>(n),
+                              nullptr, false, false, false, true);
+        }
+        em->EquipObject(player, obj, nullptr, static_cast<std::uint32_t>(cap),
+                        nullptr, false, false, false, true);
+        SKSE::log::info("[EQUIP] quiver over cap: {} worn, cap {} -- re-seated at "
+                        "{}, {} back in the pack ('{}')",
+                        worn, cap, cap, worn - cap, obj->GetName());
+        // ★The mesh, for the same reason and by the same route as the transfer
+        // shield: flag, then ask. Actor::Update3DModel() alone does nothing
+        // (Costume.cpp:790 -- nothing is flagged, so the engine has no opinion).
+        if (auto* proc = player->GetActorRuntimeData().currentProcess) {
+            proc->Set3DUpdateFlag(static_cast<RE::RESET_3D_FLAGS>(
+                static_cast<std::uint32_t>(RE::RESET_3D_FLAGS::kModel) |
+                static_cast<std::uint32_t>(RE::RESET_3D_FLAGS::kSkin)));
+            proc->Update3DModel(player);
+        }
+    }
+
     RE::TESAmmo* EquippedAmmo(RE::Actor* a_actor)
     {
         if (!a_actor) return nullptr;
