@@ -739,6 +739,25 @@ namespace FUI::GoldCoins
 
         auto* fac = a_merchant->GetVendorFaction();
         if (!fac) { bail("no vendor faction"); return; }
+        // ★★A SHOP WITH NO SHELF IS SOMEBODY'S POCKETS, AND WE DO NOT FILL IT.
+        //
+        // A vendor faction may leave merchantContainer unset, and then the shop
+        // IS the actor's own inventory. Vanilla shops are built with a chest --
+        // measured, Lucan Valerius sells out of 0x00078C0B -- so this costs
+        // nothing there. It only reaches merchants a mod made without one.
+        //
+        // Those shops sell what the NPC happens to be carrying, which is
+        // usually very little, so a dozen bags dropped in becomes the whole
+        // window. A player reading that screen concludes this mod replaced the
+        // merchant's stock, when all it did was add. Standing down leaves an
+        // empty shop looking like the empty shop it already was.
+        //
+        // ★It says so in the log. If a VANILLA merchant ever turns up here, the
+        // line is how we find out -- from a log, not from a report.
+        if (!fac->vendorData.merchantContainer) {
+            bail("vendor sells from their own inventory (no shop chest)");
+            return;
+        }
         auto* list = fac->vendorData.vendorSellBuyList;
         // unrestricted vendor: not a general store either
         if (!list) { bail("no sell/buy list"); return; }

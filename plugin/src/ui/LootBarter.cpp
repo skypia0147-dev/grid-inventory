@@ -1032,12 +1032,22 @@ namespace FUI::LootBarter
                     ++stacks;
                     if (obj->IsGold()) gold += data.first;
                 }
+                // ★"the actor" had ONE explanation printed for it and there are
+                // two, which is the difference between a shop built without a
+                // chest and a faction we failed to read. A line that cannot
+                // tell them apart cannot answer the report it was written for.
+                const char* why = "";
+                if (src == a_partner) {
+                    why = !fac ? " (the ACTOR -- no vendor faction)"
+                        : !fac->vendorData.merchantContainer
+                            ? " (the ACTOR -- this shop has no chest; not seeding)"
+                            : " (the ACTOR -- chest exists but was not chosen)";
+                }
                 logger::info("[VENDOR] '{}' faction {:08X} chest {:08X}{} -- "
                              "{} stack(s), {} gold BEFORE seeding",
                     actor ? actor->GetDisplayFullName() : "<null>",
                     fac ? fac->GetFormID() : 0u,
-                    src->GetFormID(),
-                    src == a_partner ? " (the ACTOR -- faction had no container)" : "",
+                    src->GetFormID(), why,
                     stacks, gold);
                 GoldCoins::SeedVendorStock(actor, src);
             }
