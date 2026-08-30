@@ -13532,6 +13532,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // P2/3-5d: both defined further down; the partner-drop route needs
         // them before either exists.
         void ResolveDrop(Held& a_held);
+        // ★Same reason: the partner-drop route has to ask which pool the carry
+        // belongs to before the answer is defined further down.
+        std::string HeldPool(const Held& a_held);
 
         bool DropPartnerHeld(Held& a_held)
         {
@@ -13730,20 +13733,48 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // F7-swap: a partner item dropped on a SINGLE occupied player tile
             // takes/buys into that spot and the displaced tile rides the
             // cursor (player-grid C4 grammar). Coins/pouch keep the old no-op.
+            // ★★A SAME-STACK BLOCKER IS A TOP-UP, NOT A TRADE. One blocker meant
+            // "swap" whatever it was (coins aside), so dragging arrows out of a
+            // chest onto the arrows already in the pack traded the two piles
+            // instead of pouring one into the other. The player board has drawn
+            // this line between its own tiles for a long time (C4-S): same
+            // pool, stackable, room left is a merge -- and a FULL stack, where
+            // there is genuinely nothing to pour into, still swaps.
             const Item* swapDisp = nullptr;
+            const Item* mergeDisp = nullptr;
             if (g_target.has && !g_target.valid && g_target.blockers.size() == 1 &&
                 !LootBarter::IsPartnerHovered() &&
                 g_target.view < static_cast<int>(g_views.size())) {
                 const Item& cand = g_items[g_target.blockers.front()];
                 if (!GoldCoins::IsCoinForm(cand.obj->GetFormID()) &&
                     cand.coinValue < 0) {
-                    swapDisp = &cand;
+                    const int cap = EffectiveCap(a_held.obj);
+                    if (cap > 1 && cand.count < cap &&
+                        PoolOfSlot(cand.key) == HeldPool(a_held)) {
+                        mergeDisp = &cand;
+                    } else {
+                        swapDisp = &cand;
+                    }
                 }
             }
-            if (g_target.has && (g_target.valid || swapDisp) &&
+            if (g_target.has && (g_target.valid || swapDisp || mergeDisp) &&
                 !LootBarter::IsPartnerHovered() &&
                 g_target.view < static_cast<int>(g_views.size())) {
                 const auto& v = g_views[g_target.view];   // (trash: asked above)
+                // ★★THE WHOLE CARRY, MERGE OR NOT -- and that is a decision,
+                // measured rather than assumed. Holding the surplus back on the
+                // cursor was tried and cannot work here: the fast placement path
+                // refuses while the form is on the cursor ("partial add
+                // declined: carried"), so the units go through a full rebuild --
+                // and the rebuild has no notion of an AIMED tile. It fills
+                // partial piles in board order, which is how eight lockpicks
+                // aimed at the pack went into an open lockpick BAG instead.
+                //
+                // Taking the lot ends the carry, which lets the fast path run,
+                // and the fast path is the one place that knows "the tile the
+                // player dropped on leads the fill". The cost is that the
+                // surplus becomes a tile of its own instead of staying on the
+                // hand -- the same items, a different square.
                 const int cnt = a_held.count;
                 bool ok = true;
                 if (LootBarter::CurrentMode() == LootBarter::Mode::kBarter && cnt <= 1) {
@@ -13859,9 +13890,21 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // survives for the two directions that still ask.
                     const int hintCount = tookNow > 0 ? tookNow
                                                       : ((cnt > 1) ? 0 : cnt);
-                    g_dropHint = { hintBase, hintPool,
-                                   g_target.col, g_target.row, v.bagKey, a_held.rot,
-                                   hintCount };
+                    // ★★A MERGE NAMES THE PILE'S OWN ANCHOR, not the cell under
+                    // the cursor. The fast path decides which partial leads the
+                    // fill by comparing the hint against TILE POSITIONS, and a
+                    // cell in the middle of a tile matches none of them -- so
+                    // the aim was thrown away and board order decided, which is
+                    // how an open typed bag won a drop aimed at the pack.
+                    if (mergeDisp) {
+                        g_dropHint = { hintBase, hintPool,
+                                       mergeDisp->col, mergeDisp->row,
+                                       mergeDisp->inBag, a_held.rot, hintCount };
+                    } else {
+                        g_dropHint = { hintBase, hintPool,
+                                       g_target.col, g_target.row, v.bagKey,
+                                       a_held.rot, hintCount };
+                    }
                     if (swapDisp) {
                         // free the displaced tile's spot for the incoming item
                         // and put it on the cursor (same as the C4 swap)
