@@ -35,18 +35,17 @@ namespace FUI::Equip
     // Everything else stays at one: a tile of ten potions is ten drinks.
     [[nodiscard]] int EquipCountFor(RE::TESBoundObject* a_obj, int a_tileCount);
 
-    // ★★★HOW MANY MORE ARROWS THE QUIVER WILL TAKE. 0 means it will not merge
-    // -- either this is not ammo, or the back is already full and the next
-    // tile REPLACES what is up there.
+    // ★★★AmmoMergeRoom IS GONE. It answered "how much room is left on the
+    // back", and two sides asked it: the equip, to know how much to put on,
+    // and the board, to know whether a drop DISPLACED a quiver and owed the
+    // cursor an occupant.
     //
-    // ★It lives here, in one place, because TWO sides ask it and they must not
-    // answer differently. The equip itself asks so it knows how much to put on;
-    // the board asks so it knows whether anything was DISPLACED, and a swap
-    // hands the displaced unit back to the cursor. A merge displaces nothing,
-    // so a board that guessed "swap" left a phantom riding the cursor -- which
-    // is exactly what a second copy of this rule, drifting from the first,
-    // would put back.
-    [[nodiscard]] int AmmoMergeRoom(RE::TESBoundObject* a_obj);
+    // Neither question survives the projection. The doll draws min(total, cap)
+    // and the board draws the rest, so the worn count is not a number anybody
+    // reads -- arrows of one kind arriving on the back change nothing on
+    // screen, and there is no such thing as a quiver too full to take them.
+    // The equip equips what the tile holds; the board always merges for the
+    // same form.
 
     // ★★★NormaliseWornAmmo IS GONE, AND THE CEILING IT ENFORCED WAS NEVER THE
     // ENGINE'S TO KEEP.

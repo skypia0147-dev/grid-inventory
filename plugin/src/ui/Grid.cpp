@@ -14307,13 +14307,21 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // swap handed the cursor an occupant that had not gone anywhere.
             // A phantom stack followed the mouse for the rest of the session
             // (user report, straight after the merge landed).
-            // ★The room is asked of Equip::AmmoMergeRoom, which is also what
-            // the equip itself asks. Two copies of this rule could disagree
-            // about whether a given drop merges or replaces, and either answer
-            // is a bug on one side of the pair -- a full quiver DOES replace,
-            // and that swap is correct and stays.
-            const bool ammoMerge = worn && worn == a_held.obj &&
-                                   Equip::AmmoMergeRoom(a_held.obj) > 0;
+            // ★★AND IT ALWAYS MERGES NOW, because there is no longer such a
+            // thing as a full quiver. This used to ask Equip::AmmoMergeRoom for
+            // the space left on the back and let a FULL one swap instead --
+            // which was right while the doll drew the worn count, since a
+            // replaced quiver really did change what the player saw.
+            //
+            // It does not any more. The doll draws min(total, cap) and the
+            // board draws the rest, so arrows of the same kind arriving on the
+            // back change no number anywhere: total is the same before and
+            // after. A swap would hand the cursor an occupant that never went
+            // anywhere, which is the phantom this line was written to stop.
+            //
+            // ★Same FORM only, as it always was. Steel over iron still swaps --
+            // that one really does displace a quiver.
+            const bool ammoMerge = worn && worn == a_held.obj;
             const bool swapping = !ammoMerge && worn &&
                                   !(worn == a_held.obj && wsig == a_held.sig &&
                                     a_held.fromDoll && !a_held.swappedOut &&
@@ -14709,7 +14717,36 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // The optimistic exit, drawn without a full rebuild -- the same
             // partial the deferred click-remove used to run, called straight
             // out because this already runs outside the draw pass.
-            if (!TryUseClickPartialRemove(key, obj, /*take=*/0, /*drained=*/false)) {
+            //
+            // ★★★EXCEPT FOR AMMO, WHICH IS NOT ONE TILE LEAVING. That partial
+            // knows exactly one trick -- take the clicked tile's units off the
+            // board -- and for a quiver the click does something else entirely:
+            // the total does not move at all, and the whole stock is re-shared
+            // between a capful on the doll and the rest on the grid.
+            //
+            // Taking only the clicked tile off left the two halves disagreeing
+            // for the frames until the rebuild landed. Reported with pictures:
+            // 241 arrows shown as 100 + 41 + 100, click the 41, and the doll
+            // was drawing its capful while the grid still held 100 + 100 --
+            // three hundred arrows on screen out of two hundred and forty-one.
+            //
+            // ★It read as SLOW, and it was not: [FLICK] shows one clean
+            // transition (241 -> 141) and no intermediate at all, because that
+            // wrong frame never came from a rebuild. It came from here.
+            //
+            // ★Declining is what this returns for "anything unproven", which is
+            // exactly what an ammo equip is to it. The rebuild was already
+            // coming; this only stops us drawing a wrong answer while it is on
+            // its way. The store and sell callers keep the partial -- their
+            // total really does change, and the clicked tile really is what
+            // leaves.
+            if (obj->Is(RE::FormType::Ammo)) {
+                SKSE::log::info("[ONEPATH] ammo equip ('{}') -- the quiver re-shares "
+                                "the whole stock, so no partial can draw it",
+                    key);
+                RequestRebuild();
+            } else if (!TryUseClickPartialRemove(key, obj, /*take=*/0,
+                                                 /*drained=*/false)) {
                 SKSE::log::info("[ONEPATH] use partial declined ('{}') -- full rebuild",
                     key);
                 RequestRebuild();
