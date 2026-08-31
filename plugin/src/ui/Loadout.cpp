@@ -377,6 +377,36 @@ namespace FUI::Loadout
     int ReservedCount(RE::FormID a_id)
     {
         EnsureInit();
+        // ★★★A STACKABLE HAS NO "THIS ONE" TO HOLD BACK, AND RESERVING FROM ONE
+        // IS A UNIT THAT SIMPLY STOPS EXISTING ON SCREEN.
+        //
+        // The reservation earns its keep for GEAR: a tab holding an iron sword
+        // means one iron sword must not be sold out from under it, and hiding
+        // that one from the board says so. "One entry equips one item" is true
+        // there.
+        //
+        // It is not true of arrows. A tab that wears a bow and a quiver holds
+        // "the quiver", not one arrow -- and one arrow is exactly what this
+        // used to subtract, from a pool of hundreds, forever. The board draws
+        // count minus this (Grid.cpp, the stackable branch), so the arrow was
+        // gone from the grid while the engine still had it:
+        //
+        //   240 in our UI / 241 in player.getitemcount   -- one tab with arrows
+        //   258 in our UI / 260                          -- two tabs
+        //   everything dropped: UI empty / getitemcount 1
+        //
+        // ★Reported as arrows leaking, and it is not ammo-only: every stackable
+        // a preset ever wore -- torches above all -- was doing the same thing
+        // quietly. (2026-08-31, confirmed by the player: presets held arrows.)
+        //
+        // ★Nothing is left unprotected by this. A stackable in an inactive tab
+        // that the player spends is simply not there when the tab is next worn,
+        // and EquipSet already skips what is missing -- which is the honest
+        // outcome, and the one vanilla gives.
+        if (auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(a_id);
+            obj && Grid::StackCap(obj) > 1) {
+            return 0;
+        }
         int n = 0;
         for (int i = 0; i < static_cast<int>(g_loadouts.size()); ++i) {
             if (i == g_active) continue;   // active gear is equipped (worn check handles it)
