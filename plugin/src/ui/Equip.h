@@ -48,18 +48,24 @@ namespace FUI::Equip
     // would put back.
     [[nodiscard]] int AmmoMergeRoom(RE::TESBoundObject* a_obj);
 
-    // ★★★THE QUIVER HAS A CEILING AND THE ENGINE DOES NOT KNOW ABOUT IT.
+    // ★★★NormaliseWornAmmo IS GONE, AND THE CEILING IT ENFORCED WAS NEVER THE
+    // ENGINE'S TO KEEP.
     //
-    // Arrows arriving while their kind is worn are merged onto the back by the
-    // engine, whatever we think the stack size is -- take a hundred and fifty
-    // out of a chest with fifty on and two hundred end up equipped. Our tiles
-    // stop at StackCap, so the surplus is on the body and off the board.
+    // It took the surplus back off the player's back on every ammo delta,
+    // because our tiles stop at StackCap and the engine merges arriving arrows
+    // onto the quiver past it. It worked, and the engine undid it on the next
+    // delta: the same numbers re-appearing seventeen seconds apart, us pulling
+    // one way and the engine the other (PLAN_AMMO_TOTALS §2-2).
     //
-    // This takes the surplus back off. Called on the game thread from the
-    // container sink, for every ammo delta touching the player: a chest
-    // withdrawal, a purchase, arrows off the ground, a script's AddItem.
-    // No-op when nothing of that kind is worn, or when it fits.
-    void NormaliseWornAmmo(RE::FormID a_form);
+    // The quiver is drawn as a capful now instead of being made into one --
+    // the doll shows min(total, cap) and the board shows the rest -- so
+    // nothing asks what this used to enforce. Deleting it takes the tug of war
+    // away and leaves the display exactly where it was.
+    //
+    // ★What went with it: the 3D reset that ran on every arrow the player
+    // picked up at the cap, and A-2 of REVIEW_1.6.0 (the runaway stop that
+    // equipped a capful more on top of a quiver it had failed to take off) --
+    // a fix for a function that no longer exists.
 
     // ★★USING is not WEARING, and only the first has a type gate that makes
     // sense. EquipItem's whitelist answers "will a doll slot take this?" —

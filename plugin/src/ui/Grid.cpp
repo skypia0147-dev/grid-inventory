@@ -5957,19 +5957,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         wornFree -= fromWorn;   // the carry IS those worn units
                         carried  -= fromWorn;   // ...so they are already out of `units`
                     }
-                    // ★★★AND WHAT THE WORN LIST COULD NOT ACCOUNT FOR IS STILL ON
-                    // THE CURSOR. This was computed, cancelled against the worn
-                    // count, printed in the trace below -- and then dropped on
-                    // the floor. It never showed, because while the doll's
-                    // number WAS the worn number the cancellation above always
-                    // reached zero and there was nothing left to subtract.
-                    //
-                    // The moment the two can differ -- a quiver drawn at the
-                    // cap while the engine wears less than that -- the
-                    // remainder is a unit riding the cursor AND counted on the
-                    // board. Measured as stock=2 with a board of 1 and a carry
-                    // of 2: three arrows out of two.
-                    units -= carried;
                 }
                 for (const auto& u : g_pendingEquip) {
                     if (u.base != baseKey) continue;

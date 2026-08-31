@@ -9,7 +9,6 @@
 #include "game/GoldCoins.h"
 #include "game/Lotd.h"
 #include "ui/Editor.h"
-#include "ui/Equip.h"
 #include "ui/Fallback.h"
 #include "ui/Lang.h"
 #include "ui/Theme.h"
@@ -548,16 +547,12 @@ namespace
                 {
                     const RE::FormID deltaForm = a_event->baseObj;
                     SKSE::GetTaskInterface()->AddTask([deltaForm]() {
-                        // ★★BEFORE the board is told, not after. Arrows arriving
-                        // while their kind is worn are merged onto the back by
-                        // the engine past whatever stack size we keep, and the
-                        // surplus is then on the body and off the board -- take
-                        // a hundred and fifty out of a chest with fifty on, and
-                        // two hundred are equipped with nothing in the pack.
-                        // Putting the surplus back first means the delta below
-                        // sees the inventory the player is about to be shown,
-                        // instead of one that needs correcting a frame later.
-                        FUI::Equip::NormaliseWornAmmo(deltaForm);
+                        // ★A quiver correction used to run here first, taking
+                        // the over-cap surplus back off the player's back
+                        // before the board was told. The board draws the quiver
+                        // as a capful now rather than making it into one, so
+                        // there is nothing to correct and this is just the
+                        // delta again (Equip.h, where the note lives).
                         if (!FUI::Grid::OnFormDelta(deltaForm)) {
                             FUI::Grid::RequestRebuild();
                         }
