@@ -1706,10 +1706,35 @@ namespace FUI::Grid
             // the LEFTOVER went -- see the placement in ACQUIRE. 0 = whatever
             // arrives (a single item, a buy, an older caller).
             int count = 0;
+            // ★★★WHICH OF THE TWO THINGS THIS HINT MEANS. The coordinates read
+            // the same and the intent does not:
+            //
+            //   false  the player aimed at an EMPTY cell -> mint a tile there
+            //   true   the player aimed at an EXISTING TILE of the same pool
+            //          -> top THAT tile up; the anchor is the tile's, not the
+            //             cursor's (see the note at the merge branch)
+            //
+            // Only the first can be handed to the rebuild, whose hint block
+            // MINTS. Handing it the second put a new tile on an occupied
+            // square, so it landed somewhere else and the merge the player
+            // asked for never happened -- reported the moment the aimed-drop
+            // decline went in.
+            bool onTile = false;
             [[nodiscard]] bool Wants(const std::string& a_base,
                                      const std::string& a_pool) const
             {
                 return col >= 0 && baseKey == a_base && (pool.empty() || pool == a_pool);
+            }
+            // ★★THE FORM ALONE: "is an aimed drop of this thing in flight?"
+            //
+            // Wants() takes a pool because it answers a narrower question --
+            // may THIS pool take the hint -- and the fast path has to stand
+            // down BEFORE it knows what the pools are. Asking Wants(base, "")
+            // does not do it: the empty test above is about the HINT's pool,
+            // so a hint carrying one answers no to every argument.
+            [[nodiscard]] bool WantsForm(const std::string& a_base) const
+            {
+                return col >= 0 && baseKey == a_base;
             }
         };
         DropHint                                       g_dropHint;
@@ -7924,6 +7949,51 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             if (Loadout::ReservedCount(a_form) > 0) return decline("reserved");
             if (TrashedUnits(baseKey) > 0) return decline("trash parked");
             if (DualRing::Second() == obj) return decline("dual ring");
+            // ★★★AN AIMED DROP IS NOT A CASE THIS PATH CAN PROVE.
+            //
+            // It fills partial tiles first and mints what is left over at the
+            // hint, so the square the player chose gets the REMAINDER. Measured
+            // with three potions on the board and ten dragged onto an empty
+            // cell -- the same millisecond, in this order:
+            //
+            //   [B3] ★stack fill … +7 -> 10      (the old tile, topped up)
+            //   [B3] ★stack mint … x3 at [0,4]   (the aim, given the leftovers)
+            //
+            // The rebuild answers the other way round, from a report: it takes
+            // the aim's share FIRST and lets the fill have the rest ("A DROP
+            // HINT IS A PLACEMENT, NOT A LEFTOVER"). Un-aimed arrivals -- loot,
+            // a purchase, a reward -- are still filled first by both, which is
+            // right and is not touched here.
+            //
+            // ★So this declines, exactly as the note above prescribes for
+            // anything it cannot prove, and the rebuild does the whole job. The
+            // hint survives a decline BY DESIGN (see "THE HINT IS SPENT ON
+            // COMMIT"), which is what makes handing it over work at all.
+            //
+            // ★★And it is not a new behaviour: an aimed drop of AMMO has been
+            // taking this exact road for months, by accident. Loadout presets
+            // holding arrows made ReservedCount non-zero, the line above
+            // declined every arrival, and the rebuild placed them at the aim --
+            // which nobody ever reported as wrong. Fixing that leak (8a8078a)
+            // is what put arrows on this path and started them filling like
+            // everything else.
+            //
+            // ★Form only, not pool: the pools are not worked out until further
+            // down, and by then the fill order is already being decided.
+            //
+            // ★★★AND ONLY THE MINT KIND. A hint raised by dropping onto an
+            // EXISTING tile means "top that one up", and its coordinates are
+            // the tile's own anchor -- the rebuild would read them as "mint
+            // here", find the square taken, and put the units somewhere else
+            // entirely. Reported straight away: dropping potions onto potions
+            // stopped merging and landed in a free cell instead.
+            //
+            // That kind is exactly what THIS path is good at -- its sort makes
+            // the named tile lead the fill -- so it keeps it. Only the aim at
+            // an empty square, which this path cannot express, goes over.
+            if (g_dropHint.WantsForm(baseKey) && !g_dropHint.onTile) {
+                return decline("aimed drop");
+            }
 
             // pools from the shared authority (nothing is queued out of them
             // -- the gates above proved it)
@@ -13924,7 +13994,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     if (mergeDisp) {
                         g_dropHint = { hintBase, hintPool,
                                        mergeDisp->col, mergeDisp->row,
-                                       mergeDisp->inBag, a_held.rot, hintCount };
+                                       mergeDisp->inBag, a_held.rot, hintCount,
+                                       /*onTile=*/true };
                     } else {
                         g_dropHint = { hintBase, hintPool,
                                        g_target.col, g_target.row, v.bagKey,
