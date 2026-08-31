@@ -866,6 +866,13 @@ namespace FUI::Grid
     // occupy no board space; deletion is confirmed when the window (or the
     // whole menu) closes, oldest-first when the board needs room (FIFO).
     [[nodiscard]] bool IsTrashOpen();
+
+    // ★Is one of the player's own surfaces currently ASKING something -- the
+    // trash confirm, the pouch withdraw, the recharge picker? Asked by the
+    // container's take-all, which must not fire past a question. This is the
+    // companion to PlayerBoardHovered: boards answer by hover, questions
+    // answer by being open at all.
+    [[nodiscard]] bool PlayerPopupOpen();
     void ToggleTrash();          // the trash-can button
     bool CloseTrash();           // I/ESC layering: confirm-all + close if open
     // ---- find by name -------------------------------------------------------

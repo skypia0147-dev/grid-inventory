@@ -5933,8 +5933,15 @@ namespace
             // arrivals to a fill path the carry is suppressing ("partial add
             // declined: carried"). Put the tile down first -- a far smaller ask
             // than the parked cursor this gate used to demand.
-            if (IsLootMode(g_mode) && !IsPopupOpen() && !Grid::IsHolding() &&
-                !Grid::PlayerBoardHovered() &&
+            // ★★AND THE QUESTIONS ON THE OTHER SIDE OF THE FENCE. IsPopupOpen
+            // is this file's own list and it stops at this file's own windows;
+            // the trash confirm, the pouch withdraw and the recharge picker
+            // belong to the board and were never on it. Measured: a favourite
+            // dropped in the trash raises its confirm, R typed at that confirm
+            // emptied the chest behind it -- the accident this gate exists for,
+            // through a door the gate had not been told about.
+            if (IsLootMode(g_mode) && !IsPopupOpen() && !Grid::PlayerPopupOpen() &&
+                !Grid::IsHolding() && !Grid::PlayerBoardHovered() &&
                 ImGui::IsKeyPressed(ImGuiKey_R, false) && !ImGui::GetIO().WantTextInput) {
                 // total/used already span the bags (open or closed) — adding
                 // bag room on top of that double-counted it and over-took

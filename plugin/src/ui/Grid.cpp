@@ -15887,6 +15887,30 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
     bool IsTrashOpen() { return g_trashOpen; }
 
+    // ★★★THE SURFACES THAT ARE ASKING THE PLAYER SOMETHING -- the half of "one
+    // of the player's own" that hovering cannot answer for.
+    //
+    // PlayerBoardHovered covers the BOARDS (the grid, the bag windows), and it
+    // is right to ask about the cursor there: a board only disagrees with a
+    // global key while the pointer is on it. These three are different in kind.
+    // They are TAKING INPUT, so a key typed at one of them is meant for it
+    // wherever the mouse happens to be sitting.
+    //
+    // ★Found by the container's take-all walking straight through all of them.
+    // A favourite dropped in the trash raises the confirm, R is typed at that
+    // confirm, and the chest behind it empties instead -- which is the exact
+    // accident the gate exists to prevent, arriving through a door nobody had
+    // listed. LootBarter's IsPopupOpen draws this line for its own
+    // sub-windows; this is the same line on our side of the fence, and the
+    // gate has to ask both. (Reported 2026-08-31.)
+    //
+    // ★The trash VIEW is deliberately absent. It is a board, not a question,
+    // and it answers through the hover rule along with the rest.
+    bool PlayerPopupOpen()
+    {
+        return g_trashAsk.active || IsPouchOpen() || IsRechargeOpen();
+    }
+
     void ToggleTrash()
     {
         if (g_trashOpen) {
