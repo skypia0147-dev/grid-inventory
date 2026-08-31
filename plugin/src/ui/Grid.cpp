@@ -341,6 +341,22 @@ namespace FUI::Grid
         // ★Is the guard currently refusing readings? Only so the refusal is
         // said ONCE rather than every tick it lasts -- see CapacityTick.
         bool g_cwRejecting = false;
+        // ★★HOW LONG IT HAS BEEN REFUSING. The guard exists for TRANSITION
+        // FRAMES -- one or two, while an ability lands -- and it answered a
+        // refusal by keeping the last good value, with nothing to end it. A
+        // refusal that outlives the transition is not a flicker any more; it
+        // is the state, and holding the old number through it is the freeze
+        // reported as "they disappear and stay gone". CapacityTick runs every
+        // frame from UIRoot::Tick, so this counts frames.
+        int  g_cwRejectTicks = 0;
+        // ★Decided: the refusal outlived any transition, so the reading is the
+        // state. Sticks until it comes back in range -- see CapacityTick.
+        bool g_cwAccepting = false;
+        constexpr int kCwRejectMax = 30;   // ~0.5s: far past any transition
+        // ★Cooldown on re-seating a boost whose effect went missing. A repair
+        // that does not take must not be retried every frame -- that is spell
+        // churn on the player, which is worse than the fault.
+        int  g_boostRepairWait = 0;
 
         bool g_pouchOpen = false;       // G2: coin-pouch withdraw window
         int  g_pouchSlider = 0;
@@ -10564,6 +10580,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // lived longer than a frame). The active-effect list cannot
             // race: an effect is applied to it and to the AV in the same
             // step, so the subtraction and the reading always agree.
+            // ★Did the walk below actually SEE the boost's effect? The toggle
+            // at the end needs to know: HasSpell can be true while the effect
+            // is gone, and that pair is exactly what leaves `ours` reading zero
+            // with nothing in the code to notice or repair it.
+            bool sawBoost = false;
             if (g_cwPerCell > 0) {
                 float ours = 0.0f;
                 if (auto* mt = player->AsMagicTarget()) {
@@ -10583,6 +10604,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                     RE::ActorValue::kCarryWeight) {
                                 continue;
                             }
+                            if (ae->spell == g_abBoost) sawBoost = true;
                             ours += eff->baseEffect->data.flags.all(
                                         RE::EffectSetting::EffectSettingData::
                                             Flag::kDetrimental)
@@ -10637,11 +10659,76 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // together is what tells those apart in one line of a log.
                 //
                 // ★Still only ON CHANGE. A settled board says nothing.
-                if (std::abs(ext) <= 100000) {
-                    if (g_cwRejecting) {
-                        g_cwRejecting = false;
-                        SKSE::log::info("[GRID] CW reading is usable again");
+                // ★★★A REFUSAL THAT OUTLIVES THE TRANSITION IS NOT A TRANSITION.
+                //
+                // The guard was written for the frame or two while an ability
+                // lands, and it answered by keeping the last good value -- with
+                // nothing to end the keeping. So anything that holds the reading
+                // out of range froze the bonus at whatever it happened to be:
+                // at zero, and the cells "disappear and stay gone until
+                // something unknown brings them back"; at a large number, and
+                // they are "way larger than they should be". One fault, two
+                // faces, and the reported words for both.
+                //
+                // Reproduced: `player.modav carryweight 200000` from zero cells.
+                //
+                //   [GRID] CW reading out of range -- av=700300 ours=+500000
+                //          base=300 (race) ext=+200000; KEEPING 0 cell(s)
+                //
+                // and from there a real +50 could not be measured either --
+                // ext stayed out of range, so the refusal did. Undoing the
+                // modav is what "brought them back".
+                //
+                // ★So the refusal is now bounded. Past kCwRejectMax frames the
+                // reading is taken as the state it evidently is, clamped like
+                // any other -- and the clamp is what makes that safe: the worst
+                // an absurd reading can buy is g_cwMaxCells, which is a great
+                // deal better than a board frozen at nothing.
+                // ★★★THREE STATES, NOT TWO -- AND THE THIRD IS WHY THIS IS NOT
+                // A LOG FLOOD. Waiting the transition out and then taking the
+                // reading are different things, and a version that only had the
+                // first reset its counter on every acceptance: refuse, decide,
+                // refuse, decide, twice a second for as long as the state
+                // lasted. Measured at once -- the same pair of lines every
+                // 300ms -- which is the missing-mesh probe's fault wearing
+                // different words.
+                //
+                // So the decision STICKS. Once the refusal has outlived any
+                // transition the reading is taken as the state, and it goes on
+                // being taken until it comes back in range. One line to say the
+                // refusal began, one to say it was decided, one to say it
+                // ended.
+                const bool inRange = std::abs(ext) <= 100000;
+                if (inRange) {
+                    if (g_cwRejecting || g_cwAccepting) {
+                        SKSE::log::info("[GRID] CW reading is back in range");
                     }
+                    g_cwRejecting = false;
+                    g_cwAccepting = false;
+                    g_cwRejectTicks = 0;
+                } else if (!g_cwAccepting) {
+                    ++g_cwRejectTicks;
+                    // ★★SAY WHEN THE GUARD REFUSES. It used to keep the last
+                    // good answer silently, which is what "they stay gone until
+                    // something unknown brings them back" looks like from the
+                    // outside when that answer was zero.
+                    if (!g_cwRejecting) {
+                        g_cwRejecting = true;
+                        SKSE::log::warn(
+                            "[GRID] CW reading out of range -- av={:.0f} ours={:+.0f} "
+                            "base={} ({}) ext={:+}; keeping {} cell(s) for up to "
+                            "{} more frame(s)",
+                            avRaw, ours, base, baseFrom, ext, g_cwBonusCells,
+                            kCwRejectMax);
+                    }
+                    if (g_cwRejectTicks >= kCwRejectMax) {
+                        g_cwRejecting = false;
+                        g_cwAccepting = true;
+                        SKSE::log::info("[GRID] CW reading is out of range but "
+                                        "STEADY -- taking it as the state");
+                    }
+                }
+                if (inRange || g_cwAccepting) {
                     const int cells = std::clamp(
                         ext > 0 ? ext / g_cwPerCell : 0, 0, g_cwMaxCells);
                     if (cells != g_cwBonusCells) {
@@ -10654,18 +10741,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         MarkCapacityDirty();
                         RequestRebuild();
                     }
-                } else if (!g_cwRejecting) {
-                    // ★★AND SAY WHEN THE GUARD REFUSES. It keeps the last good
-                    // answer, silently -- which is exactly what "they stay gone
-                    // until something unknown brings them back" would look like
-                    // from the outside if the last good answer happened to be
-                    // zero. Once per spell of it, not per frame: the reading is
-                    // taken every tick and a stuck one would bury the log.
-                    g_cwRejecting = true;
-                    SKSE::log::warn(
-                        "[GRID] CW reading out of range -- av={:.0f} ours={:+.0f} "
-                        "base={} ({}) ext={:+}; KEEPING {} cell(s)",
-                        avRaw, ours, base, baseFrom, ext, g_cwBonusCells);
                 }
             } else if (g_cwBonusCells != 0) {
                 g_cwBonusCells = 0;
@@ -10677,7 +10752,33 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // least one full tick away from the last toggle -- the engine has
             // had a frame to finish applying or removing the effect before
             // anyone reads the AV against the list again.
-            if (!player->HasSpell(g_abBoost)) player->AddSpell(g_abBoost);
+            // ★★★HasSpell IS NOT "THE EFFECT IS ON". The spell list and the
+            // active-effect list are two places, and only the second is what
+            // `ours` can subtract. Something that dispels the effect without
+            // taking the spell away leaves this line satisfied for ever: the
+            // spell is there, so it is never re-added, and the measurement
+            // above reads ours=0 against an AV that still carries the boost --
+            // half a million past the baseline, refused, frozen.
+            //
+            // ★So the repair is on the pair, not on the spell alone. Bounded
+            // by a cooldown because a repair that does not take must not be
+            // retried every frame: spell churn on the player is worse than the
+            // fault it is chasing.
+            if (!player->HasSpell(g_abBoost)) {
+                player->AddSpell(g_abBoost);
+            } else if (g_cwPerCell > 0 && !sawBoost) {
+                if (g_boostRepairWait > 0) {
+                    --g_boostRepairWait;
+                } else {
+                    g_boostRepairWait = 120;   // ~2s between attempts
+                    player->RemoveSpell(g_abBoost);
+                    player->AddSpell(g_abBoost);
+                    SKSE::log::warn("[GRID] the carry-weight boost is in the spell "
+                                    "list but has no active effect -- re-seated");
+                }
+            } else {
+                g_boostRepairWait = 0;
+            }
             const bool has = player->HasSpell(g_abOver);
             if (g_overloaded && !has) player->AddSpell(g_abOver);
             else if (!g_overloaded && has) player->RemoveSpell(g_abOver);
