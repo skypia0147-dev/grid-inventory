@@ -8114,7 +8114,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // them, and a full bag bounces to main (decision 1).
             std::map<std::string, std::vector<std::vector<bool>>> typedOcc;
             struct Fill { int idx; int add; };
-            struct Mint { LayoutEntry le; int units; };
+            // ★viaHint: did this tile take the drop hint's square, or first-fit?
+            // The log line cannot tell them apart otherwise, and "why did it
+            // land THERE" is the whole question when a stale hint is suspected.
+            struct Mint { LayoutEntry le; int units; bool viaHint = false; };
             std::vector<Fill> fills;
             std::vector<Mint> mints;
             for (auto& [pool, want] : pools) {
@@ -8203,6 +8206,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             mp.le.rot = hrot;
                             OccMark(occ, mp.le.col, mp.le.row, hm);
                             hintTaken = true;
+                            mp.viaHint = true;
                         }
                     }
                     // ★S4: the typed-bag seat comes FIRST for a filtered form
@@ -8306,10 +8310,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 if (mp.le.bag.empty()) {
                     g_spaceUsed += MaskCells(g_items.back().mask.rows);
                 }
-                SKSE::log::info("[B3] ★stack mint '{}' x{} key '{}' at [{},{}]{} -- "
+                SKSE::log::info("[B3] ★stack mint '{}' x{} key '{}' at [{},{}]{}{} -- "
                                 "no rebuild",
                     obj->GetName(), mp.units, key, mp.le.col, mp.le.row,
-                    mp.le.bag.empty() ? "" : " (typed bag)");
+                    mp.le.bag.empty() ? "" : " (typed bag)",
+                    mp.viaHint ? " (hint)" : " (first-fit)");
             }
             g_liveObjs.insert(obj);
             MarkCapacityDirty();
