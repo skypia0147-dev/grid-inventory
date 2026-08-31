@@ -285,6 +285,32 @@ namespace FUI::UIRoot
     void               SetVanillaKey(int a_scancode);
     [[nodiscard]] int  VanillaKey();
 
+    // ---- TEST ONLY: "!npcvanilla = 1" in GridInventory_ui.ini -------------
+    //
+    // ★★★HAND THE FOLLOWER'S TRADE CONTAINER BACK TO THE ENGINE, and nothing
+    // else. The passthrough above is all-or-nothing: F11 and the watch file
+    // give every screen back, which is the wrong instrument for asking about
+    // one of them.
+    //
+    // Reported (Nexus, 1.5.1, alongside Nether's Follower Framework): the
+    // trade option went missing from a follower's dialogue and "Follow me"
+    // kept reappearing for a follower already following; removing this mod
+    // cured it. We touch no follower state -- one read of IsPlayerTeammate in
+    // the whole plugin, and DialogueMenu is not mentioned anywhere -- but we
+    // DO swallow the ContainerMenu that the trade line opens (kNPCMode), and
+    // that is the only surface we share with any of it.
+    //
+    // ★So this narrows the question to one variable. With it on, the follower
+    // trade is exactly vanilla and everything else is exactly ours: if the
+    // dialogue still breaks, the swallow is not the cause and the report
+    // belongs elsewhere; if it stops, we know which side to look at.
+    //
+    // ★Chests, corpses, merchants, pickpocketing and the player's own bags are
+    // all untouched by this -- kLoot, kSteal, kPickpocket and BarterMenu keep
+    // their interception.
+    void               SetNpcVanilla(bool a_on);
+    [[nodiscard]] bool NpcVanilla();
+
     // ★★Draw the next images as SILHOUETTES: the vertex tint supplies the
     // colour, the texture supplies only its ALPHA. Needed because an ImGui tint
     // multiplies — black collapses a sprite to its shape, white leaves the

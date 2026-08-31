@@ -2059,6 +2059,17 @@ namespace
                 return false;
             }
             const auto cmode = menu->GetContainerMode();
+            // ★TEST ONLY ("!npcvanilla"): give the FOLLOWER's trade container
+            // back to the engine and keep every other screen. Asked here, after
+            // the mode is known, because that is the only place the follower
+            // can be told apart from a chest. See UIRoot.h for the report this
+            // exists to narrow.
+            if (cmode == RE::ContainerMenu::ContainerMode::kNPCMode &&
+                FUI::UIRoot::NpcVanilla()) {
+                logger::warn("[LOOT] !npcvanilla -- follower trade left to the "
+                             "engine, not intercepted");
+                return false;
+            }
             FUI::LootBarter::Mode gmode;
             switch (cmode) {
             case RE::ContainerMenu::ContainerMode::kLoot:

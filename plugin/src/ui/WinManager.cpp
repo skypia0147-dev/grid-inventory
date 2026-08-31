@@ -426,6 +426,11 @@ namespace FUI
                 Equip::SetDrawerOpen(rest == "1" || rest == "true");
                 continue;
             }
+            // Test switch, not a setting: see UIRoot::SetNpcVanilla.
+            if (key == "!npcvanilla") {
+                UIRoot::SetNpcVanilla(rest == "1" || rest == "true");
+                continue;
+            }
             // Test switch, not a setting: see Grid::SetRebuildDrop.
             if (key == "!rbdrop") {
                 Grid::SetRebuildDrop(rest.c_str());
@@ -943,6 +948,7 @@ namespace FUI
         }
         if (Equip::DrawerOpen())   out << "!accdrawer = 1\n";
         if (Grid::RebuildTrace())  out << "!rbtrace = 1\n";
+        if (UIRoot::NpcVanilla())  out << "!npcvanilla = 1\n";
         // Carry Weight bonus -> extra inventory cells
         // 소지 중량 보너스의 칸 환전
         out << "; !cwcells = CW per cell (0 = off), baseline (0 = auto: race base), max bonus cells\n";

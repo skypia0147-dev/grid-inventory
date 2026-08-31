@@ -4619,6 +4619,19 @@ namespace FUI::UIRoot
     void SetVanillaKey(int a_scancode) { g_vanillaKey.store(a_scancode); }
     int  VanillaKey() { return g_vanillaKey.load(); }
 
+    // Test switch, not a setting: see UIRoot.h.
+    std::atomic<bool> g_npcVanilla{ false };
+    bool NpcVanilla() { return g_npcVanilla.load(); }
+    void SetNpcVanilla(bool a_on)
+    {
+        g_npcVanilla.store(a_on);
+        if (a_on) {
+            SKSE::log::warn("[UI] ★!npcvanilla -- a FOLLOWER's trade container "
+                            "will open the ENGINE's window, not ours. Every "
+                            "other screen is unchanged.");
+        }
+    }
+
     void Render()
     {
         if (!g_initialized.load()) return;
