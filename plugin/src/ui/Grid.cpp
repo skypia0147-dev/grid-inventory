@@ -338,6 +338,9 @@ namespace FUI::Grid
         int g_cwBase = 0;
         int g_cwMaxCells = 50;    // bonus cap
         int g_cwBonusCells = 0;   // current, recomputed by CapacityTick
+        // ★Is the guard currently refusing readings? Only so the refusal is
+        // said ONCE rather than every tick it lasts -- see CapacityTick.
+        bool g_cwRejecting = false;
 
         bool g_pouchOpen = false;       // G2: coin-pouch withdraw window
         int  g_pouchSlider = 0;
@@ -10588,17 +10591,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         }
                     }
                 }
-                float cw = avo->GetActorValue(RE::ActorValue::kCarryWeight) - ours;
+                const float avRaw = avo->GetActorValue(RE::ActorValue::kCarryWeight);
+                float cw = avRaw - ours;
                 // ★baseline 0 = AUTO: the race's own base, so overhauls that
                 // rewrite it (race records) need no manual setting. Stamina
                 // level-ups grow the AV past the racial base and so still
                 // count as earned bonus.
                 int base = g_cwBase;
+                const char* baseFrom = "ini";
                 if (base <= 0) {
                     auto* race = player->GetRace();
-                    base = race && race->data.baseCarryWeight > 0.0f
-                               ? static_cast<int>(race->data.baseCarryWeight)
-                               : 300;
+                    if (race && race->data.baseCarryWeight > 0.0f) {
+                        base = static_cast<int>(race->data.baseCarryWeight);
+                        baseFrom = "race";
+                    } else {
+                        base = 300;
+                        baseFrom = "fallback";
+                    }
                 }
                 const int ext = static_cast<int>(cw) - base;
                 // ★★A reading taken while an ability toggle is still landing
@@ -10610,17 +10619,53 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // legitimate bonus is within two orders of that scale, so a
                 // reading out of range keeps the last good answer instead of
                 // minting fifty phantom cells out of a frame boundary.
+                // ★★★THE COMPONENTS, NOT JUST THE ANSWER. This printed the cell
+                // count and how far past the baseline it read -- which says
+                // WHAT happened and never WHY. Reported (Nexus, 1.5.1): "the
+                // extra slots are extremely inconsistent, they disappear
+                // constantly", and "a 50-carry-weight perk should give 5 slots;
+                // my inventory almost doubled". Fifty cells is the cap, so that
+                // reading was ext ~= 500 out of a perk worth 50, and the line
+                // as it stood could not tell a wrong AV from a wrong baseline.
+                //
+                // ★The baseline is the suspect worth naming: `ours` subtracts
+                // OUR two abilities and nothing else, so every other source of
+                // carry weight counts as the world's bonus. That is right for a
+                // perk, a potion, an enchantment -- and wrong for anything that
+                // is really part of the player's BASELINE and does not live in
+                // the race record we read it from. Printing av / ours / base
+                // together is what tells those apart in one line of a log.
+                //
+                // ★Still only ON CHANGE. A settled board says nothing.
                 if (std::abs(ext) <= 100000) {
+                    if (g_cwRejecting) {
+                        g_cwRejecting = false;
+                        SKSE::log::info("[GRID] CW reading is usable again");
+                    }
                     const int cells = std::clamp(
                         ext > 0 ? ext / g_cwPerCell : 0, 0, g_cwMaxCells);
                     if (cells != g_cwBonusCells) {
                         SKSE::log::info(
-                            "[GRID] carry-weight bonus: {} cell(s) ({:+} CW past "
-                            "the baseline)", cells, ext);
+                            "[GRID] CW: av={:.0f} ours={:+.0f} base={} ({}) -> "
+                            "ext={:+} -> {} cell(s), was {}",
+                            avRaw, ours, base, baseFrom, ext, cells,
+                            g_cwBonusCells);
                         g_cwBonusCells = cells;
                         MarkCapacityDirty();
                         RequestRebuild();
                     }
+                } else if (!g_cwRejecting) {
+                    // ★★AND SAY WHEN THE GUARD REFUSES. It keeps the last good
+                    // answer, silently -- which is exactly what "they stay gone
+                    // until something unknown brings them back" would look like
+                    // from the outside if the last good answer happened to be
+                    // zero. Once per spell of it, not per frame: the reading is
+                    // taken every tick and a stuck one would bury the log.
+                    g_cwRejecting = true;
+                    SKSE::log::warn(
+                        "[GRID] CW reading out of range -- av={:.0f} ours={:+.0f} "
+                        "base={} ({}) ext={:+}; KEEPING {} cell(s)",
+                        avRaw, ours, base, baseFrom, ext, g_cwBonusCells);
                 }
             } else if (g_cwBonusCells != 0) {
                 g_cwBonusCells = 0;
