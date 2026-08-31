@@ -35,36 +35,20 @@ namespace FUI::Equip
     // Everything else stays at one: a tile of ten potions is ten drinks.
     [[nodiscard]] int EquipCountFor(RE::TESBoundObject* a_obj, int a_tileCount);
 
-    // ★★★AmmoMergeRoom IS GONE. It answered "how much room is left on the
-    // back", and two sides asked it: the equip, to know how much to put on,
-    // and the board, to know whether a drop DISPLACED a quiver and owed the
-    // cursor an occupant.
+    // ★★★TWO AMMO RULES USED TO LIVE HERE AND BOTH ARE GONE (1.6.1).
     //
-    // Neither question survives the projection. The doll draws min(total, cap)
-    // and the board draws the rest, so the worn count is not a number anybody
-    // reads -- arrows of one kind arriving on the back change nothing on
-    // screen, and there is no such thing as a quiver too full to take them.
-    // The equip equips what the tile holds; the board always merges for the
-    // same form.
-
-    // ★★★NormaliseWornAmmo IS GONE, AND THE CEILING IT ENFORCED WAS NEVER THE
-    // ENGINE'S TO KEEP.
+    //   AmmoMergeRoom      how much room is left on the back
+    //   NormaliseWornAmmo  take the over-cap surplus back off, every delta
     //
-    // It took the surplus back off the player's back on every ammo delta,
-    // because our tiles stop at StackCap and the engine merges arriving arrows
-    // onto the quiver past it. It worked, and the engine undid it on the next
-    // delta: the same numbers re-appearing seventeen seconds apart, us pulling
-    // one way and the engine the other (PLAN_AMMO_TOTALS §2-2).
+    // They existed to keep the engine's worn count at a number the board could
+    // draw. Nothing reads that number now: the doll shows min(total, cap) and
+    // the board shows the rest, so forty worn and two hundred and forty worn
+    // are the same picture. The first was deciding something invisible; the
+    // second was a tug of war the engine undid on every following delta.
     //
-    // The quiver is drawn as a capful now instead of being made into one --
-    // the doll shows min(total, cap) and the board shows the rest -- so
-    // nothing asks what this used to enforce. Deleting it takes the tug of war
-    // away and leaves the display exactly where it was.
-    //
-    // ★What went with it: the 3D reset that ran on every arrow the player
-    // picked up at the cap, and A-2 of REVIEW_1.6.0 (the runaway stop that
-    // equipped a capful more on top of a quiver it had failed to take off) --
-    // a fix for a function that no longer exists.
+    // What went with them: an unequip of the whole quiver on every "replace"
+    // click, and a 3D model reset on every arrow retrieved at the cap.
+    // Full story and measurements: PLAN_AMMO_TOTALS.md.
 
     // ★★USING is not WEARING, and only the first has a type gate that makes
     // sense. EquipItem's whitelist answers "will a doll slot take this?" —

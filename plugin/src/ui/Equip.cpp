@@ -1285,6 +1285,20 @@ namespace FUI::Equip
                 // rewrites the entry, and a walk still holding iterators into
                 // it is walking freed memory. The same lesson as the transfer
                 // shield in LootBarter.
+                //
+                // ★★AND THE POINTERS THEMSELVES SURVIVE -- MEASURED, so this is
+                // not the iterator argument hoping to cover both. A sibling
+                // note used to claim the opposite ("a list collected before the
+                // previous call points at something else"), which made one of
+                // the two a guess; a probe settled it, and the note that was
+                // wrong is gone with the function that carried it:
+                //
+                //   [WORNPROBE] list 2/2 after 1 unequip(s): collected 0x…88e0
+                //               -- STILL PRESENT in the entry (1 worn list live)
+                //
+                // ★One trial, on two lists. Enough to stop re-deriving it, not
+                // enough to build something new on -- measure again if a case
+                // with more lists ever matters. (REVIEW_1.6.0 A-1, closed.)
                 if (obj->Is(RE::FormType::Ammo)) {
                     std::vector<std::pair<RE::ExtraDataList*, int>> all;
                     if (auto* entry = Grid::LiveEntryOf(player, obj);
@@ -1462,7 +1476,9 @@ namespace FUI::Equip
             // So the equip says what it means and stops: wear this ammo.
             // Whatever the engine then does with the pool is the engine's
             // business, and the display is already true for all of it.
-            const int equipCount = act.count;
+            //
+            // ★So there is no ammo count to work out any more: the equip below
+            // passes act.count like every other form.
 
             // D4: a one-hander (or staff) dropped on the shield slot = left hand
             const RE::BGSEquipSlot* slot = nullptr;
@@ -1583,26 +1599,8 @@ namespace FUI::Equip
                     [&](RE::TESBoundObject& o) { return &o == obj; });
                 for (auto& [o2, d2] : inv) before = d2.first;
             }
-            em->EquipObject(player, obj, srcList, equipCount, slot,
+            em->EquipObject(player, obj, srcList, act.count, slot,
                             false, false, true, true);
-            // ★★DID A PARTIAL EQUIP ACTUALLY SPLIT THE LIST? Asking rather than
-            // assuming: equipping 20 units out of a 50 tile is a shape nothing
-            // here has needed before, and "the engine wore all fifty" and "the
-            // engine wore twenty" are told apart only by counting afterwards.
-            if (obj->Is(RE::FormType::Ammo)) {
-                int after = 0;
-                if (auto* entry = Grid::LiveEntryOf(player, obj);
-                    entry && entry->extraLists) {
-                    for (auto* xl : *entry->extraLists) {
-                        if (xl && (xl->HasType<RE::ExtraWorn>() ||
-                                   xl->HasType<RE::ExtraWornLeft>())) {
-                            after += (std::max)(1, static_cast<int>(xl->GetCount()));
-                        }
-                    }
-                }
-                SKSE::log::info("[EQUIP] quiver now holds {} (asked for {})",
-                                after, equipCount);
-            }
 
             // Rule 13: equipping forgets the cell, exactly like selling or
             // storing. A stack that stays visible keeps its tile -- only the

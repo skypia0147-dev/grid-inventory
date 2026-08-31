@@ -1666,6 +1666,9 @@ namespace FUI::LootBarter
             // ★Collect the lists BEFORE unequipping any of them. The first
             // unequip rewrites the entry, and a walk that is still holding
             // iterators into it is walking freed memory.
+            // ★The POINTERS survive that rewrite -- measured, see the same note
+            // at the quiver unequip in Equip.cpp. Collecting up front is safe;
+            // it was once unclear whether it was. (REVIEW_1.6.0 A-1, closed.)
             std::vector<std::pair<RE::ExtraDataList*, WornSave>> worn;
             if (auto* entry = Grid::LiveEntryOf(a_actor, a_obj);
                 entry && entry->extraLists) {
