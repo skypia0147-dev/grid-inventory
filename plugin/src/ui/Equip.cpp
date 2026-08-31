@@ -434,6 +434,31 @@ namespace FUI::Equip
                 }
                 // worn but unlisted: the engine is wearing the lot
                 if (worn <= 0) worn = (std::max)(1, stock);
+                // ★★★A QUIVER IS A CAPFUL, AND IT IS DRAWN FROM THE STOCK.
+                //
+                // The engine has no "the equipped hundred and the spare
+                // hundred and forty" -- same-kind arrows are ONE quiver and it
+                // wears the lot (measured: total 241 / worn 241 / one list).
+                // So `worn` above is the stock wearing a quiver's name, and
+                // drawing it claims the whole pile is on the player's back
+                // while the board is about to draw part of it as well.
+                //
+                // ★★min(STOCK, cap) -- NOT min(worn, cap), which was the first
+                // attempt and which the first run caught. While the cap is
+                // still enforced the engine holds exactly a capful, so one shot
+                // leaves 99 and min(99, cap) drew a quiver of NINETY-NINE with
+                // the pack untouched: the shot came out of the quiver, which is
+                // backwards. The stock is the only number that can answer
+                // "what should the quiver look like", because the quiver is a
+                // VIEW of the stock rather than a container beside it.
+                //
+                // ★★THE OTHER HALF IS IN Grid.cpp's unit walk, which hands the
+                // board everything past the cap and tops the quiver's side back
+                // up when the engine is wearing less. NEITHER MAY SHIP ALONE --
+                // doll + board = total is what makes this honest, and each half
+                // on its own breaks that sum (PLAN_AMMO_TOTALS §9-1).
+                const int cap = Grid::StackCap(ammo);
+                if (cap > 0) worn = (std::min)((std::max)(1, stock), cap);
                 add("ammo", ammo, worn, g, ammoXl);
             }
 

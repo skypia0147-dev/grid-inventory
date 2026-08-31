@@ -5883,6 +5883,31 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // keeps its cells, its subgrid and its right-click, and the
                 // tray marker says it is also on the doll.
                 if (gdef.bag != 0) wornUnits = 0;
+                // ★★★A QUIVER IS A CAPFUL, AND THIS IS THE LINE THAT SHARES THE
+                // STOCK OUT. The doll draws min(total, cap) whatever the engine
+                // happens to be wearing (Equip.cpp, CollectEquipment), so the
+                // board's share is the REST OF THE STOCK -- not "everything not
+                // worn", which is a different number the moment those two
+                // disagree.
+                //
+                // ★Reported: 240 arrows shown as 100 + 100 + 40, equip the 40,
+                // and the board still drew 100 + 100 beside a quiver of 100.
+                // Three hundred arrows out of two hundred and forty, because
+                // the doll had been capped and this had not.
+                //
+                // ★★Both directions fall out of the one min(). Worn ABOVE the
+                // cap (the engine wearing the whole stock) and worn BELOW it (a
+                // shot taken while spares sit in the pack) both resolve to the
+                // same quiver of a capful -- which is what makes a shot come
+                // out of the PACK: total drops, min(total, cap) does not, so
+                // the board gives the arrow up.
+                //
+                // ★Only when a quiver is actually on. Nothing worn is not a
+                // quiver of zero, it is no quiver at all, and the whole stock
+                // belongs to the board.
+                if (wornUnits > 0 && obj->Is(RE::FormType::Ammo)) {
+                    wornUnits = (std::min)(count, (std::max)(1, cap));
+                }
                 int units = count - wornUnits -
                             Loadout::ReservedCount(obj->GetFormID());
                 // Phase 7: units sold/stored whose engine removal is still queued
@@ -5932,6 +5957,19 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         wornFree -= fromWorn;   // the carry IS those worn units
                         carried  -= fromWorn;   // ...so they are already out of `units`
                     }
+                    // ★★★AND WHAT THE WORN LIST COULD NOT ACCOUNT FOR IS STILL ON
+                    // THE CURSOR. This was computed, cancelled against the worn
+                    // count, printed in the trace below -- and then dropped on
+                    // the floor. It never showed, because while the doll's
+                    // number WAS the worn number the cancellation above always
+                    // reached zero and there was nothing left to subtract.
+                    //
+                    // The moment the two can differ -- a quiver drawn at the
+                    // cap while the engine wears less than that -- the
+                    // remainder is a unit riding the cursor AND counted on the
+                    // board. Measured as stock=2 with a board of 1 and a carry
+                    // of 2: three arrows out of two.
+                    units -= carried;
                 }
                 for (const auto& u : g_pendingEquip) {
                     if (u.base != baseKey) continue;
