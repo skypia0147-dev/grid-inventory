@@ -3538,34 +3538,25 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             // gold, so "can this be split" was false on every
                             // coin -- the one item type where splitting is the
                             // main thing you do with it.
+                            // ★★★THE UNIT, NAMED. This passed a literal 0 where it
+                            // held the signature, so the tooltip's pool answer
+                            // never ran and the unit was resolved by LIST
+                            // POSITION alone -- and a position is a hint, not a
+                            // promise (a plain unit is listless by definition,
+                            // so any index recorded for one is a leftover from
+                            // when it briefly had an ExtraWorn-only list). After
+                            // one equip/unequip of a plain dagger that index
+                            // named the TEMPERED dagger's list, and every plain
+                            // copy came back called "Fine Iron Dagger" while the
+                            // numbers beside it stayed right (user report,
+                            // 2026-09-01 -- GI61's symptom through a door GI61
+                            // did not close).
                             DrawItemTooltip(it.obj, it.count,
+                                UnitRef{ it.uid, it.sig, it.xlIdx },
+                                ExtraScope::kUnit,
                                 GoldCoins::IsPouch(fid) ? GoldCoins::PouchStoredOf(it.key)
                                                         : it.coinValue,
-                                price, false, nullptr, ExtraScope::kUnit,
-                                // ★★★it.sig, NOT 0 -- the same correction the
-                                // partner side already carries, on the road it
-                                // was never applied to. With 0 here the
-                                // tooltip's pool fallback is switched off
-                                // (`if (!scoped && a_sig != 0)`) and the unit
-                                // is resolved by LIST POSITION alone.
-                                //
-                                // A position is a hint and not a promise, and
-                                // this file says so itself: a PLAIN unit's
-                                // recorded index is a leftover from when it
-                                // had a list at all -- a worn unit carries one
-                                // holding only ExtraWorn -- and the instant
-                                // that list goes away every later index slides
-                                // down (see EnumerateUnitRefs, same lesson).
-                                // So after one equip/unequip of a plain dagger
-                                // its index named the TEMPERED dagger's list,
-                                // and the name came back "Fine Iron Dagger"
-                                // for every plain copy while the rest of the
-                                // tooltip, which knows the pool, went on
-                                // showing the right numbers (user report:
-                                // "stats differed but every name was the
-                                // tempered one" -- GI61's symptom exactly,
-                                // through a door GI61 did not close).
-                                it.uid, it.xlIdx, it.sig, 0,
+                                price, false, nullptr,
                                 TileContext{ it.key, it.def.bag != 0,
                                              it.inBag == kTrashKey, false, false,
                                              it.stolen, it.quest });
@@ -4423,9 +4414,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     }
 
     void BeginPartnerCarry(RE::TESBoundObject* a_obj, int a_count, int a_value,
-                           float a_offX, float a_offY,
-                           std::uint16_t a_uid, int a_xlIdx, int a_ord, int a_rot)
+                           const UnitRef& a_unit, int a_ord, int a_rot,
+                           float a_offX, float a_offY)
     {
+        const std::uint16_t a_uid   = a_unit.uid;
+        const int           a_xlIdx = a_unit.xlIdx;
         if (!a_obj || g_held) return;
         const GridDef def = g_resolver ? g_resolver(a_obj) : GridDef{};
         // GI62: lift it as it lies on the other side, so a sword stored on its
@@ -12092,12 +12085,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         bool a_worn, int a_hand, float& a_cur, float& a_max);
     }
 
-    void DrawItemTooltip(RE::TESBoundObject* a_obj, int a_count, int a_coinValue,
-                         int a_price, bool a_isBuy, RE::TESObjectREFR* a_owner,
-                         ExtraScope a_scope, std::uint16_t a_uid, int a_xlIdx,
-                         std::uint16_t a_sig, int a_hand, const TileContext& a_tile)
+    void DrawItemTooltip(RE::TESBoundObject* a_obj, int a_count,
+                         const UnitRef& a_unit, ExtraScope a_scope,
+                         int a_coinValue, int a_price, bool a_isBuy,
+                         RE::TESObjectREFR* a_owner, const TileContext& a_tile)
     {
         if (!a_obj) return;
+        const std::uint16_t a_uid   = a_unit.uid;
+        const std::uint16_t a_sig   = a_unit.sig;
+        const int           a_xlIdx = a_unit.xlIdx;
+        const int           a_hand  = a_unit.hand;
 
         // The OWNER's inventory entry: poison/charge/soul/crafted-enchant extras
         // all live there, not on the base form.
@@ -14001,8 +13998,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         // leave that cell unclaimed, and position order then
                         // handed it to a sibling.
                         BeginPartnerCarry(occ.occ, occ.occCount, occ.occValue,
-                                          -1.0f, -1.0f,
-                                          occ.occUid, occ.occXlIdx, occ.occOrd, occ.occRot);
+                                          UnitRef{ occ.occUid, 0, occ.occXlIdx },
+                                          occ.occOrd, occ.occRot);
                         LootBarter::NoteCarriedSpot(occ.occSpotKey);
                     }
                 } else if (sd.onCell) {
@@ -15234,8 +15231,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             // GI24: same as the rearrange swap — the occupant
                             // keeps its identity and its own cell
                             BeginPartnerCarry(occ.occ, occ.occCount, occ.occValue,
-                                              -1.0f, -1.0f,
-                                              occ.occUid, occ.occXlIdx, occ.occOrd, occ.occRot);
+                                              UnitRef{ occ.occUid, 0, occ.occXlIdx },
+                                              occ.occOrd, occ.occRot);
                             LootBarter::NoteCarriedSpot(occ.occSpotKey);
                             RequestRebuild();
                             return true;

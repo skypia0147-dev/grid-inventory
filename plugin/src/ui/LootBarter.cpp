@@ -2629,8 +2629,9 @@ namespace FUI::LootBarter
                 if (!nk.empty()) {
                     g_actingSpot = nk;   // the carry names its own cell
                     Grid::BeginPartnerCarry(g_slider.obj, g_slider.value,
-                                            g_slider.unitValue, -1.0f, -1.0f,
-                                            g_slider.uid, g_slider.xlIdx, 0, 0);
+                                            g_slider.unitValue,
+                                            Grid::UnitRef{ g_slider.uid, 0,
+                                                           g_slider.xlIdx });
                 }
                 break;
             }
@@ -3302,9 +3303,9 @@ namespace
                     // the same "N / cap G" line the shelf pouch cell shows
                     const int tipGold = GoldCoins::IsPouch(b.form)
                                             ? (std::max)(0, b.gold) : -1;
-                    Grid::DrawItemTooltip(s.obj, b.count, tipGold, -1, false,
-                                          SourceRef(), Grid::ExtraScope::kAny,
-                                          0, -1, 0, 0,
+                    Grid::DrawItemTooltip(s.obj, b.count, Grid::UnitRef{},
+                                          Grid::ExtraScope::kAny,
+                                          tipGold, -1, false, SourceRef(),
                                           Grid::TileContext{ {}, false, false, true, false });
                     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
                         // lift it: the bundle keeps the entry until the carry
@@ -3315,7 +3316,7 @@ namespace
                         g_carryGlow = b.glow;   // (1.3.2)
                         g_carryStolen = b.stolen;
                         Grid::BeginPartnerCarry(s.obj, b.count, 0,
-                                                -1.0f, -1.0f, 0, -1, 0, s.rot);
+                                                Grid::UnitRef{}, 0, s.rot);
                     } else if (ImGui::IsItemClicked(ImGuiMouseButton_Right) &&
                                GoldCoins::IsPouch(b.form)) {
                         // ★(1.5.x) a bundled POUCH manages on right-click,
@@ -3838,8 +3839,7 @@ namespace
                             g_carryGlow = lifted.glow;   // (1.3.2)
                             g_carryStolen = lifted.stolen;
                             Grid::BeginPartnerCarry(liftedObj, lifted.count, 0,
-                                                    -1.0f, -1.0f, 0, -1, 0,
-                                                    lifted.rot);
+                                                    Grid::UnitRef{}, 0, lifted.rot);
                         }
                     }
                 }
@@ -5378,16 +5378,11 @@ namespace
                         const int tipGold =
                             GoldCoins::IsPouch(it.obj->GetFormID())
                                 ? ShelfGoldOf(it.spotKey) : -1;
-                        Grid::DrawItemTooltip(it.obj, it.count, tipGold, price, true,
-                                              SourceRef(),
+                        Grid::DrawItemTooltip(it.obj, it.count,
+                                              Grid::UnitRef{ it.uid, it.sig, it.xlIdx },
                                               it.perUnit ? Grid::ExtraScope::kUnit
                                                          : Grid::ExtraScope::kAny,
-                                              // ★it.sig, not 0. The partner
-                                              // side has no uid and no list
-                                              // position to offer, so the
-                                              // signature is the only handle
-                                              // the tooltip can resolve with.
-                                              it.uid, it.xlIdx, it.sig, 0,
+                                              tipGold, price, true, SourceRef(),
                                               // ★(1.5.0 audit) the SPOT KEY
                                               // rides along so the bag verb
                                               // can ask whether its window is
@@ -5456,7 +5451,7 @@ namespace
                             g_carryGlow = it.glow;       // (1.3.2) markers ride along
                             g_carryStolen = it.stolen;   // ★including this one
                             Grid::BeginPartnerCarry(it.obj, it.count, it.value,
-                                -1.0f, -1.0f, it.uid, it.xlIdx, it.ord, it.rot);
+                                Grid::UnitRef{ it.uid, 0, it.xlIdx }, it.ord, it.rot);
                         }
                     }
                     // TAKE trigger: right-click (whole move) OR shift+left-click

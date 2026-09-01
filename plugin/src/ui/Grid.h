@@ -198,10 +198,13 @@ namespace FUI::Grid
     // take/buy moves THAT unit and not whichever one the engine fancies.
     // GI62: a_rot = the quarter-turn the cell sits at on the partner board, so
     // the carry (and any drop back into the inventory) keeps it.
+    // ★a_unit.sig is carried but NOT YET READ by the body -- this call has
+    // never had a signature to work with, and giving it one is a behaviour
+    // change that wants its own round. The field being there is the point: the
+    // gap is visible now instead of implied by an argument that is missing.
     void BeginPartnerCarry(RE::TESBoundObject* a_obj, int a_count, int a_value,
-                           float a_offX = -1.0f, float a_offY = -1.0f,
-                           std::uint16_t a_uid = 0, int a_xlIdx = -1, int a_ord = 0,
-                           int a_rot = 0);
+                           const UnitRef& a_unit, int a_ord = 0, int a_rot = 0,
+                           float a_offX = -1.0f, float a_offY = -1.0f);
 
     // Deferred rebuild (safe to request mid-draw; runs at FinishFrame).
     // ★B3-c: who asked, without touching thirty call sites. Before the board
@@ -523,15 +526,18 @@ namespace FUI::Grid
     // divider" cannot work for a mark that snaps to whole pixels.
     void DrawInkLattice(ImDrawList* a_dl, const ImVec2& a_base, int a_cols, int a_rows);
 
-    void DrawItemTooltip(RE::TESBoundObject* a_obj, int a_count, int a_coinValue = -1,
-                         int a_price = -1, bool a_isBuy = false,
+    // ★★★WHICH UNIT IS BEING DESCRIBED -- ahead of everything optional, so
+    // it cannot be forgotten. It was four loose arguments in the middle of
+    // eleven, and the player's own grid passed a literal 0 where it held the
+    // signature: every plain dagger then borrowed the tempered one's NAME while
+    // the numbers beside it stayed right (2026-09-01). a_unit.hand carries what
+    // kWorn needs -- with a copy in each hand "the worn list of this form" is
+    // ambiguous, and the doll knows which slot it drew.
+    void DrawItemTooltip(RE::TESBoundObject* a_obj, int a_count,
+                         const UnitRef& a_unit, ExtraScope a_scope,
+                         int a_coinValue = -1, int a_price = -1,
+                         bool a_isBuy = false,
                          RE::TESObjectREFR* a_owner = nullptr,
-                         ExtraScope a_scope = ExtraScope::kAny,
-                         std::uint16_t a_uid = 0, int a_xlIdx = -1,
-                         // kWorn only: WHICH worn unit. With one copy in each
-                         // hand "the worn list of this form" is ambiguous, so the
-                         // doll passes the identity its slot recorded.
-                         std::uint16_t a_sig = 0, int a_hand = 0,
                          const TileContext& a_tile = {});
 
     // ★An item's name as the GAME would print it. Quest items name themselves

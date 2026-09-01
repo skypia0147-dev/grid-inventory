@@ -1001,9 +1001,10 @@ namespace FUI::Equip
                     // kWorn resolves "the first worn list of this form"; with a
                     // copy in each hand that is the wrong one for one of the two
                     // slots. Hand the tooltip the list this slot actually wears.
-                    Grid::DrawItemTooltip(eq->obj, eq->count, -1, -1, false, nullptr,
-                                          Grid::ExtraScope::kWorn,
-                                          eq->uid, -1, eq->sig, eq->hand,
+                    Grid::DrawItemTooltip(eq->obj, eq->count,
+                                          Grid::UnitRef{ eq->uid, eq->sig, -1,
+                                                         /*worn=*/true, eq->hand },
+                                          Grid::ExtraScope::kWorn, -1, -1, false, nullptr,
                                           Grid::TileContext{ {}, false, false, false, true });
                     // (1.3.1) T = recharge the WORN unit -- while equipped the
                     // charge lives in this hand's AV, and OpenRecharge knows.
