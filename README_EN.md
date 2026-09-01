@@ -130,6 +130,12 @@ first run — there is nothing to edit beforehand. Safe to add to an ongoing sav
 - Pickpocketing: a success % on every square (for the whole stack), worn gear
   locked (Perfect Touch unlocks), reverse-pickpocketing + Poisoned-perk planting.
 - Containers auto-open after a successful lockpick (yields to QuickLoot-style widgets).
+- **A follower's worn gear**: right-click takes a piece at a time, but `R`
+  (take all) empties the PACK and leaves the body dressed. Strip a living NPC
+  of every outfit item and the game mints the whole outfit again and re-dresses
+  them -- vanilla behaviour, and not something a mod can switch off. To swap a
+  follower's kit, hand them the replacement FIRST and then take the old one.
+  Corpses and chests are unaffected: `R` takes everything.
 
 ### The quick wheel — change gear without opening anything
 
