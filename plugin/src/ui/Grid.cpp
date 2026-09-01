@@ -12459,6 +12459,40 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             }
             ImGui::TextColored(Theme::TipVal(), "%s %d", Lang::T(Lang::Str::Damage), dmg);
             diffText(dmg);
+        } else if (auto* ammo = a_obj->As<RE::TESAmmo>()) {
+            // ★★ARROWS AND BOLTS HAVE A DAMAGE NUMBER TOO, and this card never
+            // printed it: the chain tested weapon, then armour, and ammo is
+            // neither, so a quiver's tooltip simply had no line where every
+            // other piece of gear has one (reported 2026-09-02 -- it had been
+            // missing for as long as the card has existed).
+            //
+            // ★Flat, and that is not an omission. Ammo takes no temper and no
+            // enchantment, so there is no per-unit adjustment to ask the engine
+            // for -- the record's number IS the number, which is what vanilla
+            // shows in its own inventory. Read through GetRuntimeData() rather
+            // than a hand-computed offset (원칙 3).
+            const int dmg = static_cast<int>(ammo->GetRuntimeData().data.damage);
+
+            if (wantCmp && pc) {
+                // ★Not `cur != ammo`. A bow hovered while equipped compares
+                // with itself and reads (+0); ammo doing otherwise meant a
+                // player carrying one kind of arrow saw no card at all and
+                // reasonably concluded the key was broken.
+                //
+                // ★★AND NOT GetCurrentAmmo. That answers about the ACTOR'S
+                // combat state -- what is nocked right now -- and inside a
+                // paused menu it comes back empty, so the compare never had a
+                // counterpart to draw. Equip::EquippedAmmo walks the inventory
+                // for the list the engine marked worn, which is the same
+                // question the doll's quiver slot asks and gets right.
+                if (auto* cur = Equip::EquippedAmmo(pc)) {
+                    cmpObj = cur;
+                    cmpVal = static_cast<int>(cur->GetRuntimeData().data.damage);
+                    cmpIsWeap = true;   // the card reads "vs equipped", same as a bow
+                }
+            }
+            ImGui::TextColored(Theme::TipVal(), "%s %d", Lang::T(Lang::Str::Damage), dmg);
+            diffText(dmg);
         } else if (auto* armo = a_obj->As<RE::TESObjectARMO>()) {
             int arm = static_cast<int>(armo->GetArmorRating());
             if (pc) {
@@ -12819,8 +12853,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // do not handle those keys at all.
             const bool canSplit = !a_tile.equipSlot &&
                 (a_count > 1 || isPouch || (isCoin && a_coinValue > 1));
+            // ★Ammo belongs here as much as a bow does -- arrows come in a
+            // dozen kinds and the whole question is which hits harder. The card
+            // has drawn one since the damage line was added; only this hint
+            // still said the key did nothing.
             const bool canCompare = a_obj->Is(RE::FormType::Weapon) ||
-                                    a_obj->Is(RE::FormType::Armor);
+                                    a_obj->Is(RE::FormType::Armor) ||
+                                    a_obj->Is(RE::FormType::Ammo);
             const bool sideBoard = a_tile.partner || a_tile.equipSlot;
             // ★T RECHARGES, and until now the only way to find that out was to
             // read the changelog. The same test OpenRecharge runs, minus the
