@@ -9008,6 +9008,24 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 li->second.coin);
             break;   // one remainder fills; the rest arrives as fresh capfuls
         }
+        // ★A HOMELESS REMAINDER IS NORMAL AT THE CAP -- a capful mints a
+        // fresh tile by design, and saying so every time would be noise. It is
+        // worth a line only when ROOM STOOD FREE and the income minted beside
+        // it anyway, which is exactly what the fragment bug looked like: 337 G
+        // of space on a 663 G tile and an 82 G sale minting a second partial
+        // (2026-09-02 -- a tile keyed under a legacy band form that the
+        // tier-set filter had quietly stopped recognising).
+        if (left > 0) {
+            int room = 0;
+            for (const auto& sl : CoinTilesByPosition()) {
+                room += (std::max)(0, GoldCoins::kCoinCap - sl.value);
+            }
+            if (room > 0) {
+                SKSE::log::warn("[GOLD] ★{} G minted while {} G of room stood "
+                                "free -- income is not finding the tiles",
+                                left, room);
+            }
+        }
         bool minted = false;
         while (left > 0) {
             const int n = (std::min)(GoldCoins::kCoinCap, left);
@@ -10393,13 +10411,29 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     {
         // Coin tiles are keyed under whichever BAND form minted them -- a
         // shrunk pin keeps its old band key (see the partition's emitCoin
-        // note) -- so all four tier bases are live even after the one-coin
-        // migration. Filtering by base is what keeps the pouch out: it passes
-        // IsCoinForm but is its own form, not a tier.
-        std::set<std::string> bases;
-        for (int t = 0; t < 4; ++t) {
-            if (auto* f = GoldCoins::CoinForTier(t)) bases.insert(FormKey(f));
-        }
+        // note) -- so a tile can sit under any of the historical band forms.
+        //
+        // ★★★ASK WHAT THE FORM IS, NOT WHICH TIER IT MATCHES. This built a
+        // set from CoinForTier(0..3) and claimed "all four tier bases are live
+        // even after the one-coin migration". That stopped being true: the
+        // migration made all four tiers return the SAME form, so the set
+        // collapsed to one key and every tile minted under a legacy band
+        // vanished from this list.
+        //
+        // Measured 2026-09-02: a 663 G tile keyed `...|0x000803` with 337 G of
+        // room, an 82 G sale, and the income walk found ZERO coin tiles and
+        // minted a second partial beside it. The player is then holding two
+        // fragments that will not merge, and every later sale makes another.
+        //
+        // ★IsCoinForm answers the actual question; the pouch is excluded by
+        // name rather than by being absent from a tier list, which is what the
+        // old comment was really relying on.
+        const auto isCoinTile = [](const std::string& a_base) {
+            auto* obj = ObjFromBaseKey(a_base);
+            if (!obj) return false;
+            const auto id = obj->GetFormID();
+            return GoldCoins::IsCoinForm(id) && !GoldCoins::IsPouch(id);
+        };
         struct Row
         {
             CoinSlot           slot;
@@ -10408,7 +10442,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         std::vector<Row> rows;
         for (const auto& [k, le] : g_layout) {
             if (le.coin < 0) continue;
-            if (!bases.contains(BaseKey(k))) continue;
+            if (!isCoinTile(BaseKey(k))) continue;
             if (g_held && k == g_held->key) continue;   // cursor money is spoken for
             rows.push_back({ { k, le.coin }, &le });
         }
