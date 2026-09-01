@@ -269,6 +269,30 @@ namespace FUI::Grid
                           std::uint16_t a_sig, int a_hand = 0,
                           const std::string& a_srcKey = {}, int a_units = 1,
                           int a_xlIdx = -1);
+
+    // ★★★THE UNIT COMING BACK, NAMED WHILE WE CAN STILL SEE IT.
+    //
+    // NotePendingEquip's mirror. That one says "this unit is LEAVING the
+    // board"; this one says "this unit is ARRIVING on it, and here is what it
+    // is" -- recorded by the action that displaces it, before the engine has
+    // moved anything.
+    //
+    // ★Why it has to be recorded rather than derived: OnFormDelta is an
+    // ENGINE-EVENT applier. The event carries a FormID and nothing else
+    // ("uniqueID is always zero, so it never names the unit"), so the board
+    // re-walks the form and works out what is new -- which is the right answer
+    // for a script, another mod, or the engine's own slot-conflict removal,
+    // and the WRONG one when the player just told us exactly what they did.
+    // Measured 2026-09-01: right-clicking a plain dagger displaced the TEMPERED
+    // one, the re-walk named the returning unit `sig 0000`, and every dagger on
+    // the board went on to read "Iron Dagger" -- the tempered one included.
+    //
+    // ★★Consumed by the next partial add for this form, and only when that add
+    // has exactly ONE fresh tile: one note, one arrival, no guessing. Anything
+    // else drops the note and lets the re-walk stay the authority -- a wrong
+    // name is worse than an ugly one (the rule SoleUnitEntry already follows).
+    void NoteReturningUnit(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
+                           std::uint16_t a_sig);
     // Right-click on a book or note: show it in the game's OWN Book Menu.
     // Queued here, opened on the Tick — the menu must not be raised from
     // inside the render pass. While it is up, UIRoot stands down completely

@@ -1616,6 +1616,38 @@ namespace FUI::Equip
                     [&](RE::TESBoundObject& o) { return &o == obj; });
                 for (auto& [o2, d2] : inv) before = d2.first;
             }
+            // ★★★NAME WHAT THIS EQUIP IS ABOUT TO DISPLACE, while it is still
+            // on the body. The engine's unequip event names a FORM and nothing
+            // else, so the board's re-walk has to guess which unit came back --
+            // and it guessed wrong: a plain dagger equipped over a TEMPERED one
+            // sent the tempered one home labelled plain, and every dagger on
+            // the board read "Iron Dagger" after that (measured 2026-09-01).
+            //
+            // ★This is not a re-derivation. It is the doll's own knowledge,
+            // read at the moment of the action that uses it -- exactly what the
+            // player pointed at. Only when the form wears ONE unit: with two
+            // (a copy in each hand) the engine chooses which to displace and
+            // this cannot say, so it says nothing and the re-walk stays in
+            // charge.
+            if (obj->Is(RE::FormType::Armor) || obj->Is(RE::FormType::Weapon)) {
+                int                wornUnits = 0;
+                std::uint16_t      wUid = 0;
+                std::uint16_t      wSig = 0;
+                if (auto* live = Grid::LiveEntryOf(player, obj);
+                    live && live->extraLists) {
+                    for (auto* xl : *live->extraLists) {
+                        if (!xl) continue;
+                        if (!xl->HasType<RE::ExtraWorn>() &&
+                            !xl->HasType<RE::ExtraWornLeft>()) {
+                            continue;
+                        }
+                        ++wornUnits;
+                        wUid = UidOfList(xl);
+                        wSig = Grid::InstanceSigOf(xl);
+                    }
+                }
+                if (wornUnits == 1) Grid::NoteReturningUnit(obj, wUid, wSig);
+            }
             em->EquipObject(player, obj, srcList, act.count, slot,
                             false, false, true, true);
 

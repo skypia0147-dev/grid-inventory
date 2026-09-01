@@ -3541,7 +3541,30 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                 GoldCoins::IsPouch(fid) ? GoldCoins::PouchStoredOf(it.key)
                                                         : it.coinValue,
                                 price, false, nullptr, ExtraScope::kUnit,
-                                it.uid, it.xlIdx, 0, 0,
+                                // ★★★it.sig, NOT 0 -- the same correction the
+                                // partner side already carries, on the road it
+                                // was never applied to. With 0 here the
+                                // tooltip's pool fallback is switched off
+                                // (`if (!scoped && a_sig != 0)`) and the unit
+                                // is resolved by LIST POSITION alone.
+                                //
+                                // A position is a hint and not a promise, and
+                                // this file says so itself: a PLAIN unit's
+                                // recorded index is a leftover from when it
+                                // had a list at all -- a worn unit carries one
+                                // holding only ExtraWorn -- and the instant
+                                // that list goes away every later index slides
+                                // down (see EnumerateUnitRefs, same lesson).
+                                // So after one equip/unequip of a plain dagger
+                                // its index named the TEMPERED dagger's list,
+                                // and the name came back "Fine Iron Dagger"
+                                // for every plain copy while the rest of the
+                                // tooltip, which knows the pool, went on
+                                // showing the right numbers (user report:
+                                // "stats differed but every name was the
+                                // tempered one" -- GI61's symptom exactly,
+                                // through a door GI61 did not close).
+                                it.uid, it.xlIdx, it.sig, 0,
                                 TileContext{ it.key, it.def.bag != 0,
                                              it.inBag == kTrashKey, false, false,
                                              it.stolen, it.quest });
@@ -7766,6 +7789,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     // exactly yesterday's, the fast path only covers what it can prove. Every
     // decline logs its reason, so the coverage is measured, not assumed
     // (the same bargain !rbdrop struck).
+
+    // ★The board's half of "our own actions carry their identity". One note
+    // per form: a second displacement before the first is applied replaces it,
+    // which is correct -- the later action is the one still in flight.
+    namespace
+    {
+        struct ReturningUnit { std::uint16_t uid = 0; std::uint16_t sig = 0; };
+        std::map<RE::FormID, ReturningUnit> g_returning;
+    }
     bool OnFormDelta(std::uint32_t a_form)
     {
         const auto decline = [&](const char* a_why) {
@@ -8338,11 +8370,41 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             return &occByBag.emplace(a_bag,
                 ViewOccOf(g_views[static_cast<std::size_t>(vi)])).first->second;
         };
-        struct Planned { const UnitTile* u; LayoutEntry le; };
+        struct Planned { const UnitTile* u; LayoutEntry le; int xlIdx; };
         std::vector<Planned> plan;
+        // ★★★OUR OWN ACTION NAMED THIS UNIT -- TAKE ITS WORD OVER THE WALK'S.
+        //
+        // The walk answers from the engine, and the engine's event does not
+        // say which unit moved -- so a displaced TEMPERED dagger came back
+        // named `sig 0000` and every dagger on the board then read as plain
+        // (measured 2026-09-01). NoteReturningUnit recorded what the doll was
+        // wearing at the moment of the click: not a re-derivation, the
+        // observation the action had already made.
+        //
+        // ★Exactly one note, exactly one fresh tile. Anything else and we do
+        // not guess -- the note is dropped and the walk stays the authority,
+        // the same call SoleUnitEntry makes: a wrong name is worse than an
+        // ugly one.
+        const auto retIt = g_returning.find(a_form);
+        const bool adopt = retIt != g_returning.end() && fresh.size() == 1;
+        ReturningUnit note{};
+        if (retIt != g_returning.end()) { note = retIt->second; g_returning.erase(retIt); }
+
         for (const auto* u : fresh) {
             LayoutEntry le;
             if (const auto li = g_layout.find(u->key); li != g_layout.end()) le = li->second;
+            int seatXl = u->xlIdx;
+            if (adopt) {
+                le.uid = note.uid;
+                le.sig = note.sig;
+                // ★The position goes with it. A recorded index is a leftover
+                // from a moment this unit had a list at all; with an identity
+                // in hand MakeDisplayTile finds the list itself.
+                seatXl = -1;
+                SKSE::log::info("[B3] ★returning unit named by the action: "
+                                "'{}' u{:04X}/s{:04X} (walk said u{:04X}/s{:04X})",
+                    obj->GetName(), le.uid, le.sig, u->uid, u->sig);
+            }
             auto* seatOcc = occOf(le.bag);
             if (!seatOcc) return decline("no seatable view for the saved bag");
             if (le.col >= 0) {
@@ -8369,7 +8431,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         le.bag = g_dropHint.bag;
                         OccMark(*hOcc, le.col, le.row, hm);
                         hintTaken = true;
-                        plan.push_back({ u, le });
+                        plan.push_back({ u, le, seatXl });
                         continue;
                     }
                 }
@@ -8386,14 +8448,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     MaskOf(gdef, CanRotate(gdef) ? (le.rot & 3) : 0))) {
                 return decline("landed in the growth zone");
             }
-            plan.push_back({ u, le });
+            plan.push_back({ u, le, seatXl });
         }
 
         // Commit: the one tile factory, then every bookkeeping trace the
         // rebuild would have left for this tile (rule 5).
         for (const auto& p : plan) {
             g_layout[p.u->key] = p.le;   // persist BEFORE mint: the tile reads it
-            MakeDisplayTile(obj, entry, gdef, glow, p.u->key, 1, p.le, p.u->xlIdx);
+            MakeDisplayTile(obj, entry, gdef, glow, p.u->key, 1, p.le, p.xlIdx);
             const int idx = static_cast<int>(g_items.size()) - 1;
             const int tvi = viewIdxOf(p.le.bag);   // ★S3: the seat's own view
             if (tvi < 0) { RequestRebuild(); return true; }
@@ -8419,9 +8481,33 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 }
             }
             g_prevKeys.insert(p.u->key);
-            SKSE::log::info("[B3] ★partial add '{}' key '{}' at [{},{}]{} -- no rebuild",
+            // ★★SAY WHAT THE TILE CLAIMS AND WHAT IT ACTUALLY GOT.
+            //
+            // This line named the key and the cell, which is where the tile
+            // went -- never WHICH UNIT went into it. So a plain dagger filed
+            // into a tempered dagger's tile read exactly like a correct add,
+            // and the report ("every copy shows as tempered") could not be
+            // matched to any line in the log at all (measured 2026-09-01:
+            // three sessions of this path, no signal of any kind).
+            //
+            // ★The tile's identity lives in the layout entry, not in the key
+            // (Grid.cpp:6461 -- "the pool this tile belongs to lives in ns.le").
+            // MakeDisplayTile reads it from there, so THAT is the label the
+            // player sees; the unit is what they get when they click it. When
+            // the two disagree the tile is lying, and the log now says so.
+            // ★Never on a tile we deliberately re-labelled: an adopted tile
+            // differs from the walk BY DESIGN (that is the whole point), and
+            // reporting it as a mislabel taught the log to cry wolf -- five
+            // of them in the very run that proved the fix works.
+            const bool mislabel = !adopt &&
+                                  (p.le.uid != p.u->uid || p.le.sig != p.u->sig);
+            SKSE::log::info("[B3] ★partial add '{}' key '{}' at [{},{}]{} "
+                            "unit(u{:04X}/s{:04X}) tile(u{:04X}/s{:04X}){} "
+                            "-- no rebuild",
                 obj->GetName(), p.u->key, p.le.col, p.le.row,
-                p.le.bag.empty() ? "" : " (bag)");
+                p.le.bag.empty() ? "" : " (bag)",
+                p.u->uid, p.u->sig, p.le.uid, p.le.sig,
+                mislabel ? " ★MISLABEL" : "");
         }
         // ★NOW it is spent -- the plan committed, so the cell the player aimed
         // at has actually been used. A decline above returns without touching
@@ -9016,6 +9102,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
     // ★S-G: NotePaidGold is retired -- a payment debits named coin tiles
     // (CoinSpend), so nothing is guessed for the spill pass any more.
+
+    void NoteReturningUnit(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
+                           std::uint16_t a_sig)
+    {
+        if (!a_obj) return;
+        g_returning[a_obj->GetFormID()] = { a_uid, a_sig };
+    }
 
     void NotePendingEquip(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
                           std::uint16_t a_sig, int a_hand, const std::string& a_srcKey,
@@ -11603,6 +11696,40 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // to TESForm::GetName(), which returns the raw record text.
         if (a_xl) {
             if (const char* n = a_xl->GetDisplayName(a_obj); n && *n) return n;
+            // ★★★★TEMPER IS NOT A DISPLAY NAME, and that one fact is the whole
+            // bug. ExtraDataList::GetDisplayName answers for ExtraTextDisplayData
+            // -- a quest alias, a name the player typed -- and a tempered dagger
+            // has neither, so it comes back EMPTY. The "Fine" prefix was never
+            // in there to be found: the engine builds it on the ENTRY, from the
+            // unit's ExtraHealth.
+            //
+            // ★So the unit needs an entry of its own -- one throwaway holding
+            // this list alone. The same trick, with the same detach-before-
+            // destruct care, that UnitValueWith already uses for the price and
+            // the damage/armor cards use in-game. Which is exactly why the
+            // report was "the stats differ but every name is the tempered one":
+            // the numbers were asking per unit and the name was not.
+            //
+            // ★★Copied out rather than returned by pointer. The name belongs to
+            // an entry that dies at the closing brace, and a comparison tooltip
+            // holds TWO names live at once (the hovered item and the equipped
+            // card), so one shared buffer would let the second overwrite the
+            // first. A small rotation is enough for every caller this file has.
+            RE::BSSimpleList<RE::ExtraDataList*> sl;
+            sl.push_front(a_xl);
+            RE::InventoryEntryData e(a_obj, 1);
+            e.extraLists = &sl;
+            const char* unitName = e.GetDisplayName();
+            static std::array<std::string, 4> s_ring;
+            static std::size_t                s_next = 0;
+            std::string* slot = nullptr;
+            if (unitName && *unitName) {
+                slot = &s_ring[s_next];
+                *slot = unitName;
+                s_next = (s_next + 1) % s_ring.size();
+            }
+            e.extraLists = nullptr;   // detach BEFORE ~InventoryEntryData
+            if (slot) return slot->c_str();
         } else if (a_entry) {
             if (const char* n = a_entry->GetDisplayName(); n && *n) return n;
         }
@@ -11958,20 +12085,50 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         RE::ExtraDataList* scoped = nullptr;
         switch (a_scope) {
         case ExtraScope::kUnit:
-            scoped = ExtraForTile(entry, a_uid, a_xlIdx);
-            // ★★★...AND BY POOL WHEN THE TILE CANNOT BE NAMED. A unit sitting
-            // in a container on our side of a transfer has no uid (the engine
-            // assigns none) and no recorded position (xlIdx is -1), so the
-            // lookup above misses and a tempered dagger reads as plain --
-            // measured, two of them in one barrel both lost their name while
-            // their signature matched the held list exactly.
+            // ★★★★IDENTITY FIRST, POSITION LAST -- AND A PLAIN UNIT HAS NO
+            // POSITION AT ALL.
             //
-            // ★This is NOT the entry fallback the note below forbids, and the
-            // difference is the whole point: the entry's name is its FIRST
-            // sub-stack's, borrowed by units that are nothing like it, whereas
-            // a signature match means the same contents -- same temper, same
-            // enchantment, same name. Reading either is reading this unit's.
-            if (!scoped && a_sig != 0) scoped = ExtraForPool(entry, a_uid, a_sig);
+            // This asked the POSITION first and only fell through to the pool
+            // when it came back empty, which is backwards for the same reason
+            // ProcessPending's srcList was: a stale index still resolves to a
+            // REAL list, just the wrong one, so the pool answer never got to
+            // run. Handing the tooltip `it.sig` (it was passing 0) was
+            // necessary and not sufficient -- the sig fallback sat behind a
+            // door that never opened.
+            //
+            // ★And the plain case is not a fallback at all, it is a rule this
+            // file already states out loud in EnumerateUnitRefs: "uid 0 and
+            // sig 0 mean nothing distinguishes this unit, which is the
+            // definition of LISTLESS -- so any position recorded for it is a
+            // leftover from a moment when it DID have a list (a worn unit
+            // carries one holding only ExtraWorn)."
+            //
+            // ★★It was not the whole report, and this note used to claim it
+            // was. The tiles were ALSO handed the wrong identity on their way
+            // back from the doll -- see NoteReturningUnit. Two separate faults
+            // behind one symptom: the resolver read the tile wrongly, and the
+            // tile itself was wrong. Fixing either alone changed nothing the
+            // player could see, which is why this took three attempts
+            // (measured 2026-09-01).
+            if (a_uid != 0 || a_sig != 0) {
+                scoped = ExtraForPool(entry, a_uid, a_sig);
+                if (!scoped) scoped = ExtraForTile(entry, a_uid, a_xlIdx);
+            }
+            // ★★★THE POOL ANSWER IS THE PRIMARY ONE, and it earned that place
+            // before this: a unit sitting in a container on our side of a
+            // transfer has no uid (the engine assigns none) and no recorded
+            // position (xlIdx is -1), so a position-only lookup missed and a
+            // tempered dagger read as plain -- measured, two of them in one
+            // barrel both lost their name while their signature matched the
+            // held list exactly. It was added as a FALLBACK then; the case
+            // above shows why it had to be the first question instead.
+            //
+            // ★A signature match is not the entry fallback the note below
+            // forbids, and the difference is the whole point: the entry's name
+            // is its FIRST sub-stack's, borrowed by units that are nothing
+            // like it, whereas a signature match means the same contents --
+            // same temper, same enchantment, same name. Reading either is
+            // reading this unit's.
             break;
         case ExtraScope::kWorn:
             scoped = WornExtraMatching(entry, a_uid, a_sig, a_hand);
