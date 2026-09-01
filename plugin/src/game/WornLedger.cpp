@@ -88,6 +88,53 @@ namespace FUI::WornLedger
             }
             return out;
         }
+
+        const char* StateName(State a_s)
+        {
+            switch (a_s) {
+            case State::pending:  return "pending";
+            case State::doffing:  return "doffing";
+            default:              return "worn";
+            }
+        }
+
+        // ★★★NAME WHAT DRIFTED, not just how far.
+        //
+        // The audit reported "ledger 10 vs engine 1" and stopped there, and
+        // four sessions of that produced no diagnosis at all: a count cannot
+        // say WHICH ten, and the drift never survives the audit that finds it
+        // (the bend below rewrites the books). ★The ledger has carried uid,
+        // sig, hand and a timestamp since B4-2b for exactly this reason --
+        // identity plus a lifecycle -- and the one place it mattered was
+        // printing counts. So a mismatch now prints both sides in full.
+        //
+        // ★★AGE IS THE PART THAT ACCUSES. Entries that all arrived within a
+        // second of each other are one burst -- a loadout apply, a costume
+        // swap, a quiver going on. Entries spread over minutes are a slow
+        // leak: worn entries never expire (only pending and doffing do), so a
+        // single missed unequip event sits in the books until the next audit
+        // bends them, and the shape "many ledger, one engine" is what a leak
+        // that cannot self-heal looks like after a long session.
+        void ReportForm(const char* a_when, RE::FormID a_form,
+                        const std::vector<Entry>& a_engine)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            for (const auto& e : g_entries) {
+                if (e.form != a_form) continue;
+                const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     now - e.when).count();
+                logger::warn("[WORN] @{}   ledger: {} uid {:04X} sig {:04X} "
+                             "hand {} units {} age {}ms", a_when,
+                             StateName(e.state), e.uid, e.sig, e.hand,
+                             e.units, age);
+            }
+            for (const auto& e : a_engine) {
+                if (e.form != a_form) continue;
+                logger::warn("[WORN] @{}   engine: uid {:04X} sig {:04X} "
+                             "hand {} units {}", a_when, e.uid, e.sig,
+                             e.hand, e.units);
+            }
+        }
     }
 
     void NotePending(RE::FormID a_form, std::uint16_t a_uid, std::uint16_t a_sig,
@@ -103,17 +150,6 @@ namespace FUI::WornLedger
         e.state = State::pending;
         e.when  = std::chrono::steady_clock::now();
         g_entries.push_back(std::move(e));
-    }
-
-    void CancelPending(RE::FormID a_form)
-    {
-        if (!g_have) return;
-        for (auto it = g_entries.begin(); it != g_entries.end(); ++it) {
-            if (it->form == a_form && it->state == State::pending) {
-                g_entries.erase(it);
-                return;
-            }
-        }
     }
 
     void OnEquip(RE::FormID a_form)
@@ -237,6 +273,7 @@ namespace FUI::WornLedger
                 ++bad;
                 logger::warn("[WORN] @{} MISMATCH {:08X} '{}': ledger {} vs "
                              "engine {}", a_when, f, NameOf(f), mine, n);
+                ReportForm(a_when, f, engine);
             }
         }
         for (const auto& [f, n] : lByForm) {
@@ -244,6 +281,7 @@ namespace FUI::WornLedger
                 ++bad;
                 logger::warn("[WORN] @{} MISMATCH {:08X} '{}': ledger {} vs "
                              "engine 0", a_when, f, NameOf(f), n);
+                ReportForm(a_when, f, engine);
             }
         }
 
