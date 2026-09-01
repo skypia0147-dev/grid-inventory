@@ -15216,8 +15216,28 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // ★A pure query -- mouse position against the drawn board -- so
             // asking it earlier costs nothing and changes nothing.
             const auto sd = LootBarter::QueryStoreDrop();   // F7 (dead outside kLoot/kSteal)
+            // ★★★A MERGE DOES NOT FREE THE OCCUPANT'S SQUARE (REVIEW C-4).
+            //
+            // The room test frees it because a SWAP takes it away. A merge
+            // leaves the occupant exactly where it is, so measuring with it
+            // freed was over-generous by one cell -- and a follower's pack grew
+            // a row past its own limit on a stack that spilled (measured
+            // 2026-09-02: `x10 onto x6, cap 10`).
+            //
+            // ★AND THE COUNT STAYS WHOLE. The first attempt at this worked out
+            // the overflow here and asked for room for that instead -- which
+            // cancelled itself out, because PartnerHasRoomFor ALREADY does the
+            // same arithmetic: it answers yes when the incoming count fits in
+            // the remainder of the shelf's own stacks. Asking it about a
+            // pre-subtracted spill let it subtract the same room twice, so
+            // `x100 onto x3` came back "fits" with three arrows still homeless
+            // (measured). Hand it the whole count and let it do its own sum --
+            // it gets both cases right: absorbed whole answers yes through the
+            // stack early-out, and a spill falls through to the rectangle
+            // search that a full pack refuses.
+            const bool mergeHere = sd.occ == a_held.obj && EffectiveCap(a_held.obj) > 1;
             if (!LootBarter::PartnerHasRoomFor(a_held.obj, a_held.count, a_held.rot,
-                                               sd.occ ? sd.occSpotKey : std::string{})) {
+                    (sd.occ && !mergeHere) ? sd.occSpotKey : std::string{})) {
                 // (1.3.3) a follower's pack is 10 x 8 -- keep carrying
                 Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
             } else if (!(GoldCoins::IsCoinForm(fid) && !GoldCoins::IsPouch(fid))) {
