@@ -1643,7 +1643,38 @@ namespace FUI::LootBarter
         {
             int units = 1;
             int hand = 1;   // 1 right / 2 left
+            // ★★★WHICH UNIT WAS ON THE BODY.
+            //
+            // The restore used to hand EquipObject a null list and let the
+            // engine pick, so a TEMPERED bow taken off for a transfer could
+            // come back as the PLAIN copy from the same pack -- the player
+            // stores something in a chest and their weapon is quietly
+            // downgraded (REVIEW_1.6.0 A-3).
+            //
+            // ★The reasoning that put nullptr here conflated two different
+            // units. The unit being TRANSFERRED may genuinely have no name
+            // (a plain spare, sxl == nullptr) -- and that says nothing about
+            // the unit being WORN, which always has one: a worn list holds
+            // ExtraWorn by definition. Two questions, one answer, wrong.
+            //
+            // ★★Read BEFORE the unequip, like everything else here: after it
+            // the list can merge with an identical spare. ExtraWorn is not
+            // part of InstanceSig, so the signature taken off the body still
+            // names the unit once it is back in the pack.
+            std::uint16_t uid = 0;
+            std::uint16_t sig = 0;
         };
+
+        // Is a unit of THIS identity on the body? ★HasWorn asks only whether
+        // ANYTHING of the form is, which is why the substitution above was
+        // silent: the plain bow that came back instead answered yes.
+        [[nodiscard]] bool HasWornMatching(RE::TESObjectREFR* a_who,
+                                           RE::TESBoundObject* a_obj,
+                                           const WornSave& a_s)
+        {
+            return Grid::WornExtraMatching(Grid::LiveEntryOf(a_who, a_obj),
+                                           a_s.uid, a_s.sig, a_s.hand) != nullptr;
+        }
 
         [[nodiscard]] bool HasWorn(RE::TESObjectREFR* a_who, RE::TESBoundObject* a_obj)
         {
@@ -1676,9 +1707,15 @@ namespace FUI::LootBarter
                     if (!xl) continue;
                     const bool left = xl->HasType<RE::ExtraWornLeft>();
                     if (!left && !xl->HasType<RE::ExtraWorn>()) continue;
+                    // ★The identity comes off the body with the unit. Taken
+                    // here and not at the restore, because by then the list
+                    // has merged into the pack (see WornSave).
+                    const auto* xu = xl->GetByType<RE::ExtraUniqueID>();
                     worn.push_back({ xl,
                         { (std::max)(1, static_cast<int>(xl->GetCount())),
-                          left ? 2 : 1 } });
+                          left ? 2 : 1,
+                          xu ? xu->uniqueID : static_cast<std::uint16_t>(0),
+                          Grid::InstanceSigOf(xl) } });
                 }
             }
             for (auto& [xl, s] : worn) {
@@ -1706,7 +1743,18 @@ namespace FUI::LootBarter
                 const auto* slot = s.hand == 2
                     ? RE::TESForm::LookupByID<RE::BGSEquipSlot>(0x13F43)   // LeftHand
                     : nullptr;
-                em->EquipObject(a_actor, a_obj, nullptr,
+                // ★NAME THE UNIT THAT CAME OFF. Resolved here rather than
+                // carried, because an ExtraDataList* must never outlive the
+                // frame it was fetched in -- the identity travels, the pointer
+                // does not. ExtraForPool excludes worn lists, which is right:
+                // what we are looking for is the unit now back in the pack.
+                // ★nullptr is still a legitimate answer for a plain listless
+                // unit, and means the same thing it means everywhere else --
+                // take one from the bare count. It is only a WRONG answer when
+                // a named unit exists and we decline to name it.
+                auto* sxl = Grid::ExtraForPool(Grid::LiveEntryOf(a_actor, a_obj),
+                                               s.uid, s.sig);
+                em->EquipObject(a_actor, a_obj, sxl,
                                 static_cast<std::uint32_t>(n), slot,
                                 false, false, false, true);
             }
@@ -1714,11 +1762,24 @@ namespace FUI::LootBarter
             // silent failure here, and "my arrows come off when I use a chest"
             // is a report nobody could act on. This cannot force the engine --
             // it can refuse to be quiet about it.
-            if (!HasWorn(a_actor, a_obj) && HeldCount(a_actor, a_obj) > 0) {
-                SKSE::log::error("[XFER] W1: '{}' was unequipped for the transfer "
-                                 "and did NOT go back on ({} left in the pack)",
-                                 a_obj->GetName(), HeldCount(a_actor, a_obj));
-                return;
+            // ★★★...AND PER UNIT, NOT PER FORM. This asked HasWorn -- "is
+            // anything of this form on the body" -- so the exact failure the
+            // null list caused answered YES: the plain bow that came back
+            // instead of the tempered one is something. The check has to ask
+            // the question the save recorded, or it cannot see the bug it is
+            // standing next to.
+            if (HeldCount(a_actor, a_obj) > 0) {
+                bool missing = false;
+                for (const auto& s : a_saved) {
+                    if (HasWornMatching(a_actor, a_obj, s)) continue;
+                    missing = true;
+                    SKSE::log::error("[XFER] W1: '{}' (uid {:04X} sig {:04X} "
+                                     "hand {}) was unequipped for the transfer "
+                                     "and did NOT go back on ({} left in the "
+                                     "pack)", a_obj->GetName(), s.uid, s.sig,
+                                     s.hand, HeldCount(a_actor, a_obj));
+                }
+                if (missing) return;
             }
             // ★★COSMETIC, AND ONLY COSMETIC. The inventory was never wrong --
             // measured: the worn list is back before this line runs, and the
