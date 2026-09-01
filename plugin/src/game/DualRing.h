@@ -98,7 +98,11 @@ namespace FUI::DualRing
     // ★★Keyed by form AND content signature, so a plain ring and an enchanted
     // one of the same kind keep their own cells. Two units that match on both
     // are interchangeable to every reader here, and either may take the seat.
-    void NoteSecondCell(const RE::TESObjectARMO* a_ring, std::uint16_t a_sig);
+    // ★★★WRITING it is private -- PrepareForEquip records the placement as
+    // part of the one act, and that is the only moment anything knows where
+    // the player put a ring. The setter was public while a caller still had
+    // to sequence the three functions by hand; leaving it public now would
+    // invite exactly the protocol that consolidation removed.
     // Does this ring unit belong in the LEFT cell? False also means "no
     // opinion" -- the doll then falls back to the slot bit, which is right for
     // a pair the player never placed by hand.

@@ -20,7 +20,7 @@ namespace FUI::DualRing
         std::vector<RE::FormID> g_stripped;
 
         // ★Where the player PUT the second ring -- the left cell's tenant, by
-        // form. Placement, not physics: see NoteSecondCell in the header for
+        // form. Placement, not physics: see IsSecondCell in the header for
         // why this cannot be read off the slot bit. 0 = nobody placed one,
         // and the doll falls back to the bit.
         RE::FormID    g_leftRing = 0;
@@ -155,6 +155,15 @@ namespace FUI::DualRing
         // Membership changed under us -- the next reader must walk again.
         void ForgetWorn() { g_wornFrame = ~0ull; }
 
+        // Remember where the player PUT a ring (see the header). Private: the
+        // only moment anything knows this is the request PrepareForEquip is
+        // acting on, and it records it there.
+        void NoteSecondCell(const RE::TESObjectARMO* a_ring, std::uint16_t a_sig)
+        {
+            g_leftRing = a_ring ? a_ring->GetFormID() : 0;
+            g_leftSig  = a_ring ? a_sig : 0;
+        }
+
         // ★The enchantment a worn unit actually carries: the INSTANCE'S own
         // when the player made it (ExtraEnchantment), otherwise the record's.
         // Both matter here -- a pair of vanilla Rings of Resist Magic share
@@ -273,12 +282,6 @@ namespace FUI::DualRing
     bool HoldsRingSlot(const RE::TESObjectARMO* a_armo)
     {
         return HoldsRingBit(a_armo);
-    }
-
-    void NoteSecondCell(const RE::TESObjectARMO* a_ring, std::uint16_t a_sig)
-    {
-        g_leftRing = a_ring ? a_ring->GetFormID() : 0;
-        g_leftSig  = a_ring ? a_sig : 0;
     }
 
     bool IsSecondCell(const RE::TESObjectARMO* a_armo, std::uint16_t a_sig)
