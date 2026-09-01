@@ -8520,11 +8520,17 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             const bool mislabel = !adopt &&
                                   (p.le.uid != p.u->uid || p.le.sig != p.u->sig);
             SKSE::log::info("[B3] ★partial add '{}' key '{}' at [{},{}]{} "
-                            "unit(u{:04X}/s{:04X}) tile(u{:04X}/s{:04X}){} "
+                            "unit(u{:04X}/s{:04X}) tile(u{:04X}/s{:04X}) {}{} "
                             "-- no rebuild",
                 obj->GetName(), p.u->key, p.le.col, p.le.row,
                 p.le.bag.empty() ? "" : " (bag)",
                 p.u->uid, p.u->sig, p.le.uid, p.le.sig,
+                // ★Says WHICH path seated this tile. Without it a run of
+                // clean logs is ambiguous: MISLABEL can be zero because the
+                // labels agree, or because the unchecked path never ran.
+                // PLAN_TILE_IDENTITY §3 cannot be closed on the first
+                // reading alone, and this is the line that tells them apart.
+                adopt ? "adopted" : "inherited",
                 mislabel ? " ★MISLABEL" : "");
         }
         // ★NOW it is spent -- the plan committed, so the cell the player aimed

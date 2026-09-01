@@ -1289,8 +1289,28 @@ namespace
 
     // Upsert (or remove, when a_def==nullptr) one item's line in the override ini —
     // the in-game editor writes through this, so hand-edits elsewhere are preserved.
-    void UpsertDefLine(const std::string& a_key, const ItemDef* a_def, const std::string& a_name)
+    // One edit to the overrides file. `def == nullptr` erases the key.
+    struct DefEdit
     {
+        std::string    key;
+        const ItemDef* def = nullptr;
+        std::string    name;
+    };
+
+    // ★★EVERY EDIT IN ONE PASS OF THE FILE (REVIEW_1.6.0 C-3).
+    //
+    // This read the whole file, changed one line and wrote the whole file back
+    // -- fine for one key, and a reset needs TWO (the sex-suffixed line and the
+    // plain one, in that order), so clearing a single item read and rewrote the
+    // overrides twice. The file carries an entry per edited item, so it is not
+    // small by the time anyone is resetting things.
+    //
+    // ★The edits still apply in the order given, which is what the reset needs:
+    // the sex line first, then the plain one, so the plain key is not left
+    // behind looking like the reset did nothing.
+    void UpsertDefLines(const std::vector<DefEdit>& a_edits)
+    {
+        if (a_edits.empty()) return;
         std::vector<std::string> lines;
         {
             std::ifstream in(kDefsPath);
@@ -1305,42 +1325,49 @@ namespace
             lines.push_back("; second line ending in |F or |M, which applies only to that sex; the plain key");
             lines.push_back("; stays the default for both.");
         }
-        bool done = false;
-        for (auto it = lines.begin(); it != lines.end(); ++it) {
-            const auto eq = it->find('=');
-            if (eq == std::string::npos) continue;
-            std::string k = it->substr(0, eq);
-            k.erase(0, k.find_first_not_of(" \t"));
-            k.erase(k.find_last_not_of(" \t") + 1);
-            if (k != a_key) continue;
-            if (a_def) {
-                *it = FormatItemDef(a_key, *a_def);
-            } else {
-                // ★Take the "; Name" comment written directly above with it.
-                // Erasing the entry alone leaves the comment behind, where it
-                // then reads as the label of the NEXT, unrelated item — 211 of
-                // those had piled up in the shipped file. Index >= 2 keeps the
-                // two header comments safe.
-                auto first = it;
-                if (it != lines.begin()) {
-                    const auto prev = std::prev(it);
-                    if (std::distance(lines.begin(), prev) >= 2 &&
-                        !prev->empty() && prev->front() == ';') {
-                        first = prev;
+        for (const auto& ed : a_edits) {
+            bool done = false;
+            for (auto it = lines.begin(); it != lines.end(); ++it) {
+                const auto eq = it->find('=');
+                if (eq == std::string::npos) continue;
+                std::string k = it->substr(0, eq);
+                k.erase(0, k.find_first_not_of(" \t"));
+                k.erase(k.find_last_not_of(" \t") + 1);
+                if (k != ed.key) continue;
+                if (ed.def) {
+                    *it = FormatItemDef(ed.key, *ed.def);
+                } else {
+                    // ★Take the "; Name" comment written directly above with it.
+                    // Erasing the entry alone leaves the comment behind, where it
+                    // then reads as the label of the NEXT, unrelated item — 211 of
+                    // those had piled up in the shipped file. Index >= 2 keeps the
+                    // two header comments safe.
+                    auto first = it;
+                    if (it != lines.begin()) {
+                        const auto prev = std::prev(it);
+                        if (std::distance(lines.begin(), prev) >= 2 &&
+                            !prev->empty() && prev->front() == ';') {
+                            first = prev;
+                        }
                     }
+                    lines.erase(first, std::next(it));
                 }
-                lines.erase(first, std::next(it));
+                done = true;
+                break;
             }
-            done = true;
-            break;
-        }
-        if (!done && a_def) {
-            if (!a_name.empty()) lines.push_back("; " + a_name);
-            lines.push_back(FormatItemDef(a_key, *a_def));
+            if (!done && ed.def) {
+                if (!ed.name.empty()) lines.push_back("; " + ed.name);
+                lines.push_back(FormatItemDef(ed.key, *ed.def));
+            }
         }
         if (std::ofstream out(kDefsPath, std::ios::trunc); out) {
             for (const auto& l : lines) out << l << "\n";
         }
+    }
+
+    void UpsertDefLine(const std::string& a_key, const ItemDef* a_def, const std::string& a_name)
+    {
+        UpsertDefLines({ { a_key, a_def, a_name } });
     }
 
     ItemDef DefFor(RE::TESBoundObject* a_obj)
@@ -2298,13 +2325,17 @@ namespace
                 // sex-specific one would look like the reset did nothing.
                 const std::string key = editKey(o);
                 const std::string base = FormKey(o);
+                std::vector<DefEdit> edits;
                 if (key != base) {
                     g_itemDefs.erase(key);
-                    UpsertDefLine(key, nullptr, "");
+                    edits.push_back({ key, nullptr, {} });
                 }
                 g_itemDefs.erase(base);
                 g_modelDefsDirty = true;
-                UpsertDefLine(base, nullptr, "");
+                edits.push_back({ base, nullptr, {} });
+                // ★One pass of the file for both keys (C-3): this used to read
+                // and rewrite the whole overrides file once per key.
+                UpsertDefLines(edits);
             };
             hooks.saveAsCategory = [](RE::TESBoundObject* o, const FUI::Editor::FullDef& f) {
                 ItemDef d = f;
