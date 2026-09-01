@@ -1571,6 +1571,31 @@ namespace FUI::LootBarter
             return true;
         }
 
+        // ★★★HANDING SOMETHING TO A TEAMMATE IS NOT STORING IT IN A CONTAINER,
+        // and the engine has a separate reason for saying so. This used to be
+        // kStoreInContainer for every destination, which tells the engine the
+        // goods now belong to whoever owns the receiver -- so a follower's pack
+        // stamped the follower's name on the player's own gear.
+        //
+        // ★MEASURED (2026-09-02, Diplomatic Immunity, user-reported): gear the
+        // player hands to Malborn came back marked stolen, and the unit was
+        // carrying `owner 00085300 'Malborn'`. The quest makes Malborn a
+        // teammate before opening the trade -- `SetPlayerTeammate()` then
+        // `OpenInventory(true)` in QF_MQ201 -- and then moves the gear on with
+        // RemoveAllItems(chest, abKeepOwnership = true), so the ownership WE
+        // wrote survived all the way to the chest inside the Embassy.
+        // Confirmed not to be the taking side: the same save with the container
+        // handed back to the engine (F11) produced the same stolen mark, and so
+        // did running with the plugin disabled entirely. The stamp was already
+        // on the item before any of that.
+        [[nodiscard]] RE::ITEM_REMOVE_REASON StoreReason(RE::TESObjectREFR* a_dst)
+        {
+            auto* actor = a_dst ? a_dst->As<RE::Actor>() : nullptr;
+            return (actor && actor->IsPlayerTeammate())
+                       ? RE::ITEM_REMOVE_REASON::kStoreInTeammate
+                       : RE::ITEM_REMOVE_REASON::kStoreInContainer;
+        }
+
         RE::TESForm* ContainerOwner(RE::TESObjectREFR* a_source)
         {
             if (!a_source) return nullptr;
@@ -1931,7 +1956,32 @@ namespace FUI::LootBarter
                 const int spent = DepositTake(source, r.obj, r.count);
                 const int fromDeposit = (g_mode == Mode::kSteal) ? spent : r.count;
                 const int stolenCount = (std::max)(0, r.count - fromDeposit);
-                const bool anyStolen  = g_mode == Mode::kSteal && stolenCount > 0;
+                // ★★★AND THE WITNESS THE LEDGER CANNOT REPLACE: the unit's own
+                // ownership. The ledger only knows what went in THROUGH THIS
+                // MENU, and the reported case never did -- the Diplomatic
+                // Immunity quest puts gear the player handed to Malborn into a
+                // chest inside the Embassy by script. It arrives carrying
+                // ExtraOwnership = the player, which is precisely the engine
+                // saying "this is already theirs", and we stamped it stolen
+                // anyway. See the matching note on the board's own mark.
+                auto* unitOwner = pick.xl ? pick.xl->GetOwner() : nullptr;
+                const bool ownedByPlayer = unitOwner && unitOwner->IsPlayer();
+                const bool anyStolen = g_mode == Mode::kSteal && stolenCount > 0
+                                    && !ownedByPlayer;
+                // ★Whenever a unit NAMES an owner, in every mode. It was once
+                // steal-only and that hid the reported case entirely: the
+                // Embassy chest is an ordinary kLoot container -- no STEAL
+                // label on it -- so nothing here ran and nothing was logged,
+                // while the unit arrived carrying an owner all along. A unit
+                // that names an owner is rare; this stays quiet in normal play.
+                if (unitOwner) {
+                    SKSE::log::info("[XFER] take: '{}' x{} carries owner {:08X} "
+                                    "'{}' (mode={}) -- {}", r.obj->GetName(),
+                                    r.count, unitOwner->GetFormID(),
+                                    unitOwner->GetName(),
+                                    static_cast<int>(g_mode),
+                                    ownedByPlayer ? "the PLAYER" : "somebody else");
+                }
 
                 // ★★⑰ NAMING A LIST COSTS THE STEAL STAMP.
                 //
@@ -2186,9 +2236,9 @@ namespace FUI::LootBarter
                     const bool shield = sxl == nullptr && HasWorn(player, r.obj);
                     const auto saved = shield ? ShieldWorn(player, r.obj)
                                               : std::vector<WornSave>{};
+                    const auto why = StoreReason(source);   // see StoreReason
                     GuardedRemove(player, r.obj, sxl == nullptr, "store", [&]() {   // GI42
-                        player->RemoveItem(r.obj, r.count,
-                            RE::ITEM_REMOVE_REASON::kStoreInContainer, sxl, source);
+                        player->RemoveItem(r.obj, r.count, why, sxl, source);
                     });
                     RestoreWorn(player, r.obj, saved);
                 }
@@ -5051,24 +5101,38 @@ namespace
                 } else {
                     pc.locked = pc.unnameable;
                 }
-                // ★An owned container makes its contents stolen goods -- EXCEPT
-                // what the player put there, which says so on itself. The
-                // player's own base form is 0x7; anything else (or nothing) in
-                // an owned container is somebody else's.
-                // ★An owned container's contents are stolen goods -- except
-                // what the player deposited, which the ledger remembers. The
-                // cells of one FORM are numbered by formOrd, so the first N of
-                // them are the N units the player put here: mark from there on.
-                // (pc.ord counts within the pool and belongs to the carry; the
-                // two were the same number only while a form had one pool.)
+                // ★An owned container's contents are stolen goods -- except two
+                // kinds of unit, and BOTH have to be asked for:
+                //
+                //   the unit says it is the PLAYER'S      -- ExtraOwnership 0x7
+                //   the player deposited it here          -- the ledger
+                //
+                // The cells of one FORM are numbered by formOrd, so the first N
+                // of them are the N units the player put here: mark from there
+                // on. (pc.ord counts within the pool and belongs to the carry;
+                // the two were the same number only while a form had one pool.)
                 if (g_mode == Mode::kSteal) {
-                    if (xl && xl->GetOwner()) {
-                        // ★A unit that NAMES an owner is theirs whatever the
-                        // ledger says, and -- the point of putting this first
-                        // -- it must not eat a deposit credit. The credit then
-                        // lands on the unowned units, which are the ones the
-                        // player actually put here.
-                        pc.stolen = true;
+                    auto* owner = xl ? xl->GetOwner() : nullptr;
+                    if (owner) {
+                        // ★★A unit that NAMES an owner is theirs whatever the
+                        // ledger says -- UNLESS THAT OWNER IS THE PLAYER.
+                        //
+                        // This read `pc.stolen = true` for any owner at all, so
+                        // the player's own property, sitting in a hostile room
+                        // with the player's name still on it, came home stamped.
+                        // ★That is the Diplomatic Immunity report (2026-09-01):
+                        // gear handed to Malborn is put in a chest inside the
+                        // Embassy BY THE QUEST -- it never passes through this
+                        // menu, so the ledger cannot know it, and ownership is
+                        // the only witness left. An earlier comment here already
+                        // said "the player's own base form is 0x7"; the check
+                        // went away when the ledger arrived, the comment did not.
+                        //
+                        // Placed before the ledger for the original reason: an
+                        // owned unit must not eat a deposit credit. The credit
+                        // then lands on the unowned units, which are the ones
+                        // the player actually put here.
+                        pc.stolen = !owner->IsPlayer();
                     } else {
                         const int fo = formOrd[obj->GetFormID()]++;
                         pc.stolen = fo >= DepositedCount(source, obj);
