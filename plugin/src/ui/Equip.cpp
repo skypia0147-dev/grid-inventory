@@ -538,8 +538,8 @@ namespace FUI::Equip
                     // below the loop. Both are engine-worn now, and they share
                     // one entry -- so the units have to be walked here.
                     // ★★★★★PLACEMENT FIRST, THE SLOT BIT ONLY AS A FALLBACK.
-                    // The bit moves for reasons of its own -- MakeRoom takes it
-                    // off whatever is worn so an incoming ring can join -- so
+                    // The bit moves for reasons of its own -- the equip takes it
+                    // off whatever stays so an incoming ring can join -- so
                     // reading the cell off it put every NEW ring on the right
                     // and slid the old one left: a ring dropped on the LEFT
                     // cell appeared on the RIGHT, and the pair looked like it
@@ -1267,6 +1267,30 @@ namespace FUI::Equip
             return xu ? xu->uniqueID : 0;
         }
 
+        // ★THE CELL'S TENANT: FORM AND UNIT, FROM ONE WALK.
+        //
+        // A ring drop needs both -- the unit to aim the removal at, the form to
+        // name it in the log -- and WornObjectAt / WornExtraAt each run their
+        // own CollectEquipment, which is three deep-copying GetInventory passes
+        // apiece. Asking them separately paid for six walks to answer one
+        // click. Fresh (never the frame cache) for the reason those two are:
+        // this runs either side of real mutations, where a cached answer lies.
+        void WornUnitAt(const std::string& a_slotId, RE::TESBoundObject*& a_obj,
+                        RE::ExtraDataList*& a_xl)
+        {
+            a_obj = nullptr;
+            a_xl  = nullptr;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) return;
+            std::unordered_map<std::string, EquipEntry> eq;
+            CollectEquipment(eq);
+            const auto it = eq.find(a_slotId);
+            if (it == eq.end() || !it->second.obj) return;
+            a_obj = it->second.obj;
+            a_xl  = Grid::WornExtraMatching(Grid::LiveEntryOf(player, a_obj),
+                                            it->second.uid, it->second.sig,
+                                            it->second.hand);
+        }
     }
 
     void ProcessPending()
@@ -1404,16 +1428,19 @@ namespace FUI::Equip
                 // The cell the player pointed at names its victim; a click and
                 // the wheel point at nothing.
                 const bool second = act.slotId == "ringL";
-                RE::TESObjectARMO* aimed = nullptr;
+                // ★THE UNIT, NOT THE FORM. This was `occ->As<ARMO>()`, and a
+                // form cannot name one of two identical rings on the body: the
+                // wrong one came off and the cursor was handed a ring still on
+                // the finger. See DualRing.h.
+                RE::TESBoundObject* occ   = nullptr;
+                RE::ExtraDataList*  aimed = nullptr;
                 if (second || act.slotId == "ringR") {
-                    if (auto* occ = WornObjectAt(act.slotId)) {
-                        aimed = occ->As<RE::TESObjectARMO>();
-                    }
+                    WornUnitAt(act.slotId, occ, aimed);
                 }
                 DualRing::PrepareForEquip(ringIn, act.sig, aimed, second);
                 SKSE::log::info("[RING] '{}' -> {} cell (aimed at '{}')",
                     obj->GetName(), second ? "second" : "first",
-                    aimed ? aimed->GetName() : "-");
+                    occ ? occ->GetName() : "-");
                 return true;
             }();
 
@@ -1518,27 +1545,54 @@ namespace FUI::Equip
             // D4: equip THIS copy. Resolving late (here, not at request time)
             // is deliberate -- ExtraDataList* must never be cached across
             // frames, the engine reallocates and frees them.
-            // Identity first, POSITION last. xlIdx is a list index captured a
-            // frame or more before this runs, and the engine reorders lists --
-            // a stale index still resolves to a REAL list, just the wrong one,
-            // so trying it first meant a carried tempered dagger re-equipped as
-            // the plain copy and the signature fallback never even ran.
-            RE::ExtraDataList* srcList = nullptr;
-            if (act.uid != 0 || act.sig != 0) {
-                srcList = Grid::ExtraForPool(Grid::LiveEntryOf(player, obj),
-                                             act.uid, act.sig);
-                // GI53: the named unit vanished between the click and this
-                // tick (a queued sale/transfer raced us). A stale xlIdx still
-                // resolves to a REAL list -- the wrong one -- so refuse rather
-                // than equip an arbitrary sibling (PoolChoice rule 61).
-                if (!srcList) {
-                    SKSE::log::info("[EQUIP] named unit gone -- equip skipped");
-                    continue;
-                }
-            } else {
-                srcList = Grid::ExtraForInstance(Grid::LiveEntryOf(player, obj),
-                                                 act.uid, act.xlIdx);
+            // ★★★IDENTITY ONLY, NEVER POSITION -- and this used to be
+            // "identity FIRST, position last", which sounds like the same rule
+            // and is not. A named unit (uid or signature) took the pool
+            // resolver; a PLAIN one fell through to xlIdx, a list index
+            // captured a frame or more earlier. Two things are wrong with that
+            // index and only one of them was known: the engine reorders lists
+            // behind us (a stale index resolves to a REAL list, just the wrong
+            // one), and -- the part that bit -- ★ExtraForTile does not exclude
+            // the WORN list, while ExtraForPool does.
+            //
+            // So equipping a plain unit whose form already had a sibling ON THE
+            // BODY could hand EquipObject the ring already on the finger. The
+            // engine has nothing to do with that and does nothing: the log said
+            // [EQUIP], the swap's victim had already come off, and the player
+            // ended up wearing one ring fewer than before (measured 17:47:35).
+            // ★★It only ever bit in ONE ORDER, which is why it read as a rule
+            // about enchantments: put the plain ring on FIRST and no sibling is
+            // worn yet, so it goes on; put the enchanted one on first and the
+            // plain one can no longer be told from it ("좌측에 인챈트, 우측에
+            // 동일한 일반 반지는 착용이 가능하고 반대는 안된다"). Nothing about
+            // enchantment -- an enchanted unit simply has a signature, and the
+            // signature bought it the resolver that excludes worn lists.
+            //
+            // ★★★An equip NEVER wants the worn list. The unit being put on is
+            // by construction not the one already on the body, so excluding it
+            // is not a heuristic -- it is what the word means. ExtraForTile's
+            // own comment says to prefer this resolver wherever the pool is
+            // known, and here it always is.
+            RE::ExtraDataList* srcList = Grid::ExtraForPool(
+                Grid::LiveEntryOf(player, obj), act.uid, act.sig);
+            // GI53: a NAMED unit that resolves to nothing vanished between the
+            // click and this tick (a queued sale/transfer raced us) -- refuse
+            // rather than equip an arbitrary sibling (PoolChoice rule 61).
+            // ★For an unnamed one, nullptr is the honest answer and not a
+            // failure: a plain spare genuinely has no list of its own, and the
+            // engine takes it from the bare count.
+            if (!srcList && (act.uid != 0 || act.sig != 0)) {
+                SKSE::log::info("[EQUIP] named unit gone -- equip skipped");
+                continue;
             }
+            // ★1.6.0: a drop on "ringL" once branched here into the carrier's
+            // own Wear -- the second ring never went through the engine at
+            // all -- with a fall-through for the refusals that branch could
+            // return, and a matching "the carrier lets go" pass for a ring
+            // equipped normally while the carrier held one. All of it is gone
+            // with the carrier: "ringL" is a name the doll uses, not a
+            // destination the equip can aim at, so the ring travels the same
+            // road as every other piece of gear from here.
             // Rule 13 below needs to know whether the engine actually TOOK
             // units (a consumable drunk) or left them in the pack (a scripted
             // click-me item, a spell tome already known). Only a before/after

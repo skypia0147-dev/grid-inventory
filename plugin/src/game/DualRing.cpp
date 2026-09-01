@@ -139,7 +139,7 @@ namespace FUI::DualRing
         // all in one frame, over every piece of armour the player owns.
         // ★Only MEMBERSHIP is cached. Slot bits are read live off the ARMO, so
         // a mask this pass changes is visible to the next reader immediately --
-        // which is exactly what MakeRoom and AimAt rely on.
+        // which is exactly what PrepareForEquip's steps 3 and 4 rely on.
         std::vector<WornRing> g_wornCache;
         std::uint64_t         g_wornFrame = ~0ull;
 
@@ -272,51 +272,38 @@ namespace FUI::DualRing
 
     bool HasSecondCell() { return g_leftRing != 0; }
 
-    bool MakeRoom()
-    {
-        auto* p = RE::PlayerCharacter::GetSingleton();
-        if (!p) return false;
-        const auto& worn = WornRingsCached(p);
-        if (worn.empty()) return false;
-        // ★★NOT WHEN BOTH SLOTS ARE ALREADY FULL. Room is made by taking the
-        // bit off the ring that has it; do that with a pair on the body and
-        // NOTHING holds kRing, so the incoming equip displaces nothing and the
-        // player ends up wearing three. With a pair the right answer is the
-        // engine's own: leave the bit alone and let the ordinary conflict pass
-        // trade the visible ring for the new one.
-        if (worn.size() >= 2) return false;
-        bool made = false;
-        for (const auto& w : worn) {
-            if (!HoldsRingBit(w.armo) || !MayGiveUpRingBit(w.armo)) continue;
-            TakeRingBit(w.armo);
-            made = true;
-        }
-        if (!made) return false;   // nothing could give a bit up -- ordinary swap
-        g_dirty = true;   // the sweep gives the bits back when the rings leave
-        return true;
-    }
-
     void PrepareForEquip(RE::TESObjectARMO* a_incoming, std::uint16_t a_sig,
-                         RE::TESObjectARMO* a_aimed, bool a_secondCell)
+                         RE::ExtraDataList* a_aimed, bool a_secondCell)
     {
         auto* p = RE::PlayerCharacter::GetSingleton();
         if (!p || !a_incoming) return;
 
-        // 1. WHO MUST LEAVE. Only ever past the cap, and the ring the player
-        //    pointed at goes first -- a drop on a cell names its own victim.
-        //    Otherwise the visible one, which is what an ordinary equip has
-        //    always meant.
+        // 1. WHO MUST LEAVE -- two separate questions, and running them
+        //    together was a bug.
         std::vector<WornRing> victims;
         {
             const auto& worn = WornRingsCached(p);
-            int over = static_cast<int>(worn.size()) - 1;   // room for one more
-            if (over > 0 && a_aimed) {
+
+            // ★1a. THE RING THE PLAYER POINTED AT LEAVES. Always: a drop on an
+            //    OCCUPIED cell is a swap, and a swap that keeps the occupant is
+            //    not one. This used to be conditional on being over the cap, so
+            //    it only fired when a SECOND ring happened to be on -- and with
+            //    one ring worn, dropping another on its own cell added instead
+            //    of replacing ("스왑이 아니고 밀려서 장착됨"). The cap is about
+            //    how many rings the body may hold; the aim is about which ring
+            //    the player asked to remove. Neither answers the other.
+            //    ★Matched on the UNIT (its worn list), never the form -- see
+            //    the header for the phantom that the form match produced.
+            if (a_aimed) {
                 for (const auto& w : worn) {
-                    if (w.armo != a_aimed || over <= 0) continue;
+                    if (w.xl != a_aimed) continue;
                     victims.push_back(w);
-                    --over;
+                    break;
                 }
             }
+
+            // 1b. Then the cap, over whoever is left: room for one more.
+            int over = static_cast<int>(worn.size() - victims.size()) - 1;
             for (const auto& w : worn) {
                 if (over <= 0) break;
                 if (std::any_of(victims.begin(), victims.end(),

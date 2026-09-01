@@ -86,8 +86,8 @@ namespace FUI::DualRing
     [[nodiscard]] bool HoldsRingSlot(const RE::TESObjectARMO* a_armo);
 
     // ★★★...BUT THE CELL IS NOT THE BIT, and tying them together was wrong in
-    // the other direction. The bit moves for mechanical reasons -- MakeRoom
-    // takes it off whatever is worn so the incoming ring can join -- so the
+    // the other direction. The bit moves for mechanical reasons -- the equip
+    // takes it off whatever stays so the incoming ring can join -- so the
     // NEWEST ring always ended up holding it, and "cell = holder" then put
     // every new ring on the RIGHT and slid the old one LEFT. A ring dropped on
     // the left cell appeared on the right, and the pair looked like it had
@@ -113,16 +113,45 @@ namespace FUI::DualRing
     //
     //   a_incoming   the ring going on
     //   a_sig        its content signature (names the UNIT)
-    //   a_aimed      the ring the player pointed at -- the cell's occupant.
-    //                null for a click or the wheel, which point at nothing
+    //   a_aimed      the UNIT the player pointed at -- the cell's occupant, as
+    //                the worn list that names it. null for a click or the
+    //                wheel, which point at nothing
     //   a_secondCell the drop named the LEFT cell
     //
     // Takes off whatever must leave, hands the slot bit round so the engine
     // single-ends nothing, and records the placement. ★The caller must SKIP
     // its conflict pass for rings afterwards -- everything is already arranged,
     // and that pass would undo it.
+    //
+    // ★★★★a_aimed IS A UNIT AND WAS A FORM, and the difference is a bug the
+    // player could see. The cell's occupant arrived here as `occ->As<ARMO>()`
+    // -- so with two units of ONE form on the body, "the ring in this cell"
+    // matched whichever came first in INVENTORY order. The wrong one came off,
+    // the board handed the cursor the one it thought it had displaced, and
+    // that ring was still on the finger: a phantom the player could only drop
+    // into nothing, while the other ring went quietly into the pack (user
+    // report). ★Two units alike in uid AND signature stay interchangeable --
+    // removing either is the same act to every reader here, including the
+    // player -- so naming the unit by pool is exact where exactness exists and
+    // arbitrary only where the difference does not exist either.
+    //
+    // ★★THIS WAS THREE FUNCTIONS AND A PROTOCOL. MakeRoom / TakeOneOff /
+    // NoteSecondCell had to be called in the right order, by every road a ring
+    // can arrive on, and the caller had to know which road it was on. The order
+    // was got wrong four times in one day -- a click path that skipped the cap,
+    // a drop path that skipped it too, a missing second MakeRoom, and a swap
+    // that removed a ring the caller was also removing. A caller that must know
+    // a sequence is a caller that will get the sequence wrong.
+    //
+    // ★★★And the engine cannot be asked to help. Its conflict pass removes
+    // every worn ring whose mask OVERLAPS the incoming one's, the slot bit is a
+    // FORM fact rather than a unit one, and so the pass can be aimed at "all"
+    // or "none" but never at "that one". Three attempts to steer it produced
+    // three separate failures -- a phantom ring on the cursor, a pair both
+    // coming off, a third ring going on (all measured 2026-09-01). The removal
+    // is ours, explicitly, and the pass is kept away from rings entirely.
     void PrepareForEquip(RE::TESObjectARMO* a_incoming, std::uint16_t a_sig,
-                         RE::TESObjectARMO* a_aimed, bool a_secondCell);
+                         RE::ExtraDataList* a_aimed, bool a_secondCell);
 
     // ---- lifecycle --------------------------------------------------------
     // ★Per game-update tick, and it OBSERVES rather than remembers: the world
