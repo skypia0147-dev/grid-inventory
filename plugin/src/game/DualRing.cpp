@@ -1,9 +1,10 @@
 #include "game/DualRing.h"
 
 #include "game/Costume.h"
-#include "game/WornLedger.h"
 #include "ui/Grid.h"
 
+#include <algorithm>
+#include <chrono>
 #include <vector>
 
 namespace FUI::DualRing
@@ -11,89 +12,30 @@ namespace FUI::DualRing
     namespace
     {
         using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
-        using BO   = RE::BIPED_OBJECTS::BIPED_OBJECT;
 
-        constexpr std::uint32_t kSlots = BO::kEditorTotal;   // 32
+        // ★The forms we took kRing from, and owe it back to. Session state
+        // only: a load restores every record from the plugin, so a debt
+        // written into the cosave would already be paid by the time it was
+        // read. Tick re-derives instead (see the header).
+        std::vector<RE::FormID> g_stripped;
 
-        // ★Costume anchor 32. Costume::kAnchorCount is 31 precisely so this one
-        // is never raised OR dropped by that system: `need` there is
-        // `j < groups.size()` and groups can hold at most 31 entries, so the
-        // costume could never want it -- but its loop would still drop one it
-        // found held, which is why the count was lowered rather than shared.
-        constexpr std::uint32_t kCarrierId = 0x84A;
-        constexpr const char*   kPlugin    = "Grid Inventory.esp";
+        // ★Where the player PUT the second ring -- the left cell's tenant, by
+        // form. Placement, not physics: see NoteSecondCell in the header for
+        // why this cannot be read off the slot bit. 0 = nobody placed one,
+        // and the doll falls back to the bit.
+        RE::FormID    g_leftRing = 0;
+        std::uint16_t g_leftSig  = 0;
 
-        RE::FormID    g_ringId  = 0;   // the ring the carrier stands in for
-        std::uint16_t g_ringSig = 0;   // its content signature (see SecondSig)
-        bool          g_wantOff = false;  // take-off asked for from the render pass
-
-        // ★What the carrier borrowed, so it can be handed back. The carrier is
-        // OUR form and no other actor wears it, so this is bookkeeping rather
-        // than the safety problem it would be for a shared armour -- but a
-        // stale enchantment would still follow it into its next use.
-        struct Lent
-        {
-            RE::EnchantmentItem* ench = nullptr;
-            bool                 held = false;
-        };
-        Lent g_lent;
-
-        // ★★★...AND IT DOES NOT STAY NAKED. See the note inside Carrier() for
-        // what the authored armature does. This is why the undressing is a
-        // function instead of three lines inside the resolve:
-        //
-        // LOADING A SAVE PUTS THE CLOTHES BACK ON. The engine re-reads the
-        // carrier's record from the plugin -- OnLoad has always known this,
-        // which is the reason the enchantment has to be re-lent there -- and
-        // armorAddons comes back with it. The strip used to live behind the
-        // `if (!cached)` of the resolve, so it ran ONCE PER PROCESS: the first
-        // load of a session was fine and every load after it wore a circlet's
-        // armature again.
-        //
-        // Measured in a reporter's log: 1924 lines, two loads, one strip.
-        // Now it is asked on every lend, and costs nothing when already bare.
-        void StripCarrier(RE::TESObjectARMO* a_c)
-        {
-            if (!a_c || a_c->armorAddons.empty()) return;
-            a_c->armorAddons.clear();
-            SKSE::log::info("[DUALRING] carrier armature stripped (authored circlet addon)");
-        }
-
-        [[nodiscard]] RE::TESObjectARMO* Carrier()
-        {
-            // Not a function-local static initialiser: a miss must be
-            // retryable. This can run before the data handler has the plugin,
-            // and caching null there would disable the feature for the session.
-            static RE::TESObjectARMO* cached = nullptr;
-            if (!cached) {
-                if (auto* dh = RE::TESDataHandler::GetSingleton()) {
-                    cached = dh->LookupForm<RE::TESObjectARMO>(kCarrierId, kPlugin);
-                }
-                // ★★★THE CARRIER MUST BE NAKED. It is a byte-for-byte clone of
-                // the costume anchors, and the TEMPLATE carries a circlet's
-                // whole wardrobe: BOD2 on the HAIR and circlet slots, a
-                // circlet ARMA on its armature. The ordinary anchors never
-                // show it -- the costume overwrites their armorAddons with
-                // donor lists -- but the carrier is anchor 32 precisely so
-                // the costume leaves it alone, which also left the authored
-                // circlet addon LIVE. Wearing it therefore claimed the hair
-                // slot and fought the helmet's addon: helmet invisible over a
-                // bald head, on WHATEVER biped slot we parked the ARMO
-                // (measured: 60 and 59 alike -- the ARMO slot was never the
-                // actor, its armature was). Strip the armature once, here,
-                // where the form is first resolved; the slot mask is
-                // rewritten per wear by Lend already.
-                StripCarrier(cached);
-            }
-            return cached;
-        }
-
-        [[nodiscard]] RE::TESObjectARMO* RingById(RE::FormID a_id)
-        {
-            if (!a_id) return nullptr;
-            auto* f = RE::TESForm::LookupByID(a_id);
-            return f ? f->As<RE::TESObjectARMO>() : nullptr;
-        }
+        // The sweep walks the inventory, so it is not a per-frame job. It runs
+        // when something asked it to and, while any bit is out, on a slow
+        // heartbeat -- the world can change with no equip event we see.
+        bool          g_dirty = false;
+        std::uint64_t g_frame = 0;
+        std::uint64_t g_nextSweep = 0;
+        constexpr std::uint64_t kSweepGap = 30;   // ~0.5s at 60fps
+        // A frame is 16.7ms at 60fps. Anything at this scale is a
+        // visible hitch and wants to be in the log by name.
+        constexpr double        kSweepWarnMs = 2.0;
 
         [[nodiscard]] const char* NameOf(RE::TESForm* a_f)
         {
@@ -101,453 +43,388 @@ namespace FUI::DualRing
             return (n && *n) ? n : "<unnamed>";
         }
 
-        // The ring the ENGINE is wearing on kRing, if any.
-        [[nodiscard]] RE::TESObjectARMO* FirstRing(RE::PlayerCharacter* a_p)
+        [[nodiscard]] bool HoldsRingBit(const RE::TESObjectARMO* a_armo)
         {
-            if (!a_p) return nullptr;
-            for (const auto& [obj, data] : a_p->GetInventory(
-                     [](RE::TESBoundObject& o) { return o.IsArmor(); })) {
-                if (data.first <= 0 || !data.second || !data.second->IsWorn()) continue;
-                auto* a = obj->As<RE::TESObjectARMO>();
-                if (!a || Costume::IsAnchor(a) || IsCarrier(a)) continue;
-                if (Grid::IsRing(a)) return a;
-            }
-            return nullptr;
+            return a_armo &&
+                   (static_cast<std::uint32_t>(a_armo->GetSlotMask().get()) &
+                    static_cast<std::uint32_t>(Slot::kRing)) != 0;
         }
 
-        // ★★"Same effect" is NOT "same enchantment form". Two rings of one
-        // family at different strengths are separate forms carrying the same
-        // EffectSetting, and stacking those is exactly what this feature exists
-        // to prevent -- so the comparison is on the base effects.
-        [[nodiscard]] bool ShareAnEffect(RE::TESObjectARMO* a_x, RE::TESObjectARMO* a_y)
+        // ★★★MAY THIS RING GIVE UP ITS BIT AND STILL BE A RING?
+        //
+        // Grid::IsRing answers on the kRing bit OR the ClothingRing keyword.
+        // Take the bit from a ring that has ONLY the bit and it stops being a
+        // ring to every reader in this plugin at once: the doll files it as
+        // odd armour, the board's rules change under it, and -- the part that
+        // does not heal -- WornRings can no longer see it, so the sweep never
+        // finds it to hand the bit BACK. The ring would be stranded slotless
+        // for the rest of the save.
+        // ★Vanilla rings all carry the keyword, so this refuses nothing an
+        // ordinary game can produce; it is the mod ring parked on a custom
+        // slot with no keyword that must be left alone.
+        [[nodiscard]] bool MayGiveUpRingBit(const RE::TESObjectARMO* a_armo)
         {
-            if (!a_x || !a_y) return false;
-            auto* ex = a_x->formEnchanting;
-            auto* ey = a_y->formEnchanting;
-            if (!ex || !ey) return false;   // an unenchanted ring stacks with anything
-            if (ex == ey) return true;
-            for (auto* px : ex->effects) {
-                if (!px || !px->baseEffect) continue;
-                for (auto* py : ey->effects) {
-                    if (py && py->baseEffect == px->baseEffect) return true;
-                }
-            }
-            return false;
+            constexpr RE::FormID kClothingRing = 0x0010CD09;   // Skyrim.esm
+            return a_armo && a_armo->HasKeywordID(kClothingRing);
         }
 
-        [[nodiscard]] std::uint32_t WornMask(RE::PlayerCharacter* a_p)
+        void TakeRingBit(RE::TESObjectARMO* a_armo)
         {
-            std::uint32_t used = 0;
+            if (!a_armo) return;
+            const auto mask = static_cast<std::uint32_t>(a_armo->GetSlotMask().get());
+            a_armo->bipedModelData.bipedObjectSlots =
+                static_cast<Slot>(mask & ~static_cast<std::uint32_t>(Slot::kRing));
+            if (std::find(g_stripped.begin(), g_stripped.end(), a_armo->GetFormID()) ==
+                g_stripped.end()) {
+                g_stripped.push_back(a_armo->GetFormID());
+            }
+            SKSE::log::info("[DUALRING] '{}' gave up its ring slot", NameOf(a_armo));
+        }
+
+        // ★Only ever to a form WE took it from. A modded ring can be authored
+        // with no kRing bit at all -- it sits on a custom slot and answers for
+        // itself through the ClothingRing keyword -- and handing that one a bit
+        // it never had would move it onto the finger its author kept clear.
+        void GiveRingBitBack(RE::FormID a_id)
+        {
+            auto* f = RE::TESForm::LookupByID(a_id);
+            auto* armo = f ? f->As<RE::TESObjectARMO>() : nullptr;
+            if (!armo) return;
+            const auto mask = static_cast<std::uint32_t>(armo->GetSlotMask().get());
+            armo->bipedModelData.bipedObjectSlots =
+                static_cast<Slot>(mask | static_cast<std::uint32_t>(Slot::kRing));
+            SKSE::log::info("[DUALRING] '{}' has its ring slot back", NameOf(armo));
+        }
+
+        // One worn ring unit: the form and the list that names THIS unit.
+        struct WornRing
+        {
+            RE::TESObjectARMO*  armo = nullptr;
+            RE::ExtraDataList*  xl   = nullptr;
+        };
+
+        // ★Every ring the body is wearing, in FormID order so the choice of
+        // which one keeps kRing is the same answer twice running. An arbitrary
+        // order would move the visible ring from one finger to the other on
+        // every load for no reason the player could see.
+        [[nodiscard]] std::vector<WornRing> WornRings(RE::PlayerCharacter* a_p)
+        {
+            std::vector<WornRing> out;
+            if (!a_p) return out;
             for (const auto& [obj, data] : a_p->GetInventory(
                      [](RE::TESBoundObject& o) { return o.IsArmor(); })) {
-                if (data.first <= 0 || !data.second || !data.second->IsWorn()) continue;
-                if (auto* a = obj->As<RE::TESObjectARMO>()) {
-                    used |= static_cast<std::uint32_t>(a->GetSlotMask().get());
-                    // ★★THE ADDONS TOO. A modded helmet often draws through an
-                    // ArmorAddon that covers slots its ARMO mask never names
-                    // (hair physics on 60 is the classic). The ARMO mask alone
-                    // called those slots free, the carrier sat down on one,
-                    // and the engine culled the helmet's addon over the
-                    // conflict: wear both rings, and the helmet turns
-                    // invisible over a bald head (user report -- the preset
-                    // cycling that "healed" it was removing the second ring).
-                    for (auto* arma : a->armorAddons) {
-                        if (arma) used |= static_cast<std::uint32_t>(arma->GetSlotMask().get());
+                if (data.first <= 0 || !data.second) continue;
+                auto* armo = obj->As<RE::TESObjectARMO>();
+                if (!armo || Costume::IsAnchor(armo) || !Grid::IsRing(armo)) continue;
+                if (!data.second->extraLists) continue;
+                for (auto* xl : *data.second->extraLists) {
+                    if (!xl || !(xl->HasType<RE::ExtraWorn>() ||
+                                 xl->HasType<RE::ExtraWornLeft>())) {
+                        continue;
                     }
+                    out.push_back({ armo, xl });
                 }
             }
-            return used;
+            std::sort(out.begin(), out.end(), [](const WornRing& a, const WornRing& b) {
+                return a.armo->GetFormID() < b.armo->GetFormID();
+            });
+            return out;
         }
 
-        // A biped slot nothing is wearing right now.
-        // ★"!ring2slot = N" (editor 44..60): the player's word on where the
-        // carrier may sit. Slot habits are a MODLIST fact no mask can read --
-        // the measurement below proves it -- so the escape hatch has to be an
-        // ini line, not another heuristic.
-        int g_slotOverride = -1;   // bit index; -1 = pick automatically
+        // ★★★ONE WALK A FRAME, SHARED -- the same bargain the doll already
+        // makes. GetInventory DEEP-COPIES every matching entry, which is why
+        // CollectEquipment was rebuilt around a single shared walk; asking it
+        // again per question quietly undid that. A single ring swap asked four
+        // times (the drop gate, MakeRoom, the cap, AimAt) plus the sweep's own,
+        // all in one frame, over every piece of armour the player owns.
+        // ★Only MEMBERSHIP is cached. Slot bits are read live off the ARMO, so
+        // a mask this pass changes is visible to the next reader immediately --
+        // which is exactly what MakeRoom and AimAt rely on.
+        std::vector<WornRing> g_wornCache;
+        std::uint64_t         g_wornFrame = ~0ull;
 
-        // ★Searched from the TOP: the low custom slots (44-49) are where
-        // cloaks, backpacks and lanterns live, so taking one of those picks a
-        // fight with whatever the player already has installed. kFX01 (31) is
-        // skipped as well -- it is the effect slot and builds no armour.
-        [[nodiscard]] int FreeSlot(RE::PlayerCharacter* a_p)
+        [[nodiscard]] const std::vector<WornRing>& WornRingsCached(RE::PlayerCharacter* a_p)
         {
-            const std::uint32_t used = WornMask(a_p);
-            if (g_slotOverride >= 0 && !(used & (1u << g_slotOverride))) {
-                return g_slotOverride;
+            if (g_wornFrame != g_frame) {
+                g_wornCache = WornRings(a_p);
+                g_wornFrame = g_frame;
             }
-            for (int i = static_cast<int>(kSlots) - 3; i >= 14; --i) {
-                // ★editor slots 50/51 (bits 20/21): the DECAPITATION slots.
-                // Equipping anything there culls the head outright -- never a
-                // valid parking spot however crowded the rest of the biped is.
-                if (i == 20 || i == 21) continue;
-                if (!(used & (1u << i))) return i;
-            }
-            return -1;
+            return g_wornCache;
         }
-        // ★★...and the scan now stops BELOW editor slot 60 (bit 30). Measured:
-        // no worn ARMO or addon claimed 60, the carrier sat there, and the
-        // helmet still went invisible over a bald head -- something in the
-        // MODLIST watches that slot (hair-physics and helmet-toggle systems
-        // are the usual tenants). A mask cannot see a watcher; the only
-        // honest move is to stay out of the known bad neighbourhood and hand
-        // the player the "!ring2slot" override for whatever their list does.
 
-        // Lend the ring's enchantment to the carrier and put it on a_mask.
-        // ★A ring's enchantment is kConstantEffect (verified: no vanilla ARMO
-        // carries EAMT at all), so there is no charge to manage -- lending the
-        // form IS lending the effect. It must be in place BEFORE the equip,
-        // because that is when the engine reads it.
-        void Lend(RE::TESObjectARMO* a_carrier, RE::TESObjectARMO* a_ring,
-                  std::uint32_t a_mask)
+        // Membership changed under us -- the next reader must walk again.
+        void ForgetWorn() { g_wornFrame = ~0ull; }
+
+        // ★★THE INVARIANT, restored from the body:
+        //
+        //     IF ANY RING IS WORN, EXACTLY ONE OF THEM HOLDS kRing.
+        //
+        // ★"At most one" is what this pass enforced first, and it was half a
+        // rule. Take the visible ring off a pair and the survivor is left with
+        // no bit at all -- one ring on the body, wearing no slot, INVISIBLE
+        // for the rest of the save with nothing to notice it. Both directions
+        // have to be walked, and then the whole bookkeeping falls out of one
+        // question asked of the body: no state to keep in step, and every
+        // stale case repairs itself on the next sweep.
+        // Returns false when the body could not be read -- the caller stays
+        // armed and asks again rather than dropping the request on the floor.
+        bool Enforce()
         {
-            if (!g_lent.held) {
-                g_lent.ench = a_carrier->formEnchanting;
-                g_lent.held = true;
-            }
-            // ★Every lend, not once a session -- a load puts the authored
-            // armature back on the record. See StripCarrier.
-            StripCarrier(a_carrier);
-            a_carrier->formEnchanting = a_ring->formEnchanting;
-            a_carrier->bipedModelData.bipedObjectSlots = static_cast<Slot>(a_mask);
-        }
+            auto* p = RE::PlayerCharacter::GetSingleton();
+            if (!p || !p->Is3DLoaded()) return false;
 
-        void Reclaim()
-        {
-            auto* c = Carrier();
-            if (!c || !g_lent.held) return;
-            c->formEnchanting = g_lent.ench;
-            g_lent = {};
-        }
-    }
+            const auto& worn = WornRingsCached(p);
 
-    void TakeOffImpl(bool a_standalone);   // defined below TakeOff
-
-    void SetSlotOverride(int a_editorSlot)
-    {
-        // editor numbers run 30..61; bits run 0..31. Decapitation (50/51) and
-        // FX01 (61) are refused even by hand -- they cull the head or build
-        // no armour at all.
-        const int bit = a_editorSlot - 30;
-        const bool ok = bit >= 14 && bit <= 30 && bit != 20 && bit != 21;
-        g_slotOverride = ok ? bit : -1;
-        if (ok) {
-            SKSE::log::info("[DUALRING] carrier slot pinned to {} (!ring2slot)",
-                            a_editorSlot);
-        }
-    }
-
-    int SlotOverride()
-    {
-        return g_slotOverride < 0 ? -1 : g_slotOverride + 30;
-    }
-
-    RE::TESObjectARMO* Second() { return RingById(g_ringId); }
-
-    std::uint16_t SecondSig() { return g_ringSig; }
-
-    bool WouldDuplicate(RE::TESObjectARMO* a_ring)
-    {
-        auto* second = RingById(g_ringId);
-        return second && ShareAnEffect(second, a_ring);
-    }
-
-    bool SharesEffect(RE::TESObjectARMO* a_x, RE::TESObjectARMO* a_y)
-    {
-        return ShareAnEffect(a_x, a_y);
-    }
-
-    bool IsCarrier(const RE::TESForm* a_form)
-    {
-        auto* c = Carrier();
-        return c && a_form && a_form->GetFormID() == c->GetFormID();
-    }
-
-    Verdict CanWear(RE::TESObjectARMO* a_ring)
-    {
-        if (!a_ring || !Grid::IsRing(a_ring)) return Verdict::kNotARing;
-        if (!Carrier()) return Verdict::kNoCarrier;
-        auto* p = RE::PlayerCharacter::GetSingleton();
-        if (!p) return Verdict::kNoCarrier;
-
-        // ★★The OTHER ring, whichever slot it is on. Asking only about the
-        // first slot made the drop rules asymmetric: dragging the LEFT ring
-        // onto the right slot picks it up first, which empties the left slot,
-        // and the drop was then refused for having no first ring -- so the
-        // ring came off instead of moving. The right-to-left direction worked
-        // only because that check happened to pass.
-        auto* other = FirstRing(p);
-        if (!other) other = RingById(g_ringId);
-        if (other == a_ring) {
-            // ★FORM identity, not unit identity. A SPARE unit of the same form
-            // is a second ring, and a plain pair of one form is legal (the
-            // rule is the EFFECT, one test below) -- so refuse only when the
-            // player owns a single unit, where "wear it beside itself" is the
-            // only thing this drop could mean. The old form-level refusal
-            // blocked plain pairs outright (user spec correction).
-            int owned = 0;
-            for (const auto& [obj2, data] : p->GetInventory(
-                     [&](RE::TESBoundObject& o) { return &o == a_ring; })) {
-                owned = data.first;
-                (void)obj2;
-            }
-            if (owned <= 1) return Verdict::kAlreadyWorn;
-        }
-        if (ShareAnEffect(other, a_ring)) return Verdict::kSameEffect;
-        if (FreeSlot(p) < 0) return Verdict::kNoFreeSlot;
-        // ★An empty first slot is no longer a refusal. Where the ring lands is
-        // Wear's decision -- it fills the first slot, or trades places with the
-        // ring already on the second -- because a slot that takes a drag and
-        // then drops the item on the floor is the worst of the options.
-        return Verdict::kOk;
-    }
-
-    const char* VerdictText(Verdict a_v)
-    {
-        switch (a_v) {
-        case Verdict::kNotARing:    return "not a ring";
-        case Verdict::kAlreadyWorn: return "already worn";
-        case Verdict::kSameEffect:  return "the same effect is already worn";
-        case Verdict::kNoCarrier:   return "carrier form missing (is the esp loaded?)";
-        case Verdict::kNoFreeSlot:  return "no free biped slot";
-        default:                    return "";
-        }
-    }
-
-    bool Wear(RE::TESObjectARMO* a_ring, RE::ExtraDataList* a_xl)
-    {
-        const auto v = CanWear(a_ring);
-        if (v != Verdict::kOk) {
-            SKSE::log::info("[DUALRING] refused '{}': {}", NameOf(a_ring), VerdictText(v));
-            return false;
-        }
-        auto* p  = RE::PlayerCharacter::GetSingleton();
-        auto* c  = Carrier();
-        auto* em = RE::ActorEquipManager::GetSingleton();
-        if (!p || !c || !em) return false;
-
-        // ★★Where it actually goes. The second slot cannot hold a ring on its
-        // own -- the doll would show a gap with nothing above it -- so an empty
-        // first slot is filled instead of refused, and that is also what makes
-        // the drag symmetric.
-        if (!FirstRing(p)) {
-            if (g_ringId) {
-                // ★SWAP. The player dragged the first ring onto the second
-                // slot; the two trade places. The one on the carrier goes back
-                // to the engine's own ring slot, and the incoming one takes the
-                // carrier.
-                auto* prev = RingById(g_ringId);
-                TakeOffImpl(/*a_standalone=*/false);   // B4-4: handoff, no redraw
-                if (prev) {
-                    em->EquipObject(p, prev, nullptr, 1, nullptr,
-                                    false, false, false, true);
-                    SKSE::log::info("[DUALRING] swap: '{}' moved to the first slot",
-                        NameOf(prev));
+            // ★★★COUNTED OVER FORMS, NOT UNITS. The slot bit lives on the ARMO,
+            // so two plain rings of one form share ONE bit. Counting units made
+            // this pass see two holders where there was one, strip the shared
+            // form, and then see NO holder on the next sweep and hand it
+            // straight back -- a give/take oscillation twice a second, which
+            // the player sees as a ring blinking in and out. The invariant is
+            // about forms because the thing it governs is.
+            std::vector<RE::TESObjectARMO*> forms;
+            for (const auto& w : worn) {
+                if (std::find(forms.begin(), forms.end(), w.armo) == forms.end()) {
+                    forms.push_back(w.armo);
                 }
-            } else {
-                // Nothing on either slot: this belongs on the FIRST one.
-                em->EquipObject(p, a_ring, nullptr, 1, nullptr,
-                                false, false, false, true);
-                SKSE::log::info("[DUALRING] '{}' -> first slot (the second cannot be "
-                                "filled alone)", NameOf(a_ring));
+            }
+
+            // ★The left cell's tenant is forgotten the moment it comes off, so
+            // the next ring to land there is not shown in a cell it never
+            // took. Same discipline as the bits: observed, not remembered.
+            if (g_leftRing != 0 &&
+                std::none_of(forms.begin(), forms.end(),
+                    [](const RE::TESObjectARMO* a) { return a->GetFormID() == g_leftRing; })) {
+                g_leftRing = 0;
+                g_leftSig  = 0;
+            }
+
+            // 1. Hand back every bit whose form has left the body entirely.
+            for (auto it = g_stripped.begin(); it != g_stripped.end();) {
+                const bool stillWorn = std::any_of(forms.begin(), forms.end(),
+                    [&](const RE::TESObjectARMO* a) { return a->GetFormID() == *it; });
+                if (stillWorn) { ++it; continue; }
+                GiveRingBitBack(*it);
+                it = g_stripped.erase(it);
+            }
+            if (forms.empty()) return true;
+
+            const auto holders = std::count_if(forms.begin(), forms.end(),
+                [](const RE::TESObjectARMO* a) { return HoldsRingBit(a); });
+
+            // 2. Nobody holds it: the ring that did has come off. Give the bit
+            // back to a survivor -- ★one WE took it from, never a ring authored
+            // without it, which would move it onto a finger its author kept
+            // clear.
+            if (holders == 0) {
+                for (auto* armo : forms) {
+                    // ★★NEVER TO A FORM WEARING TWO UNITS. They share the one
+                    // bit, so handing it over arms the engine against BOTH --
+                    // the next equip single-ends and takes a ring the player
+                    // never asked to remove. A doubled form stays slotless,
+                    // which is the only state it can hold honestly.
+                    const auto units = std::count_if(worn.begin(), worn.end(),
+                        [&](const WornRing& w) { return w.armo == armo; });
+                    if (units > 1) continue;
+                    const auto id = armo->GetFormID();
+                    const auto it = std::find(g_stripped.begin(), g_stripped.end(), id);
+                    if (it == g_stripped.end()) continue;
+                    GiveRingBitBack(id);
+                    g_stripped.erase(it);
+                    return true;
+                }
                 return true;
             }
+
+            // 3. More than one holds it -- a load put the pair back into
+            // contest. The FIRST keeps the slot; the rest give it up.
+            if (holders <= 1) return true;
+            bool kept = false;
+            for (auto* armo : forms) {
+                if (!HoldsRingBit(armo)) continue;
+                if (!kept) { kept = true; continue; }
+                // ★A ring that may not give its bit up KEEPS it, and then two
+                // hold kRing after all. That is still the better answer: the
+                // alternative strands it (see MayGiveUpRingBit), and the engine
+                // only re-reads the contest at the next equip.
+                if (MayGiveUpRingBit(armo)) TakeRingBit(armo);
+            }
+            return true;
         }
+    }
 
-        if (g_ringId) TakeOffImpl(/*a_standalone=*/false);   // B4-4: handoff
+    bool HoldsRingSlot(const RE::TESObjectARMO* a_armo)
+    {
+        return HoldsRingBit(a_armo);
+    }
 
-        const int slot = FreeSlot(p);
-        if (slot < 0) return false;
-        const std::uint32_t mask = 1u << slot;
+    void NoteSecondCell(const RE::TESObjectARMO* a_ring, std::uint16_t a_sig)
+    {
+        g_leftRing = a_ring ? a_ring->GetFormID() : 0;
+        g_leftSig  = a_ring ? a_sig : 0;
+    }
 
-        Lend(c, a_ring, mask);
-        // The carrier is not the player's item; it goes in the pack purely so
-        // the engine has something to equip, and comes back out on removal.
-        p->AddObjectToContainer(c, nullptr, 1, nullptr);
-        em->EquipObject(p, c, nullptr, 1, nullptr, false, false, false, true);
+    bool IsSecondCell(const RE::TESObjectARMO* a_armo, std::uint16_t a_sig)
+    {
+        return g_leftRing != 0 && a_armo &&
+               a_armo->GetFormID() == g_leftRing && a_sig == g_leftSig;
+    }
 
-        g_ringId = a_ring->GetFormID();
-        g_ringSig = Grid::InstanceSigOf(a_xl);   // nullptr -> 0 (plain)
-        // B4-2b: the ring's own equip never runs on this path -- the carrier
-        // stands in -- so the worn ledger's pending for it would go stale
-        // (measured, round one of the state machine). Withdraw it here.
-        WornLedger::CancelPending(g_ringId);
-        // ★B4-4: and the GRID's equip-queue entry retires here too -- this
-        // moment IS the carrier route's landing. Waiting for the TTL let a
-        // swap spam pile up entries that each excluded one more unit of the
-        // form, and a same-form spare in the pack blinked out until the sweep
-        // (user report). The ring2 exclusion takes over seamlessly: the
-        // none_of guard that was waiting on this entry opens the instant it
-        // goes.
-        Grid::ReleasePendingEquipFor(g_ringId);
-        // ★The carrier bypasses the engine's equip of the RING itself, which
-        // is where the vanilla equip sound lives -- so the second slot wore
-        // rings in total silence (user report). The pickup clink is the same
-        // substitute every board action already uses.
-        p->PlayPickUpSound(a_ring, true, false);
-        SKSE::log::info("[DUALRING] second ring '{}' on slot {} (0x{:08X}), ench '{}'",
-            NameOf(a_ring), slot + 30, mask,
-            a_ring->formEnchanting ? NameOf(a_ring->formEnchanting) : "none");
+    bool HasSecondCell() { return g_leftRing != 0; }
+
+    bool MakeRoom()
+    {
+        auto* p = RE::PlayerCharacter::GetSingleton();
+        if (!p) return false;
+        const auto& worn = WornRingsCached(p);
+        if (worn.empty()) return false;
+        // ★★NOT WHEN BOTH SLOTS ARE ALREADY FULL. Room is made by taking the
+        // bit off the ring that has it; do that with a pair on the body and
+        // NOTHING holds kRing, so the incoming equip displaces nothing and the
+        // player ends up wearing three. With a pair the right answer is the
+        // engine's own: leave the bit alone and let the ordinary conflict pass
+        // trade the visible ring for the new one.
+        if (worn.size() >= 2) return false;
+        bool made = false;
+        for (const auto& w : worn) {
+            if (!HoldsRingBit(w.armo) || !MayGiveUpRingBit(w.armo)) continue;
+            TakeRingBit(w.armo);
+            made = true;
+        }
+        if (!made) return false;   // nothing could give a bit up -- ordinary swap
+        g_dirty = true;   // the sweep gives the bits back when the rings leave
         return true;
     }
 
-    void TakeOff() { TakeOffImpl(/*a_standalone=*/true); }
-
-    void TakeOffImpl(bool a_standalone)
+    void PrepareForEquip(RE::TESObjectARMO* a_incoming, std::uint16_t a_sig,
+                         RE::TESObjectARMO* a_aimed, bool a_secondCell)
     {
-        if (!g_ringId) return;
-        auto* ring = RingById(g_ringId);
-        auto* p    = RE::PlayerCharacter::GetSingleton();
-        auto* c    = Carrier();
-        if (p && c) {
-            if (auto* em = RE::ActorEquipManager::GetSingleton()) {
-                em->UnequipObject(p, c, nullptr, 1, nullptr, false, false, false, true);
+        auto* p = RE::PlayerCharacter::GetSingleton();
+        if (!p || !a_incoming) return;
+
+        // 1. WHO MUST LEAVE. Only ever past the cap, and the ring the player
+        //    pointed at goes first -- a drop on a cell names its own victim.
+        //    Otherwise the visible one, which is what an ordinary equip has
+        //    always meant.
+        std::vector<WornRing> victims;
+        {
+            const auto& worn = WornRingsCached(p);
+            int over = static_cast<int>(worn.size()) - 1;   // room for one more
+            if (over > 0 && a_aimed) {
+                for (const auto& w : worn) {
+                    if (w.armo != a_aimed || over <= 0) continue;
+                    victims.push_back(w);
+                    --over;
+                }
             }
-            // Count high enough to sweep duplicates a crossed save could leave.
-            p->RemoveItem(c, 99, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+            for (const auto& w : worn) {
+                if (over <= 0) break;
+                if (std::any_of(victims.begin(), victims.end(),
+                        [&](const WornRing& v) { return v.xl == w.xl; })) {
+                    continue;
+                }
+                if (!HoldsRingBit(w.armo)) continue;   // prefer the visible one
+                victims.push_back(w);
+                --over;
+            }
+            for (const auto& w : worn) {
+                if (over <= 0) break;
+                if (std::any_of(victims.begin(), victims.end(),
+                        [&](const WornRing& v) { return v.xl == w.xl; })) {
+                    continue;
+                }
+                victims.push_back(w);
+                --over;
+            }
         }
-        Reclaim();
-        // ★Both INSIDE the gate (규칙 6): every STANDALONE caller needs them.
-        // The sound for the same reason as Wear's; the rebuild because the
-        // carrier's stand-down is a board return with NO engine unequip event
-        // -- the !rbdrop interrogation of Grid.cpp:11162 measured the ring
-        // vanishing until the next unrelated rebuild without it.
-        // ★★B4-4: the HANDOFF calls inside Wear are the exception the old
-        // "every caller" claim missed. In a swap the displaced ring goes to
-        // the CURSOR (WholeOnDoll starts that carry) or straight onto the
-        // FIRST slot -- either way it never lands on the board here, so the
-        // redraw painted a frame in the middle of the exclusion handoff for
-        // nothing. That mid-swap frame is the deferred ring-blink's habitat
-        // (survived the worn clocks and the counter absorption -- the
-        // rebuild ITSELF was the remaining suspect).
-        const bool wantDraw = a_standalone || !Grid::CarrierCarryActive();
-        // ★The quiet handoff assumed the displaced ring rides the cursor.
-        // True for the DROP swap -- its carry starts before Wear runs --
-        // and false for the right-click ROUTER, which displaces with no
-        // carry at all: the old ring went back to the pack with nothing
-        // to redraw it, and right-clicking through several rings appeared
-        // to wear them all (user report). No carrier carry up means the
-        // return still needs its draw.
-        if (a_standalone && p && ring) p->PlayPickUpSound(ring, false, false);
-        const RE::FormID retId = g_ringId;
-        SKSE::log::info("[DUALRING] second ring '{}' removed{}", NameOf(ring),
-                        a_standalone ? "" : " (handoff)");
-        // ★Ring session: state DOWN before the draw -- the partial add asks
-        // the ring2 exclusion, and with g_ringId still set it would hide the
-        // very unit it is trying to draw ("nothing fresh").
-        g_ringId = 0;
-        g_ringSig = 0;
-        if (wantDraw) {
-            // One form's return, not a repaint: the full rebuild here ran in
-            // the middle of the swap window (the blink's habitat). The
-            // partial declines -> the old rebuild, same fallback bargain as
-            // every B3 path.
-            if (!Grid::OnFormDelta(retId)) Grid::RequestRebuild();
+
+        // 2. TAKE THEM OFF OURSELVES. ★Never the engine's conflict pass: it
+        //    removes every worn ring whose mask OVERLAPS the incoming one's,
+        //    and the slot bit is a FORM fact -- so it cannot be steered to one
+        //    ring, and three attempts to steer it produced three different
+        //    failures (a phantom on the cursor, a pair both coming off, a
+        //    third ring going on). The caller skips that pass for rings.
+        if (auto* em = RE::ActorEquipManager::GetSingleton()) {
+            for (const auto& v : victims) {
+                em->UnequipObject(p, v.armo, v.xl, 1, nullptr,
+                                  false, false, false, true);
+                SKSE::log::info("[DUALRING] '{}' comes off to make room",
+                                NameOf(v.armo));
+            }
         }
+        if (!victims.empty()) ForgetWorn();
+
+        // 3. WHOEVER STAYS GIVES UP THE SLOT, so the engine has nothing to
+        //    single-end when the incoming ring goes on.
+        bool sharesWithSurvivor = false;
+        for (const auto& w : WornRingsCached(p)) {
+            if (w.armo == a_incoming) sharesWithSurvivor = true;
+            if (!HoldsRingBit(w.armo) || !MayGiveUpRingBit(w.armo)) continue;
+            TakeRingBit(w.armo);
+        }
+
+        // 4. ...and the incoming ring takes it, so something is drawn. ★Not
+        //    when a survivor shares its FORM: one ARMO, one bit, and handing
+        //    it over would arm the engine against the very ring we just kept.
+        if (!sharesWithSurvivor) {
+            const auto id = a_incoming->GetFormID();
+            const auto it = std::find(g_stripped.begin(), g_stripped.end(), id);
+            if (it != g_stripped.end()) {
+                GiveRingBitBack(id);
+                g_stripped.erase(it);
+            }
+        }
+
+        // 5. Where the player put it. Placement, not physics -- see the header.
+        if (a_secondCell) NoteSecondCell(a_incoming, a_sig);
+        else if (IsSecondCell(a_incoming, a_sig)) NoteSecondCell(nullptr, 0);
+
+        g_dirty = true;
     }
-
-    void RequestTakeOff() { g_wantOff = true; }
-
-    void CancelTakeOff() { g_wantOff = false; }
-
-    bool TakeOffPending() { return g_wantOff; }
 
     void Tick()
     {
-        if (g_wantOff) {
-            g_wantOff = false;
-            TakeOff();   // rebuild + sound live inside the gate now
-        }
-        if (!g_ringId) return;
-        auto* p = RE::PlayerCharacter::GetSingleton();
-        if (!p || !p->Is3DLoaded()) return;
-
-        // ★The ring can leave without going through us -- sold, dropped, taken
-        // by a script. Observing beats remembering: the moment it is not in the
-        // pack the carrier is standing in for nothing.
-        auto* ring = RingById(g_ringId);
-        if (!ring) { TakeOff(); return; }
-        bool have = false;
-        for (const auto& [obj, data] : p->GetInventory(
-                 [&](RE::TESBoundObject& o) { return &o == ring; })) {
-            have = data.first > 0;
-            (void)obj;
-        }
-        if (!have) {
-            SKSE::log::info("[DUALRING] the second ring left the inventory -- dropping it");
-            TakeOff();
+        ++g_frame;
+        // ★Cheap when there is nothing to do, which is nearly always: no bit
+        // is out and nobody asked. The heartbeat only runs while we owe one.
+        if (!g_dirty && g_stripped.empty()) return;
+        if (!g_dirty && g_frame < g_nextSweep) return;
+        g_nextSweep = g_frame + kSweepGap;
+        // ★★MEASURED, NOT ASSUMED. A reporter saw the game stall for a few
+        // seconds and asked whether this was us -- and the log could not
+        // answer, because it records events and not the time between them.
+        // Idle looks exactly like frozen from outside. So the sweep times
+        // itself, and anything worth noticing says so with its own numbers.
+        // Costs one clock read on the frames that sweep at all.
+        const auto t0 = std::chrono::steady_clock::now();
+        // ★Cleared only when the sweep actually READ the body. A load reaches
+        // here before the actor has 3D, and a request dropped there would
+        // leave a loaded pair both holding kRing -- which the next equip's
+        // conflict pass would answer by taking BOTH rings off.
+        const bool ran = Enforce();
+        if (ran) g_dirty = false;
+        const auto ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - t0).count();
+        if (ms > kSweepWarnMs) {
+            SKSE::log::warn("[DUALRING] sweep took {:.1f}ms ({} worn ring(s), "
+                            "{} slot(s) out) -- this is us", ms,
+                            g_wornCache.size(), g_stripped.size());
         }
     }
 
-    void RevertGame(SKSE::SerializationInterface*)
+    void RevertGame()
     {
-        Reclaim();
-        g_ringId  = 0;
-        g_wantOff = false;
-        // ★The signature travels with the id or not at all. The cosave stores
-        // only g_ringId, so leaving this behind let a PREVIOUS session's
-        // signature meet a freshly loaded id -- and since SecondSig() is the
-        // board's off-board exclusion key, the ring actually being worn stayed
-        // on the board while an innocent sibling unit vanished. Vanilla rings
-        // hash to 0 and never showed it; player-enchanted ones always did.
-        g_ringSig = 0;
-    }
-
-    void OnLoad()
-    {
-        if (!g_ringId) return;
-        // ★The equip survived in the save; the LOAN did not. The engine re-read
-        // the carrier from the plugin, so its enchantment is the record's own
-        // again -- and a carrier worn with no enchantment is a second ring that
-        // quietly stopped working.
-        auto* p    = RE::PlayerCharacter::GetSingleton();
-        auto* c    = Carrier();
-        auto* ring = RingById(g_ringId);
-        if (!p || !c || !ring) { g_ringId = 0; return; }
-        g_lent = {};   // whatever we recorded belongs to the previous session
-        // ★★★DO NOT TRUST THE MASK THAT CAME BACK.
-        //
-        // This read the carrier's CURRENT slot mask and wrote it straight back,
-        // on the assumption that it was still the one Wear picked. It is not:
-        // the same restore that reverted the enchantment reverted the mask too,
-        // and the carrier's record is a costume anchor whose template carries a
-        // circlet's wardrobe -- BOD2 on the HAIR and circlet slots. So the load
-        // path took the authored hair mask and re-applied it, every time.
-        //
-        // It also never consulted FreeSlot, which is why "!ring2slot" appeared
-        // to do nothing: the override is read by Wear, and a ring already worn
-        // in the save never goes through Wear. Confirmed by a reporter's log --
-        // the pin was applied at startup ("carrier slot pinned to 55") and the
-        // character was bald anyway.
-        //
-        // Choose a slot the way Wear does, from what the body is actually
-        // wearing right now, and let the override have its say.
-        int slot = FreeSlot(p);
-        if (slot < 0) {
-            // Nothing free is not a reason to fall back on the record's own
-            // mask -- that is the hair. Take the top of the scan and say so.
-            slot = static_cast<int>(kSlots) - 3;
-            SKSE::log::warn("[DUALRING] load: no free biped slot -- parking on {} anyway",
-                            slot + 30);
-        }
-        Lend(c, ring, 1u << slot);
-        SKSE::log::info("[DUALRING] load: re-lent '{}' to the carrier on slot {} (0x{:08X})",
-            NameOf(ring), slot + 30, 1u << slot);
-    }
-
-    void SaveGame(SKSE::SerializationInterface* a_intfc)
-    {
-        if (!a_intfc->OpenRecord(kRecordType, 1)) return;
-        a_intfc->WriteRecordData(&g_ringId, sizeof(g_ringId));
-    }
-
-    void LoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t)
-    {
-        RE::FormID id = 0;
-        a_intfc->ReadRecordData(&id, sizeof(id));
-        // ★Through the resolver: a load order change moves every FormID, and a
-        // raw one would name a different item entirely.
-        RE::FormID resolved = 0;
-        g_ringId = (id && a_intfc->ResolveFormID(id, resolved)) ? resolved : 0;
+        // ★The records are about to be re-read anyway; this is for the case
+        // where they are not -- a new game in the same session. Cheap either
+        // way, and it leaves no form of ours edited behind a save boundary.
+        for (const auto id : g_stripped) GiveRingBitBack(id);
+        g_stripped.clear();
+        g_leftRing = 0;
+        // ★★ARMED, not cleared -- this runs before every load, and the save
+        // about to open may have TWO rings on. The engine hands back both slot
+        // bits with the records, so the pair arrives in contest with nothing
+        // owed and nothing to notice it: the first sweep after the body exists
+        // is what separates them again. Costs one walk on a new game.
+        g_dirty = true;
     }
 }

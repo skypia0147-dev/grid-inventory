@@ -75,20 +75,28 @@ namespace FUI::Costume
         // At 32 the array can no longer be the shortage: Apply() can build at
         // most 31 groups, so the warning below is now unreachable by counting
         // (it stays as the guard against that ever ceasing to be true).
-        // ★★...which is exactly why the COSTUME stops at 31 and the 32nd
-        // record (0x84A) belongs to DualRing instead. The costume cannot want
-        // it -- `need` is `j < groups.size()` and groups tops out at 31 -- but
-        // it would still DROP one it finds held, so the loop must not reach it
-        // at all. The reservation is free: nothing is taken from the costume.
+        // ★★...which is exactly why the COSTUME stops at 31: the 32nd record
+        // (0x84A) was the second ring's carrier. The costume could not want it
+        // -- `need` is `j < groups.size()` and groups tops out at 31 -- but its
+        // loop would still DROP one it found held, so the count was lowered
+        // rather than shared. The reservation is free: nothing is taken from
+        // the costume.
+        // ★★★AND IT STAYS RESERVED AFTER 1.6.0, though nothing uses it. The
+        // carrier's ESP record is kept (deleting it would break the references
+        // in existing saves), and an old save can still be WEARING one until
+        // SweepRetiredCarrier runs. Promoting 0x84A to an ordinary anchor
+        // would put this system in a fight with that leftover over the same
+        // form -- for a 32nd group Apply can never build anyway.
         // ★They cost nothing to carry: no model, no keywords, 0/0/0, and only
         // the ones a costume actually needs are ever equipped.
         constexpr std::uint32_t kAnchorFirst = 0x82B;
-        constexpr int           kAnchorCount = 31;   // 32nd is DualRing's carrier
+        constexpr int           kAnchorCount = 31;   // 32nd: the retired carrier
         // ★★...but ALL 32 are ours to hide. IsAnchor is what keeps these off
         // the grid, the doll, the capacity count and every transfer, and the
         // carrier needs exactly the same treatment -- it is no more the
         // player's property than an anchor is. Counting only 31 here would
-        // have put a nameless 0/0/0 helmet in the player's bag.
+        // have put a nameless 0/0/0 helmet in the player's bag, and that is
+        // still true of a leftover one an old save is carrying.
         constexpr int           kAnchorTotal = 32;
         constexpr const char*   kPlugin = "Grid Inventory.esp";
 
@@ -125,7 +133,7 @@ namespace FUI::Costume
         {
             if (!a_form) return -1;
             // ★kAnchorTotal, not kAnchorCount: this answers "is this ours to
-            // hide", which covers DualRing's carrier too.
+            // hide", which covers the retired second-ring carrier too.
             for (int i = 0; i < kAnchorTotal; ++i) {
                 auto* f = AnchorForm(i);
                 if (f && f->GetFormID() == a_form->GetFormID()) return i;
@@ -265,6 +273,63 @@ namespace FUI::Costume
         g_reapplyLeft = kReapplyTimes;
         g_reapplyAt = g_frame + kReapplyFirst;
         SKSE::log::info("[COSTUME] load: {} re-dress passes scheduled", kReapplyTimes);
+    }
+
+    namespace
+    {
+        // ★★ASK AGAIN UNTIL IT CAN BE ANSWERED. The sweep runs from a task off
+        // kPostLoadGame, and the 3D guard below can send it away empty-handed
+        // on a body the engine has not finished building. A one-shot sweep
+        // that missed would leave the carrier on for the whole session -- worn,
+        // hidden by IsAnchor, and so impossible to take off by hand -- so a
+        // miss stays ARMED and Tick asks again on the next frame that has a
+        // body. Set false only once the world could actually be read.
+        bool g_sweepCarrier = false;
+
+        void SweepCarrierNow()
+        {
+            // ★Anchor 32 -- the index the costume deliberately never reaches.
+            // Resolved through the same cache, so no second lookup path can
+            // drift from it. See kAnchorCount / kAnchorTotal above.
+            auto* carrier = AnchorForm(kAnchorTotal - 1);
+            auto* p       = RE::PlayerCharacter::GetSingleton();
+            if (!carrier || !p || !p->Is3DLoaded()) return;   // stays armed
+            g_sweepCarrier = false;
+
+            // ★Ask the INVENTORY, not a saved flag. The cosave record that
+            // named the ring is discarded on load, and it was never the
+            // authority anyway: whether the carrier is on the body is a fact
+            // about the world, and the world can change behind our back.
+            bool worn = false;
+            int  held = 0;
+            for (const auto& [obj, data] : p->GetInventory(
+                     [&](RE::TESBoundObject& o) { return &o == carrier; })) {
+                held = data.first;
+                worn = data.second && data.second->IsWorn();
+                (void)obj;
+            }
+            if (held <= 0) return;
+
+            if (worn) {
+                if (auto* em = RE::ActorEquipManager::GetSingleton()) {
+                    em->UnequipObject(p, carrier, nullptr, 1, nullptr,
+                                      false, false, false, true);
+                }
+            }
+            // Count high enough to sweep the duplicates a crossed save could
+            // leave -- the retired code carried the same allowance.
+            p->RemoveItem(carrier, 99, RE::ITEM_REMOVE_REASON::kRemove,
+                          nullptr, nullptr);
+            SKSE::log::info("[COSTUME] retired second-ring carrier removed "
+                            "({} held, worn={}) -- 1.6.0 migration",
+                            held, worn ? 1 : 0);
+        }
+    }
+
+    void SweepRetiredCarrier()
+    {
+        g_sweepCarrier = true;
+        SweepCarrierNow();   // usually done right here; Tick covers the rest
     }
 
     namespace
@@ -529,11 +594,11 @@ namespace FUI::Costume
             // stale case repairs itself on the next tick.
             const int ai = AnchorIndexOf(a);
             if (ai >= 0) {
-                // ★★AnchorIndexOf now answers for 32 records but anc[] holds 31
-                // -- index 31 is DualRing's carrier, which this system must
-                // neither track nor touch. It still `continue`s, so the carrier
-                // stays out of wornMask exactly like an anchor: the costume
-                // must not treat it as gear occupying a slot.
+                // ★★AnchorIndexOf answers for 32 records but anc[] holds 31 --
+                // index 31 is the retired second-ring carrier, which this
+                // system must neither track nor touch. It still `continue`s, so
+                // a leftover one stays out of wornMask exactly like an anchor:
+                // the costume must not treat it as gear occupying a slot.
                 if (ai < kAnchorCount) {
                     anc[ai].held = true;
                     anc[ai].mask = static_cast<std::uint32_t>(a->GetSlotMask().get());
@@ -903,6 +968,10 @@ namespace FUI::Costume
     {
         ++g_frame;   // counted every tick, not only on the ones that rebuild
         AnnounceIfMoved();   // ★cheap: one int compare unless the state moved
+        // ★1.6.0 migration retry. Armed by SweepRetiredCarrier and cleared the
+        // first frame the body can be read -- so a load that arrived ahead of
+        // the actor still gets its carrier taken off. One bool test otherwise.
+        if (g_sweepCarrier) SweepCarrierNow();
         // ★★★AFTER A LOAD, DRESS MORE THAN ONCE.
         //
         // A load finishes, the costume is applied, the log says so -- and the

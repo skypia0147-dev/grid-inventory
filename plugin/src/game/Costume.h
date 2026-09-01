@@ -102,6 +102,28 @@ namespace FUI::Costume
     // window is covered instead of watched.
     void NoteGameLoaded();
 
+    // ★★1.6.0 MIGRATION: take off the retired second-ring carrier.
+    //
+    // Anchor 32 (0x84A) was the second ring's stand-in until 1.6.0 -- it wore
+    // the ring's enchantment while the ring itself stayed in the pack. The
+    // feature is gone, but THE EQUIP SURVIVES IN OLD SAVES, and nothing owns
+    // it any more. Left alone it is worse than untidy: the carrier is a clone
+    // of the anchors and its record carries a circlet's whole wardrobe (BOD2
+    // on the HAIR and circlet slots, a circlet ARMA on its armature). The
+    // strip and the slot rewrite that made it harmless lived in the retired
+    // code and ran on every load, because THE ENGINE RE-READS THE RECORD FROM
+    // THE PLUGIN each time -- so from the first load after the update the
+    // carrier is worn wearing its authored circlet again: a bald head under an
+    // invisible helmet. And IsAnchor hides it from the grid, the doll and
+    // every transfer, so the player cannot take it off.
+    //
+    // Runs once per load, from a task (it equips, so not inside a render
+    // pass). A save that never had a carrier pays one inventory walk.
+    // ★The form mutations themselves need no undoing: they were never
+    // serialised -- the same plugin re-read that puts the circlet back is what
+    // reverts them.
+    void SweepRetiredCarrier();
+
     // ---- persistence ----------------------------------------------------
     // Which tab is checked is per-save state. Its own record rather than a
     // field on the loadout one: the two systems version independently, and a

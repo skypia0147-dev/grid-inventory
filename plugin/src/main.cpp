@@ -2,10 +2,10 @@
 #include "game/BagFilter.h"
 #include "game/Census.h"
 #include "game/Costume.h"
+#include "game/DualRing.h"
 #include "game/DeltaWatch.h"
 #include "game/Ledger.h"
 #include "game/WornLedger.h"
-#include "game/DualRing.h"
 #include "game/GoldCoins.h"
 #include "game/Lotd.h"
 #include "ui/Editor.h"
@@ -2616,10 +2616,13 @@ namespace
             // Costume::NoteGameLoaded: the engine rebuilds the actor for a
             // while after this message, and every rebuild undoes it.
             FUI::Costume::NoteGameLoaded();
-            // ★The equip survived the save; the LOAN did not -- the engine
-            // re-read the carrier from the plugin. Re-lend before the player
-            // can notice a second ring that stopped working.
-            FUI::DualRing::OnLoad();
+            // ★1.6.0 migration: an old save can still be WEARING the retired
+            // second-ring carrier. Deferred like the rest -- it unequips, and
+            // this message arrives while the engine is still settling. See
+            // Costume::SweepRetiredCarrier for why leaving it is not an option.
+            SKSE::GetTaskInterface()->AddTask([]() {
+                FUI::Costume::SweepRetiredCarrier();
+            });
             // ⓛ probe: the museum index. Deferred like the rest -- the display
             // references have to exist before their state means anything.
             SKSE::GetTaskInterface()->AddTask([]() { FUI::Lotd::Rebuild(); });
@@ -2641,13 +2644,17 @@ namespace
     }
 
     // ---- SKSE cosave: one record loop, dispatched by type ----
+    // ★A retired type, kept only so the loop can recognise and DROP it. The
+    // second-ring carrier owned 'DRNG' until 1.6.0; nothing writes it now, and
+    // every save made before the update still carries one.
+    constexpr std::uint32_t kRetiredDualRingRecord = 'DRNG';
+
     void SaveCallback(SKSE::SerializationInterface* a_intfc)
     {
         FUI::Loadout::SaveGame(a_intfc);
         FUI::Grid::SaveGame(a_intfc);
         FUI::GoldCoins::SaveGame(a_intfc);
         FUI::Costume::SaveGame(a_intfc);
-        FUI::DualRing::SaveGame(a_intfc);
         FUI::LootBarter::SaveGame(a_intfc);   // F7: container spot memory (GCLY)
         FUI::Wheeler::SaveGame(a_intfc);      // quick-wheel slot order (GWHL)
     }
@@ -2664,8 +2671,19 @@ namespace
                 FUI::GoldCoins::LoadRecord(a_intfc, version);
             } else if (type == FUI::Costume::kRecordType) {
                 FUI::Costume::LoadRecord(a_intfc, version);
-            } else if (type == FUI::DualRing::kRecordType) {
-                FUI::DualRing::LoadRecord(a_intfc, version);
+            } else if (type == kRetiredDualRingRecord) {
+                // ★1.6.0: the second ring is still here, but its CARRIER is
+                // gone and this record described the carrier. It is READ AND
+                // DROPPED rather than left to the unknown-type branch below --
+                // which would warn on every load of every save made before the
+                // update, for a record that is not corruption and holds
+                // nothing anyone still wants. The carrier it names is taken
+                // off by Costume::SweepRetiredCarrier, which asks the
+                // inventory instead of trusting this; and the second ring
+                // itself needs no record at all now, because a load restores
+                // the slot bits and Tick re-derives the rest from the body.
+                logger::info("[COSAVE] retired 'DRNG' record dropped "
+                             "(second-ring carrier, replaced in 1.6.0)");
             } else if (type == FUI::Wheeler::kRecordType) {
                 FUI::Wheeler::LoadRecord(a_intfc, version);
             } else if (type == FUI::LootBarter::kContRecordType) {
@@ -2685,7 +2703,7 @@ namespace
     {
         FUI::Loadout::RevertGame(a_intfc);
         FUI::Costume::RevertGame(a_intfc);
-        FUI::DualRing::RevertGame(a_intfc);
+        FUI::DualRing::RevertGame();
         FUI::Wheeler::RevertGame(a_intfc);
         FUI::Grid::RevertGame(a_intfc);
         FUI::GoldCoins::RevertGame(a_intfc);

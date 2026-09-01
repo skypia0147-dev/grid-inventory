@@ -148,12 +148,6 @@ namespace FUI::Grid
     // cell reads as empty while carried.
     [[nodiscard]] RE::TESBoundObject* HeldPartnerObject();
 
-    // ★B4-4: is a CARRIER carry up -- the displaced second ring riding the
-    // cursor? The quiet ring-swap handoff keys its "no redraw needed" on
-    // exactly this: the drop path starts that carry before Wear runs, the
-    // right-click router displaces with no carry at all.
-    [[nodiscard]] bool CarrierCarryActive();
-
     // GI17: the same question narrowed to ONE sub-stack. Partner windows must
     // use this -- with several cells per form, the form-level test hides them
     // all the moment one is lifted.
@@ -190,12 +184,9 @@ namespace FUI::Grid
     // a_count: how many units ride the cursor. One for anything worn a copy at
     // a time — but a quiver is unequipped whole, so the carry has to be whole
     // too, or the rest of it lands in the pack the instant it comes off.
-    // a_fromCarrier: lifted from the SECOND ring slot -- never engine-worn,
-    // so the carry must not claim a worn list (see Held::fromCarrier).
     void BeginCarry(RE::TESBoundObject* a_obj, std::uint16_t a_uid = 0,
                     std::uint16_t a_sig = 0, int a_hand = 0,
-                    bool a_swappedOut = false, int a_count = 1,
-                    bool a_fromCarrier = false);
+                    bool a_swappedOut = false, int a_count = 1);
 
     // Phase 5-B: carry a PARTNER (merchant/container) item on the cursor.
     // Dropping it onto the player grid takes (loot) or buys (barter).
@@ -443,13 +434,6 @@ namespace FUI::Grid
     // The layout half is ForgetTile's, called by rule 13 at the same site.
     void DropTileDisplay(const std::string& a_key, RE::TESBoundObject* a_obj);
 
-    // ★B4-4: a carrier-route equip LANDS at DualRing::Wear -- no engine equip
-    // event will ever come for the ring itself, so nothing else can retire
-    // its equip-queue entry. Left in the books, the entries a swap spam piles
-    // up each kept excluding one unit of the form until the TTL swept them,
-    // and an innocent same-form spare in the pack blinked (user report).
-    // Retires the oldest arriving entry of the form.
-    void ReleasePendingEquipFor(RE::FormID a_form);
     // B2: expire the partner-drop placement hint (qty slider cancelled/closed)
     void ClearDropHint();
 

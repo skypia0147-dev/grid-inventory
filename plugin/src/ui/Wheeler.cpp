@@ -1,7 +1,6 @@
 ﻿#include "ui/Wheeler.h"
 
 #include "game/Costume.h"
-#include "game/DualRing.h"
 #include "ui/Equip.h"
 #include "ui/Fallback.h"
 #include "ui/IconCache.h"
@@ -1406,13 +1405,13 @@ namespace FUI::Wheeler
                     if (const auto* xu = star->GetByType<RE::ExtraUniqueID>()) {
                         starUid = xu->uniqueID;
                     }
-                    // ★"worn" includes the SECOND RING: a carrier wears its
-                    // effect while the ring stands in the pack, so IsWorn says
-                    // no -- and the wheel then showed no check mark and
-                    // offered equip instead of unequip for a ring plainly on
-                    // the doll (user report).
-                    const bool wornHere = entry->IsWorn() ||
-                                          DualRing::Second() == obj;
+                    // ★"worn" is the ENGINE's answer now and nothing else. It
+                    // once had to be widened for the second ring, whose effect
+                    // a carrier wore while the ring itself stood in the pack --
+                    // IsWorn said no for a ring plainly on the doll. A second
+                    // ring is an outside mod's business since 1.6.0, and one it
+                    // puts on the body IS engine-worn, so the engine answers.
+                    const bool wornHere = entry->IsWorn();
                     const FavItem fi{ obj, obj, FavKind::kItem,
                                       Grid::InstanceSigOf(star), -1,
                                       data.first, wornHere, starUid };
@@ -2432,14 +2431,6 @@ namespace FUI::Wheeler
                 if (inL || inR) wornHere = a_leftHand ? inL : inR;
             }
             if (wornHere) {
-                // ★The second ring is not ENGINE-worn -- a carrier stands in
-                // for it -- so the engine unequip below is a no-op for it.
-                // The carrier's own gate does the whole job (sound, redraw).
-                if (auto* armo = obj->As<RE::TESObjectARMO>();
-                    armo && DualRing::Second() == armo) {
-                    DualRing::RequestTakeOff();
-                    return;
-                }
                 Equip::UnequipItem(obj, a_list[a_slot].uid, a_list[a_slot].sig,
                                    a_leftHand ? 2 : 0, a_list[a_slot].count);
                 return;

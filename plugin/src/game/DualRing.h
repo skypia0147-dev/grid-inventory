@@ -2,131 +2,143 @@
 
 #include <cstdint>
 
-namespace SKSE
-{
-    class SerializationInterface;
-}
-
-// THE SECOND RING.
+// THE SECOND RING -- WORN FOR REAL.
 //
 // The engine wears exactly one. BipedAnim is `BIPOBJECT objects[kTotal]` --
-// one item per slot -- and kRing is a single bit, so a second ring has
-// nowhere to go. Moving the slot does not help: probed three ways (both
-// masks moved, ARMO only, and claiming NO slot at all) the engine took the
-// first ring off every time, so whatever it single-ends on, it is not the
-// biped slot. ETYP is not it either -- both rings report 0.
+// one item per slot -- and kRing is a single bit, so two rings claiming that
+// bit means the engine takes the first one off. Moving the slot does not help:
+// probed three ways (both masks moved, ARMO only, and claiming NO slot at all)
+// the engine took the first ring off every time.
 //
-// So the second ring is not worn AS a ring. A CARRIER of ours is equipped in
-// its place -- costume anchor 32 (0x84A), which is not a ring and so nothing
-// single-ends it -- borrowing the ring's ENCHANTMENT. The ring itself stays in
-// the pack, and the UI shows it on the doll's second ring slot.
+// ★So the contest is ENDED rather than worked around: the ring already on the
+// body gives up its kRing bit, and the incoming one takes the slot with
+// nothing to displace. Both are then engine-worn in every sense the rest of
+// this plugin asks about -- ExtraWorn, effects, tooltips, the doll walk, the
+// board's worn accounting -- and none of them needs a special case.
 //
-// ★★★NO MODEL, and that is a settled question rather than an omission. A
-// skinned mesh carries its own slot number inside the NIF
-// (BSDismemberSkinInstance::partitions[i].slot), and for every ring it is 36 --
-// which the FIRST ring already occupies. Nothing set on the ARMO or the ARMA
-// changes it, so within the equipment system the second ring cannot be drawn:
-// make the addon claim kRing and it loses the contest for 36; take kRing off it
-// and nothing matches 36 at all. (Measured: the second ring appeared the
-// instant the first was removed, i.e. when 36 came free.)
-// Outside the equipment system it is no better -- a model loaded by hand
-// through BSModelDB comes back with `skin=NO`, because binding a skin to the
-// skeleton is work the engine does while building a part.
-// Both routes were taken to the end. The effect applies; the ring is invisible.
+// ★★THIS REPLACES A CARRIER, and the replacement is why the 1.5.x bug cannot
+// come back. That version equipped an invisible costume anchor and copied the
+// ring's `formEnchanting` onto it. A PLAYER-ENCHANTED ring keeps its
+// enchantment on the INSTANCE (ExtraEnchantment), not on the record, so there
+// was nothing to copy: no effects applied at all, and the item showed its
+// unenchanted value (user report, 1.5.0 -- "Enchantment disappear after
+// equipping", value 4362 -> 500). Wearing the real item cannot have that bug.
+// The technique is Jewelry Limiter's (dylbill, Nexus 22098), which reaches the
+// same end from Papyrus with RemoveSlotFromMask.
+//
+// ★★★STILL NOT DRAWN, and now for a smaller and more honest reason than the
+// one this file used to give. An ARMO with no biped slot has nowhere for
+// BipedAnim to put it, so the ring that gave up its bit is invisible; a ring's
+// mesh also carries slot 36 inside the NIF, which the first ring holds.
+// The old note called that settled after two routes (inside the equipment
+// system, and a hand-loaded model through BSModelDB, which comes back
+// `skin=NO`). ★A THIRD ROUTE EXISTS and Left Hand Rings SKSE takes it: deep-copy
+// the part the engine ALREADY skinned, rewrite `NiSkinInstance::bones` onto
+// another finger, and force the partition on with
+// `BSDismemberSkinInstance::UpdateDismemberPartion(slot, true)`. That is a
+// piece of work of its own and is not attempted here -- but it is not
+// impossible, and this comment should stop saying that it is.
+//
+// ★★★★NOTHING IS REMEMBERED ACROSS A LOAD, deliberately. The engine re-reads
+// ARMO records from the plugin every load -- measured, and the reason the old
+// carrier had to re-lend its enchantment there -- so the bits we took are
+// already back by the time a save opens. Rather than serialise a debt the load
+// has cancelled, the invariant is re-derived from the body: see Tick.
 namespace FUI::DualRing
 {
-    // ---- what is on the second slot --------------------------------------
-    // The ring the carrier is standing in for, or null. This is the RING, not
-    // the carrier: everything above the game layer -- doll, tooltips,
-    // transfers -- wants the item the player thinks they are wearing.
-    [[nodiscard]] RE::TESObjectARMO* Second();
-    // The carried unit's content signature (0 = plain / unknown). Captured at
-    // Wear from the list the drop resolved; the off-board accounting needs it
-    // to exclude the RIGHT unit when a player-enchanted ring has plain
-    // siblings. A router-path wear (no list resolved yet) records 0, which is
-    // correct for every vanilla ring -- their enchant lives on the FORM.
-    [[nodiscard]] std::uint16_t SecondSig();
+    // ---- no rules ---------------------------------------------------------
+    // ★★★THERE ARE NO REFUSALS. A ring dropped on either cell goes on.
+    //
+    // Two used to live here -- "not another unit of a worn form" and "not the
+    // same magic effect twice" -- and both are gone for the same reason: each
+    // sat on ONE road (the second cell's drop) while the right-hand cell, a
+    // click and the wheel let the very same pair through. ★A rule kept on half
+    // the roads is worse than no rule: it annoys the player who meets it and
+    // does nothing about the player who does not.
+    //
+    // The effect rule also had a technical reason once, and lost it. Under the
+    // carrier ONE stand-in wore a borrowed enchantment, so a duplicate really
+    // was a strange state. Both rings are engine-worn now and the game applies
+    // both effects perfectly well (measured) -- whether that is desirable is a
+    // BALANCE question, and vanilla never had to answer it because vanilla
+    // wears one ring.
+    //
+    // ★★And removing it took a whole class of bugs with it: the effect test was
+    // the only reason the drop GATE had to work out which UNIT was coming, and
+    // a plain unit carries no uid and no list index to be named by. It named
+    // the wrong one -- refusing a plain ring for the enchantment of an
+    // enchanted sibling, and only in one left/right order (measured).
 
-    // ★The carrier is not the player's property. Hide it exactly where the
-    // costume anchors are hidden -- grid, doll, capacity, tooltips, transfers.
-    [[nodiscard]] bool IsCarrier(const RE::TESForm* a_form);
+    // ---- which ring is which ----------------------------------------------
+    // ★★DOES THIS RING HOLD THE ENGINE'S RING SLOT -- is it the one you can
+    // SEE on the hand? This is what the doll's two ring cells mean:
+    //
+    //     ringR = the ring holding kRing (drawn on the hand)
+    //     ringL = the one that gave the slot up
+    //
+    // ★They used to mean nothing physical at all. The doll filled ringR with
+    // whichever worn ring the inventory walk reached first -- hash order -- and
+    // the slot bit went to the lowest FormID, so "the visible ring" and "the
+    // right-hand cell" were independent answers that happened to agree.
+    // A drop then aimed at one ring and the engine displaced the other
+    // (measured 2026-09-01: the cursor took a ring that was still worn, and
+    // the board needed a full rebuild to recover).
+    [[nodiscard]] bool HoldsRingSlot(const RE::TESObjectARMO* a_armo);
 
-    // ---- the rules --------------------------------------------------------
-    // ★One place, asked by both the drop target and the act. The UI must be
-    // able to refuse a drag WITHOUT restating these, or the two copies drift
-    // and the player gets a slot that accepts a ring and then does nothing.
-    // ★An empty FIRST slot is deliberately not a refusal. Picking a ring up
-    // empties the slot it came from, so refusing on that basis made the drag
-    // asymmetric -- left-to-right took the ring off instead of moving it.
-    // Where a ring lands is Wear's decision, not a veto here.
-    enum class Verdict : std::uint8_t
-    {
-        kOk,
-        kNotARing,
-        kAlreadyWorn,    // this very ring is already on one of the two slots
-        kSameEffect,     // ★the feature's whole point: no stacking a duplicate
-        kNoCarrier,      // the ESP record is missing
-        kNoFreeSlot,
-    };
-    [[nodiscard]] Verdict CanWear(RE::TESObjectARMO* a_ring);
-    // ★Would wearing a_ring next to the CARRIED ring stack the same base
-    // effect? The duplication rule in one place: same enchantment family =
-    // true; an unenchanted ring stacks with anything = false. This is the
-    // test callers must use instead of comparing FORMS -- a plain pair of one
-    // form is two legal rings (user spec), form identity is not the rule.
-    [[nodiscard]] bool WouldDuplicate(RE::TESObjectARMO* a_ring);
-    // The same test between ANY two rings -- the equip router asks it about
-    // the engine-slot ring, which WouldDuplicate (carried ring only) cannot.
-    [[nodiscard]] bool SharesEffect(RE::TESObjectARMO* a_x, RE::TESObjectARMO* a_y);
-    // English, for the log. A player-facing string would mean a new Lang key
-    // and four translations; nothing shows these to the player yet.
-    [[nodiscard]] const char* VerdictText(Verdict a_v);
+    // ★★★...BUT THE CELL IS NOT THE BIT, and tying them together was wrong in
+    // the other direction. The bit moves for mechanical reasons -- MakeRoom
+    // takes it off whatever is worn so the incoming ring can join -- so the
+    // NEWEST ring always ended up holding it, and "cell = holder" then put
+    // every new ring on the RIGHT and slid the old one LEFT. A ring dropped on
+    // the left cell appeared on the right, and the pair looked like it had
+    // swapped places for no reason the player did (user report).
+    // ★So the cell is remembered as PLACEMENT -- where the player put it --
+    // and the bit is left free to do its job underneath. They answer different
+    // questions and neither has to follow the other.
+    // ★★Keyed by form AND content signature, so a plain ring and an enchanted
+    // one of the same kind keep their own cells. Two units that match on both
+    // are interchangeable to every reader here, and either may take the seat.
+    void NoteSecondCell(const RE::TESObjectARMO* a_ring, std::uint16_t a_sig);
+    // Does this ring unit belong in the LEFT cell? False also means "no
+    // opinion" -- the doll then falls back to the slot bit, which is right for
+    // a pair the player never placed by hand.
+    [[nodiscard]] bool IsSecondCell(const RE::TESObjectARMO* a_armo, std::uint16_t a_sig);
+    // Has the player placed ANYTHING in the left cell? ★The doll needs this
+    // separately: its walk is in inventory order, so an unplaced ring can
+    // reach the cell first and take the seat the placed one was promised.
+    [[nodiscard]] bool HasSecondCell();
 
-    // ---- acts -------------------------------------------------------------
-    // ★Equip-QUEUE only (game thread, outside the render pass): both call
-    // ActorEquipManager, and doing that inside the render pass defers the 3D
-    // refresh until the menu closes.
-    // Wear also decides WHERE the ring goes -- it fills an empty first slot,
-    // or trades places with the ring already on the second.
-    // "!ring2slot = N" -- pin the carrier's biped slot (EDITOR number,
-    // 44..60). Slot habits are a modlist fact no mask can read: the automatic
-    // pick avoids the known bad neighbourhoods, and this is the player's
-    // override for whatever their own list watches. Out-of-range clears.
-    void SetSlotOverride(int a_editorSlot);
-    [[nodiscard]] int SlotOverride();   // editor number, -1 = automatic
-
-    bool Wear(RE::TESObjectARMO* a_ring, RE::ExtraDataList* a_xl);
-    void TakeOff();
-    // Queued form of TakeOff, for callers inside the render pass.
-    void RequestTakeOff();
-    // ★Ring session: withdraw a queued take-off that has not run yet. The
-    // origin-return of a cancelled second-ring carry re-wears the ring; a
-    // stand-down still queued from the lift would strip it right back off.
-    void CancelTakeOff();
-
-    // A take-off has been asked for and not yet run (the render pass defers
-    // it to Tick). THE ring2-lift window: the cursor is holding the very unit
-    // the carrier still stands for, and the board's ring2 exclusion must
-    // yield to the carry's -- see OffBoardUnitsFor. Object identity cannot
-    // ask this: units of one form share one TESBoundObject, so "held == the
-    // second ring" was also true for a DISPLACED former second ring while its
-    // same-form successor stood on the carrier, and the exclusion went dark
-    // (user report: three copies of one ring on screen).
-    [[nodiscard]] bool TakeOffPending();
+    // ---- the one act -------------------------------------------------------
+    // ★★★A RING IS ABOUT TO BE EQUIPPED. LEAVE THE BODY READY FOR IT.
+    //
+    //   a_incoming   the ring going on
+    //   a_sig        its content signature (names the UNIT)
+    //   a_aimed      the ring the player pointed at -- the cell's occupant.
+    //                null for a click or the wheel, which point at nothing
+    //   a_secondCell the drop named the LEFT cell
+    //
+    // Takes off whatever must leave, hands the slot bit round so the engine
+    // single-ends nothing, and records the placement. ★The caller must SKIP
+    // its conflict pass for rings afterwards -- everything is already arranged,
+    // and that pass would undo it.
+    void PrepareForEquip(RE::TESObjectARMO* a_incoming, std::uint16_t a_sig,
+                         RE::TESObjectARMO* a_aimed, bool a_secondCell);
 
     // ---- lifecycle --------------------------------------------------------
-    // Per game-update tick. ★Drops the whole thing if the ring left the
-    // inventory -- sold, dropped, taken by a script. Observing beats
-    // remembering: the world can change behind this system's back, and the
-    // stale case then repairs itself on the next tick.
+    // ★Per game-update tick, and it OBSERVES rather than remembers: the world
+    // changes behind this system's back (a ring sold, dropped, taken by a
+    // script, or a save loaded with two already on). One invariant, restored
+    // from what the body is actually wearing --
+    //
+    //     IF ANY RING IS WORN, EXACTLY ONE OF THEM HOLDS kRing.
+    //
+    // -- which covers every direction at once: a bit is handed back when its
+    // ring leaves, a pair a load put back into contest is separated again,
+    // and a survivor left slotless by the removal of the visible ring gets
+    // the slot back instead of turning invisible for the rest of the save.
+    // ★Not a per-frame walk: it sleeps until something asks, and then on a
+    // slow heartbeat only while a bit is out.
     void Tick();
-
-    inline constexpr std::uint32_t kRecordType = 'DRNG';
-    void RevertGame(SKSE::SerializationInterface* a_intfc);   // new game / pre-load
-    void SaveGame(SKSE::SerializationInterface* a_intfc);
-    void LoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version);
-    // ★The engine re-read the forms, so the enchantment we lent the carrier is
-    // gone while the EQUIP survived in the save -- a carrier worn with no
-    // enchantment is a second ring that quietly stopped working. Re-lends it.
-    void OnLoad();
+    // Hand every bit back, then ask for a fresh sweep. New game / pre-load.
+    void RevertGame();
 }

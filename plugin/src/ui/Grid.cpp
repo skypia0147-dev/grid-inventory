@@ -14,7 +14,6 @@
 #include "game/Census.h"
 #include "game/Costume.h"
 #include "game/WornLedger.h"
-#include "game/DualRing.h"
 #include "game/GoldCoins.h"
 #include "ui/Loadout.h"
 #include "ui/UIRoot.h"
@@ -251,13 +250,6 @@ namespace FUI::Grid
             // stack is attributed to the stolen pool rather than to the plain
             // one it does not belong to.
             std::string         srcPool;
-            // ★★Lifted from the SECOND RING slot: its unit was never
-            // engine-worn (a carrier wears the effect), so this carry has NO
-            // worn list to be backed by -- treating it as fromDoll-worn made
-            // the accounting consume the FIRST ring's list instead (same
-            // plain form) and that unit leaked onto the board. Appended LAST
-            // (§10-6).
-            bool                fromCarrier = false;
             // ★ONE PATH / O-0: a SYNTHETIC carry -- one the code made on the
             // player's behalf so a right-click can travel the same road a drag
             // does. It is born and consumed inside one call, so it must never
@@ -1938,10 +1930,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // that leaves an identical worn list behind) and answered
                 // every other shape by assumption; the assumption was right,
                 // but only because the swap was the only shape that ever
-                // asked. A carrier lift stays out on its own flag -- it was
-                // never engine-worn and has no doffing entry to consult.
-                bool stillWorn = g_held->fromDoll && !g_held->fromCarrier &&
-                                 g_held->obj &&
+                // asked.
+                bool stillWorn = g_held->fromDoll && g_held->obj &&
                                  WornLedger::Doffing(g_held->obj->GetFormID());
                 // (!simdrift) both halves of the identity are corrupted, so
                 // every exact path misses and only the carry fallback can
@@ -2019,47 +2009,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     out.push_back(std::move(t));
                 }
             }
-            // ★THE SECOND RING. Its unit stands in the PACK while a carrier
-            // wears its effect, so no worn list ever names it -- the stackable
-            // branch subtracts it by hand (wornUnits += 1) but the GEAR walk
-            // had no idea, listed it, and a pair of enchanted rings drew three
-            // tiles for two units (user report: "복사된 걸로 보인다"). One
-            // off-board unit, form-level identity: the carrier records only
-            // the FORM, and the units it can stand in for are interchangeable
-            // to the effect rule anyway. mayBeWorn=false -- the body never
-            // wears this unit, so it must not consume a worn list.
-            // ★...but NOT while an equip of this form is still in flight: the
-            // pending-equip suppression already hides the unit on its way to
-            // the carrier, and both at once hid a SPARE as well -- the
-            // identical ring in the pack flickered for the rebuild or two
-            // until the suppression died (user report). The entry takes over
-            // when the suppression releases: a seamless handoff, one
-            // exclusion at every moment.
-            // ★...and not while the carrier's own unit RIDES THE CURSOR: a
-            // fromCarrier carry IS that unit, already excluded as "held".
-            // ★★That is ONLY the LIFT window, and the take-off flag is what
-            // names it. The old test was object identity -- but units of one
-            // form share one TESBoundObject, so "held == second" was also
-            // true for a DISPLACED former second ring while its same-form
-            // successor stood on the carrier, and this exclusion went dark:
-            // the successor, still in the pack, drew on the board as a third
-            // copy next to the cursor and the doll (user report). The
-            // drop-swap window this guard once also covered is the
-            // pending-equip guard's below -- the accepted drop always files
-            // an entry (NotePendingEquip), and that suppression spans the
-            // window until Wear has run.
-            if (auto* second = DualRing::Second();
-                second && FormKey(second) == a_base &&
-                !(g_held && g_held->fromCarrier && g_held->obj == second &&
-                  DualRing::TakeOffPending()) &&
-                std::none_of(g_pendingEquip.begin(), g_pendingEquip.end(),
-                             [&](const OffBoardUnit& u) { return u.base == a_base; })) {
-                OffBoardUnit r;
-                r.base = a_base;
-                r.sig  = DualRing::SecondSig();   // 0 for every vanilla ring
-                r.why  = "ring2";
-                out.push_back(std::move(r));
-            }
+            // ★THE SECOND RING used to be excluded here, and no longer needs
+            // to be. Its unit stood in the PACK while a carrier wore its
+            // effect, so no worn list ever named it and the gear walk drew a
+            // tile for a ring already on the doll -- an exclusion keyed on the
+            // carrier's form, with a lift window and a pending-equip handoff
+            // to keep it from hiding an innocent same-form spare as well.
+            // Since 1.6.0 a second ring is an outside mod's, worn on the BODY,
+            // and a body-worn unit carries a worn list like any other: the
+            // ordinary gear walk subtracts it with no special case at all.
             return out;
         }
 
@@ -4291,24 +4249,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         bool ReturnCarryToOrigin(const Held& a_h)
         {
             if (!a_h.obj || a_h.swappedOut) return false;
-            if (a_h.fromCarrier) {
-                auto* armo = a_h.obj->As<RE::TESObjectARMO>();
-                if (!armo || DualRing::Second()) return false;
-                // the lift queued a carrier stand-down; it must not fire after
-                // the re-wear and strip the ring we just put back
-                DualRing::CancelTakeOff();
-                NotePendingEquip(a_h.obj, a_h.uid, a_h.sig, 0, a_h.key, 1,
-                                 a_h.xlIdx);
-                Equip::RequestWear(a_h.obj, a_h.uid, a_h.sig, 0, a_h.count,
-                                   /*a_second=*/true);
-                return true;
-            }
             if (a_h.fromDoll) {
                 NotePendingEquip(a_h.obj, a_h.uid, a_h.sig, a_h.hand, a_h.key,
                                  Equip::EquipCountFor(a_h.obj, a_h.count),
                                  a_h.xlIdx);
                 Equip::RequestWear(a_h.obj, a_h.uid, a_h.sig, a_h.hand,
-                                   a_h.count, /*a_second=*/false);
+                                   a_h.count);
                 return true;
             }
             return false;
@@ -4339,8 +4285,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     }
 
     void BeginCarry(RE::TESBoundObject* a_obj, std::uint16_t a_uid, std::uint16_t a_sig,
-                    int a_hand, bool a_swappedOut, int a_count,
-                    bool a_fromCarrier)
+                    int a_hand, bool a_swappedOut, int a_count)
     {
         if (!a_obj || g_held) return;
         const GridDef def = g_resolver ? g_resolver(a_obj) : GridDef{};
@@ -4430,32 +4375,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         g_held->swappedOut = a_swappedOut;
         // (B4-4: swapSameForm retired -- the doffing clock replaced its one
         // reader, the pendingEquip same-form-swap scan)
-        g_held->fromCarrier = a_fromCarrier;
         // B4-2c: a doll lift IS an unequip request -- tell the worn ledger at
         // the same moment the carry begins, so Doffing() can answer the
         // "still on the body?" question from the request/event lifecycle
-        // instead of scanning the equip queue. A carrier lift was never
-        // engine-worn; there is nothing to doff.
-        if (!a_fromCarrier) {
-            WornLedger::NoteDoffing(a_obj->GetFormID(), a_hand);
-        }
+        // instead of scanning the equip queue.
+        WornLedger::NoteDoffing(a_obj->GetFormID(), a_hand);
         if (g_poolTrace) {
             SKSE::log::info("[ACT] lift-from-doll '{}' hand={} uid {:04X} sig {:04X} key '{}'",
                 a_obj->GetName(), a_hand, a_uid, a_sig, g_held->key);
         }
         if (g_sound) g_sound(a_obj, true);
-        // ★B4-4: a CARRIER lift changes nothing the board draws -- the unit
-        // was never on it (carrier-worn, ring2-excluded) and its exclusion
-        // hands off to `held` without a gap. The redraw here was one of the
-        // frames painted mid-handoff in the ring swap window (the deferred
-        // blink's habitat). An engine-worn lift keeps its redraw: the
-        // parked-star bookkeeping (GI30/31) still draws through it.
-        // ★Ring session: a SWAP-DISPLACED lift changes nothing either -- the
-        // occupant was worn (no tile) and goes straight to the cursor, and
-        // this redraw fired in the middle of every drop-swap ([RB] measured
-        // it as half the 11/s storm). Only the plain doll lift keeps its
-        // redraw, and no engine churn races that one.
-        if (!a_fromCarrier && !a_swappedOut) RequestRebuild();
+        // ★Ring session: a SWAP-DISPLACED lift changes nothing the board draws
+        // -- the occupant was worn (no tile) and goes straight to the cursor,
+        // and this redraw fired in the middle of every drop-swap ([RB]
+        // measured it as half the 11/s storm). Only the plain doll lift keeps
+        // its redraw, and no engine churn races that one: the parked-star
+        // bookkeeping (GI30/31) still draws through it.
+        if (!a_swappedOut) RequestRebuild();
     }
 
     void BeginPartnerCarry(RE::TESBoundObject* a_obj, int a_count, int a_value,
@@ -5908,12 +5844,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     }
                 }
                 if (worn && wornUnits <= 0) wornUnits = 1;   // worn but unlisted
-                // ★★The SECOND ring is worn without the engine knowing it: a
-                // carrier wears its enchantment while the ring itself stays in
-                // the pack, so it carries no ExtraWorn for the count above to
-                // find. Counted by hand, or the player sees the very same ring
-                // on the doll AND on the board at once.
-                if (DualRing::Second() == obj) wornUnits += 1;
+                // (The second ring used to be added here by hand: a carrier
+                // wore its enchantment while the ring stayed in the pack, so it
+                // carried no ExtraWorn for the count above to find. Since 1.6.0
+                // an outside mod's second ring is on the BODY and brings its
+                // own worn list, which the walk above already counts.)
                 // ★★★P2/3-1, AND THIS IS THE LINE THAT DECIDES IT. A worn unit
                 // leaves the board by being SUBTRACTED here -- not by the
                 // per-unit skip further down, which is what the first attempt
@@ -7890,17 +7825,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             return decline("coin mirror");
         }
         // ★B4-4: a form the board NEVER SHOWS is a full answer, not a
-        // decline. The ring carrier, the costume anchors and non-playable
-        // scripting copies move containers and fire equip events like
-        // anything else -- and every one of those used to fall through to
-        // "decline -> full rebuild": three rebuilds per ring swap for a form
-        // with no tile anywhere (log-measured; that window is the deferred
-        // ring blink's habitat). SkipInventoryEntry is the board's own door
-        // policy, so the same rules decide here.
+        // decline. The costume anchors and non-playable scripting copies move
+        // containers and fire equip events like anything else -- and every one
+        // of those used to fall through to "decline -> full rebuild": three
+        // rebuilds per ring swap for a form with no tile anywhere
+        // (log-measured). SkipInventoryEntry is the board's own door policy,
+        // so the same rules decide here.
+        // ★The retired ring carrier needs no clause of its own: it is costume
+        // anchor 32, and IsAnchor answers for all thirty-two.
         {
             const char* nm = obj->GetName();
             if (!obj->GetPlayable() || Costume::IsAnchor(obj) ||
-                DualRing::IsCarrier(obj) || !nm || !*nm) {
+                !nm || !*nm) {
                 SKSE::log::info("[B3] partial add ({:08X}): board-invisible "
                                 "form -- nothing to do", a_form);
                 return true;
@@ -7967,7 +7903,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             if (Ledger::OpenOutgoingCount(a_form) > 0) return decline("removal in flight");   // B4-3c
             if (Loadout::ReservedCount(a_form) > 0) return decline("reserved");
             if (TrashedUnits(baseKey) > 0) return decline("trash parked");
-            if (DualRing::Second() == obj) return decline("dual ring");
             // ★★★AN AIMED DROP IS NOT A CASE THIS PATH CAN PROVE.
             //
             // It fills partial tiles first and mints what is left over at the
@@ -8942,11 +8877,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                        /*a_drained=*/false);
     }
 
-    bool CarrierCarryActive()
-    {
-        return g_held && g_held->fromCarrier;
-    }
-
     int GoldAmount()
     {
         return g_gold;
@@ -9171,20 +9101,6 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     void MarkEquipsApplied()
     {
         for (auto& u : g_pendingEquip) u.applied = true;
-    }
-
-    void ReleasePendingEquipFor(RE::FormID a_form)
-    {
-        auto* form = RE::TESForm::LookupByID(a_form);
-        auto* obj = form ? form->As<RE::TESBoundObject>() : nullptr;
-        if (!obj) return;
-        const std::string base = FormKey(obj);
-        for (auto it = g_pendingEquip.begin(); it != g_pendingEquip.end(); ++it) {
-            if (it->base == base && it->arriving) {
-                g_pendingEquip.erase(it);
-                return;
-            }
-        }
     }
 
     void ReleaseLandedPendingEquip(RE::FormID a_form)
@@ -14608,24 +14524,19 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // Only an ACCEPTED equip that actually displaces something starts the
             // return carry. A potion or spell tome dropped on a slot is drunk or
             // read -- nothing comes off, and there is nothing to hand back.
-            // ★★The SECOND RING'S displaced occupant rides the cursor like
-            // every other swap -- its carry is marked fromCarrier, so the
-            // worn-backed accounting cannot let it claim the FIRST ring's
-            // list (the leak that made the first cursor attempt draw the ring
-            // twice). The ONE exception: first slot empty, where Wear moves
-            // the displaced ring onto the FIRST slot instead of the pack --
-            // nothing leaves the body, and a cursor copy really would be a
-            // duplicate.
-            const bool ringL = g_slotTarget == "ringL";
+            // ★1.6.0: "ringL" is an ORDINARY doll slot again. It used to be
+            // the carrier's, and its displaced occupant needed a carry marked
+            // fromCarrier plus a first-slot-empty exception, because Wear --
+            // not the engine -- decided where the ring went. Both are gone
+            // with the carrier: whatever the doll shows on ringL is
+            // engine-worn, so its displacement is the same swap every other
+            // slot performs.
             SKSE::log::info("[RING] drop-swap slot '{}': in='{}' occupant='{}' "
-                            "second='{}' accepted={}",
+                            "accepted={}",
                 g_slotTarget, swapInObj ? swapInObj->GetName() : "?",
                 worn ? worn->GetName() : "-",
-                DualRing::Second() ? DualRing::Second()->GetName() : "-",
                 accepted ? 1 : 0);
-            const bool ringLToFirst = ringL &&
-                                      Equip::WornObjectAt("ringR") == nullptr;
-            if (accepted && swapping && !ringLToFirst) {
+            if (accepted && swapping) {
                 // The engine has not unequipped it yet, so this is exactly a doll
                 // pickup -- and it must name the HAND, or the worn-unit match can
                 // consume the copy we just put IN and leave the displaced one
@@ -14637,15 +14548,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // them went to the pack instead of onto the cursor.
                 BeginCarry(worn, wuid, wsig, wornHand, /*swappedOut=*/true,
                            Equip::EquipCountFor(worn,
-                               Equip::WornCountAt(g_slotTarget)),
-                           /*fromCarrier=*/ringL);
+                               Equip::WornCountAt(g_slotTarget)));
             }
             // ★No tail rebuild for ACCEPTED drops. The !rbdrop interrogation
             // measured every accepted shape without it: plain equips, swaps,
             // same-form swaps, stackables, potions and tomes were all fine --
             // the carry had already left the board at lift, so there was
-            // nothing for a full rebuild to draw. The carrier's stand-down
-            // moved into DualRing::TakeOff itself (rule 6).
+            // nothing for a full rebuild to draw.
             // ★★A REJECTED drop is the case the interrogation never ran: the
             // carry is consumed either way (g_held.reset above), the layout
             // entry is intact, and the only thing that ever put the tile back
@@ -14893,20 +14802,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // in the inventory" did nothing at all (AddItemMenu).
             // count: what THIS tile holds. Ammo goes on by the tileful
             // (EquipCountFor); everything else ignores it and takes one.
-            // ★O-1b: a ring bound for the SECOND slot is AIMED, not left to a
-            // router downstream. Aiming puts the click in the same targeted
-            // branch a drag onto that slot uses -- and that branch names the
-            // exact unit (it resolves srcList) where the router hands the
-            // engine a null list and lets it pick. One road, and the better of
-            // the two. A refusal there falls through to the first slot, so
-            // nothing is lost by aiming.
+            // ★O-1b aimed a ring bound for the SECOND slot at "ringL" here,
+            // so the click travelled the same targeted branch a drag onto that
+            // slot used. There is no second slot to aim at since 1.6.0 -- the
+            // engine wears one ring and an outside mod owns the rest -- so a
+            // ring is used like everything else and the engine decides.
             const bool queued =
-                Equip::RingWantsSecondSlot(a_held.obj)
-                    ? Equip::EquipItem(a_held.obj, "ringL", a_held.uid,
-                                       a_held.xlIdx, a_held.sig, a_held.key,
-                                       a_held.count)
-                    : Equip::UseItem(a_held.obj, a_held.uid, a_held.xlIdx,
-                                     a_held.sig, a_held.key, a_held.count);
+                Equip::UseItem(a_held.obj, a_held.uid, a_held.xlIdx,
+                               a_held.sig, a_held.key, a_held.count);
             if (!queued) {
                 return false;   // refused at our own gate: straight back
             }

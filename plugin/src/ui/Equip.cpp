@@ -236,20 +236,31 @@ namespace FUI::Equip
                 if (a_slotId == home) return true;
                 // rings occupy either hand; the doll splits them into two slots
                 if (std::string_view(home) == "ringR") {
-                    // ★★The SECOND ring slot has rules of its own -- the first
-                    // slot must be filled, and the two rings may not share an
-                    // effect -- and they live in DualRing so that the drop
-                    // target and the act that follows cannot disagree. A slot
-                    // that accepts a drag and then does nothing is worse than
-                    // one that refuses it.
-                    if (a_slotId == "ringL") {
-                        return DualRing::CanWear(armo) == DualRing::Verdict::kOk;
-                    }
+                    // ★★The SECOND ring slot has rules of its own -- the two
+                    // rings may not share an effect -- and they live in
+                    // DualRing so that the drop target and the act that
+                    // follows cannot disagree. A slot that accepts a drag and
+                    // then does nothing is worse than one that refuses it.
+                    // ★An empty FIRST slot is deliberately NOT a refusal
+                    // (kNoFirstRing passes): picking a ring up empties the
+                    // slot it came from, and refusing on that basis made the
+                    // drag asymmetric -- left-to-right took the ring off
+                    // instead of moving it. Where it lands is the act's call.
+                    // ★★kFull passes too: with a pair on the body the drop is
+                    // an ordinary swap, which the conflict pass performs.
+                    // ★1.6.0: EVERY ring cell takes every ring, and the second
+                    // one has no rules of its own any more -- see the note at
+                    // the top of DualRing.h. It briefly had two, and both were
+                    // kept on this road alone while the right-hand cell, a
+                    // click and the wheel let the same pair through: a rule
+                    // half-kept annoys the player who meets it and does nothing
+                    // about the player who does not.
                     // ★...and past the second they SPILL into the accessory
                     // pool, so those are legal targets too. Refusing them made
                     // a spilled ring undroppable onto the very slot the doll
                     // had just chosen for it.
-                    return a_slotId == "ringR" || a_slotId.rfind("acc", 0) == 0;
+                    return a_slotId == "ringR" || a_slotId == "ringL" ||
+                           a_slotId.rfind("acc", 0) == 0;
                 }
                 return false;
             }
@@ -501,12 +512,87 @@ namespace FUI::Equip
                     // ★Asked of a_out, not remembered in a flag -- the map IS
                     // the answer to "is that slot taken", and a flag was a
                     // second copy of it that could only ever be wrong.
-                    // ★ringL belongs to the carrier while one is active -- an
-                    // engine-worn spill must not take the slot the hand
-                    // placement below will overwrite.
-                    if (!a_out.contains("ringR"))      slot = "ringR";
-                    else if (!a_out.contains("ringL") && !DualRing::Second()) slot = "ringL";
-                    else                               slot = nullptr;
+                    // ★★★AND THE CELLS MEAN SOMETHING PHYSICAL NOW:
+                    //
+                    //     ringR = the ring holding kRing (drawn on the hand)
+                    //     ringL = the one that gave the slot up
+                    //
+                    // "First one the walk reaches" was the old rule, and the
+                    // walk order is a HASH order -- so which cell a ring landed
+                    // in had nothing to do with which one you could see. The
+                    // slot bit meanwhile went by FormID. Two independent
+                    // answers to one question: a drop aimed at one ring and the
+                    // engine displaced the other, handing the cursor a ring
+                    // that was still worn (measured 2026-09-01, recovered only
+                    // by a full rebuild). Asking DualRing makes the cell and
+                    // the finger the same fact.
+                    //
+                    // ★★★★ONE CELL PER WORN UNIT, NOT PER FORM. This walk is
+                    // per-ENTRY, and the add below runs once for it -- so TWO
+                    // PLAIN RINGS OF ONE FORM got a single cell and the doll
+                    // showed one ring while the body wore two (measured:
+                    // "[DOLL] MISMATCH 'Silver Ring' body wears 2 but doll
+                    // shows 1"; to the player a ring simply disappeared).
+                    // The carrier era hid this: the second ring was never
+                    // engine-worn, so it arrived through an add() of its own
+                    // below the loop. Both are engine-worn now, and they share
+                    // one entry -- so the units have to be walked here.
+                    // ★★★★★PLACEMENT FIRST, THE SLOT BIT ONLY AS A FALLBACK.
+                    // The bit moves for reasons of its own -- MakeRoom takes it
+                    // off whatever is worn so an incoming ring can join -- so
+                    // reading the cell off it put every NEW ring on the right
+                    // and slid the old one left: a ring dropped on the LEFT
+                    // cell appeared on the RIGHT, and the pair looked like it
+                    // had swapped for no reason the player did (user report).
+                    // Where the player put it is remembered instead; the bit
+                    // still answers for a pair nobody placed by hand.
+                    const bool holder = DualRing::HoldsRingSlot(armo);
+                    std::vector<RE::ExtraDataList*> units;
+                    if (entry->extraLists) {
+                        for (auto* xl : *entry->extraLists) {
+                            if (xl && (xl->HasType<RE::ExtraWorn>() ||
+                                       xl->HasType<RE::ExtraWornLeft>())) {
+                                units.push_back(xl);
+                            }
+                        }
+                    }
+                    // Worn but unlisted: one unit with no list of its own.
+                    if (units.empty()) units.push_back(nullptr);
+                    for (auto* wxl : units) {
+                        // ★★★★★★THE PLACED RING HAS FIRST CLAIM ON THE LEFT CELL,
+                        // and it has to be said out loud because this walk is in
+                        // INVENTORY ORDER. Without the `placed` guard below, an
+                        // unplaced ring reached the cell first and sat in it,
+                        // and the ring the player had actually dropped there was
+                        // pushed to the right -- the very swap this placement
+                        // memory was added to stop, still happening (measured
+                        // again after the first attempt). A seat promised to one
+                        // ring cannot be handed to whoever arrives first.
+                        // ★Asked per UNIT: a plain ring and an enchanted one of
+                        // the same kind are different tenants, and the left
+                        // cell was promised to exactly one of them.
+                        const bool second  = DualRing::IsSecondCell(
+                                                 armo, Grid::InstanceSigOf(wxl));
+                        const bool visible = !second && holder;
+                        const bool placed  = DualRing::HasSecondCell();
+                        const char* cell = nullptr;
+                        if (second && !a_out.contains("ringL"))        cell = "ringL";
+                        else if (visible && !a_out.contains("ringR"))  cell = "ringR";
+                        else if (!placed && !visible &&
+                                 !a_out.contains("ringL"))            cell = "ringL";
+                        // ★Fallbacks, in walk order, for the shapes the rule
+                        // above cannot name: a same-form pair (both units
+                        // answer alike, since the slot bit is a FORM fact),
+                        // three rings from a multi-ring mod, or a pair the
+                        // sweep has not separated yet. Better a cell than the
+                        // accessory spill.
+                        else if (!a_out.contains("ringR")) cell = "ringR";
+                        else if (!a_out.contains("ringL")) cell = "ringL";
+                        // Past the second they SPILL into the accessory pool,
+                        // which placeAccessories hands out below.
+                        add(cell, obj, 1, Grid::GlowBits(obj, entry.get(), wxl), wxl);
+                    }
+                    continue;
                 }
                 // ★★★HAND THE LIST OVER, like the weapon slots always did.
                 //
@@ -524,13 +610,10 @@ namespace FUI::Equip
                 add(slot, obj, 1, Grid::GlowBits(obj, entry.get(), wxl), wxl);
             }
 
-            // ★The second ring, placed after the loop. The engine is not
-            // wearing it -- the carrier is -- so nothing above could have
-            // found it, and the doll would have shown an empty slot while the
-            // effect was plainly active.
-            if (auto* second = DualRing::Second()) {
-                add("ringL", second, 1, Grid::GlowBits(second, nullptr, nullptr));
-            }
+            // (The second ring used to be placed HERE, after the loop: the
+            // engine was not wearing it -- a carrier was -- so nothing in the
+            // walk above could find it. Since 1.6.0 every ring on the doll is
+            // one the engine wears, and the walk finds them all.)
 
             // ★Every accessory is in hand now, so the cells can be handed out
             // in slot order. Nothing above may place one directly -- that was
@@ -575,12 +658,13 @@ namespace FUI::Equip
                         // this check exists to catch -- one hand of a dual wield
                         // drawing nothing -- is about weapons.
                         if (obj->Is(RE::FormType::Ammo)) continue;
-                        // ★The SECOND RING is never engine-worn by design --
-                        // the carrier wears its effect (B4-4) -- so its slot
-                        // legitimately shows a unit the body list lacks.
-                        // Counting it cried "body wears 0 but doll shows 1"
-                        // five times in one test session, all false.
-                        if (DualRing::Second() == obj) continue;
+                        // ★The SECOND RING used to be exempt: never
+                        // engine-worn by design, its slot legitimately showed
+                        // a unit the body list lacked, and counting it cried
+                        // "body wears 0 but doll shows 1" five times in one
+                        // test session, all false. The exemption goes with the
+                        // carrier -- and the check is STRONGER for it, since
+                        // every ring the doll draws is now one the body wears.
                         auto* e = Grid::LiveEntryOf(player, obj);
                         int wornUnits = 0;
                         if (e && e->extraLists) {
@@ -957,27 +1041,16 @@ namespace FUI::Equip
                         UIRoot::OpenInspect(eq->obj, Grid::DefKeyOf(eq->obj));
                     }
                 }
-                // ★★The second ring has NO worn copy for the unequip queue to
-                // find: the engine is wearing a carrier, not the ring. Both
-                // click paths have to route through DualRing instead -- the
-                // right-click one because the unequip would do nothing, and the
-                // left-click one because the carry would lift the item while it
-                // stayed on the doll, reading as a duplicate.
-                const bool secondRing = eq && std::string_view(a_slot.id) == "ringL" &&
-                                        DualRing::Second() == eq->obj;
-
+                // (The second ring used to need both click paths routed
+                // through the carrier: it had NO worn copy for the unequip
+                // queue to find. Every ring on the doll is engine-worn since
+                // 1.6.0, so both clicks take the ordinary road.)
                 if (eq && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {   // D5
-                    if (secondRing) {
-                        SKSE::log::info("[ACT] rclick-unequip second ring '{}'",
-                                        eq->obj->GetName());
-                        DualRing::RequestTakeOff();
-                    } else {
-                        SKSE::log::info("[ACT] rclick-unequip '{}' slot '{}' hand={}",
-                                        eq->obj->GetName(), a_slot.id, eq->hand);
-                        g_pending.push_back({ eq->obj->GetFormID(), "", true,
-                                              eq->uid, -1, eq->sig, {}, eq->hand,
-                                              EquipCountFor(eq->obj, eq->count) });
-                    }
+                    SKSE::log::info("[ACT] rclick-unequip '{}' slot '{}' hand={}",
+                                    eq->obj->GetName(), a_slot.id, eq->hand);
+                    g_pending.push_back({ eq->obj->GetFormID(), "", true,
+                                          eq->uid, -1, eq->sig, {}, eq->hand,
+                                          EquipCountFor(eq->obj, eq->count) });
                 }
                 if (eq && ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
                     // v9.2: left-click PICKS the equipped item up — unequip
@@ -986,26 +1059,16 @@ namespace FUI::Equip
                     // from there instead of re-resolving "the first worn list of
                     // this form", which answered the other hand's item whenever
                     // the same form was worn twice.
-                    if (secondRing) {
-                        DualRing::RequestTakeOff();
-                    } else {
-                        g_pending.push_back({ eq->obj->GetFormID(), "", true,
-                                              eq->uid, -1, eq->sig, {}, eq->hand,
-                                              EquipCountFor(eq->obj, eq->count) });
-                    }
+                    g_pending.push_back({ eq->obj->GetFormID(), "", true,
+                                          eq->uid, -1, eq->sig, {}, eq->hand,
+                                          EquipCountFor(eq->obj, eq->count) });
                     // ★The carry must match what the unequip above actually
                     // takes off. Queuing the whole quiver but lifting ONE arrow
                     // sent the other ninety-nine straight to the pack the
                     // instant the click landed.
-                    // ★★The second ring lifts to the cursor like every other
-                    // slot -- but its carry is marked fromCarrier, because its
-                    // unit was never ENGINE-worn and the worn-backed
-                    // accounting must not let it claim the FIRST ring's list
-                    // (same plain form leaked that unit onto the board).
                     Grid::BeginCarry(eq->obj, eq->uid, eq->sig, eq->hand,
                                      /*swappedOut=*/false,
-                                     EquipCountFor(eq->obj, eq->count),
-                                     /*fromCarrier=*/secondRing);
+                                     EquipCountFor(eq->obj, eq->count));
                 }
             } else if (ImGui::IsItemHovered()) {
                 // C6: carried item over a slot — highlight; click = equip try
@@ -1123,50 +1186,12 @@ namespace FUI::Equip
         return true;
     }
 
-    bool RingWantsSecondSlot(RE::TESBoundObject* a_obj)
-    {
-        auto* ringIn = a_obj ? a_obj->As<RE::TESObjectARMO>() : nullptr;
-        if (!ringIn || !Grid::IsRing(ringIn) || DualRing::IsCarrier(ringIn)) {
-            return false;
-        }
-        // ★The routing, unchanged (user spec): a second ring JOINS the first
-        // when it brings something the first does not; where both slots are
-        // taken the duplicate names its own victim, and everything else trades
-        // with the first as it always did. Reading the board BEFORE anyone
-        // clears it is the whole reason this runs where it does -- the
-        // conflict pass downstream strips everything on kRing, so asking after
-        // it would always answer "no first ring".
-        auto* firstObj = WornObjectAt("ringR");
-        auto* first = firstObj ? firstObj->As<RE::TESObjectARMO>() : nullptr;
-        if (first && !Grid::IsRing(first)) first = nullptr;
-        auto* second = DualRing::Second();
-        bool  toSecond = false;
-        if (first && !second) {
-            toSecond = !DualRing::SharesEffect(first, ringIn);
-        } else if (first && second) {
-            toSecond = DualRing::SharesEffect(second, ringIn) &&
-                       !DualRing::SharesEffect(first, ringIn);
-        }
-        // ★[RING] every routed click, decision and state -- the "all my rings
-        // ended up worn" report needs the router's own words, not a
-        // reconstruction.
-        SKSE::log::info("[RING] route '{}': first='{}' second='{}' "
-                        "toSecond={} carrierCarry={}",
-            ringIn->GetName(),
-            first ? first->GetName() : "-",
-            second ? second->GetName() : "-",
-            toSecond ? 1 : 0, Grid::CarrierCarryActive() ? 1 : 0);
-        return toSecond;
-    }
-
     void RequestWear(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
-                     std::uint16_t a_sig, int a_hand, int a_count, bool a_second)
+                     std::uint16_t a_sig, int a_hand, int a_count)
     {
         if (!a_obj) return;
         std::string slot;
-        if (a_second) {
-            slot = "ringL";   // the commit's ringL branch IS the carrier route
-        } else if (a_hand == 2 && a_obj->Is(RE::FormType::Weapon)) {
+        if (a_hand == 2 && a_obj->Is(RE::FormType::Weapon)) {
             slot = "shieldL";   // a left-hand lift goes back to the left hand
         }
         SKSE::log::info("[ACT] re-wear '{}' (cancelled carry) slot '{}' hand={}",
@@ -1188,7 +1213,13 @@ namespace FUI::Equip
         // see the header.
         if (!IsWearOrConsume(a_obj)) return false;
 
-        if (!SlotAccepts(a_obj, a_slotId)) return false;   // wrong slot: reject the drop
+        // ★The gate no longer needs to know WHICH UNIT is arriving. It did
+        // while the second cell refused duplicates, and naming a plain unit is
+        // something the board cannot do -- no uid, no list index -- so the
+        // resolve handed back a sibling's list and the cell refused a legal
+        // ring for an enchantment that was not its own. The rules went; the
+        // resolve goes with them.
+        if (!SlotAccepts(a_obj, a_slotId)) return false;   // wrong slot: reject
 
         g_pending.push_back({ a_obj->GetFormID(), a_slotId, false, a_uid, a_xlIdx,
                               a_sig, a_srcKey, 0,
@@ -1235,6 +1266,7 @@ namespace FUI::Equip
             const auto* xu = a_xl->GetByType<RE::ExtraUniqueID>();
             return xu ? xu->uniqueID : 0;
         }
+
     }
 
     void ProcessPending()
@@ -1354,61 +1386,51 @@ namespace FUI::Equip
                 continue;
             }
 
-            // ★★RING ROUTER for SLOTLESS equips (right-click, wheel). The
-            // engine always swaps the first slot, but two slots exist -- so a
-            // second ring used to displace the first instead of joining it.
-            // The routing (user spec):
-            //   first slot worn, second free, no effect collision with the
-            //     first  ->  the new ring joins on the SECOND slot;
-            //   both worn  ->  the DUPLICATE names the victim: a ring sharing
-            //     the second ring's effect trades with the SECOND (Wear's own
-            //     "one at a time" TakeOff does the trade), anything else
-            //     trades with the first as before;
-            //   any refusal (no carrier, no free biped slot, effect collision
-            //     with the first)  ->  fall through to the engine's first-slot
-            //     swap, which the stand-down guard below keeps duplication-
-            //     free. Targeted drops (act.slotId set) keep their aim.
-            // ★★BEFORE the conflict pass below, which is exactly where the
-            // first version died: that pass strips everything on kRing before
-            // equipping, so by the time the router asked "what is on the first
-            // slot" the answer was already nothing, and every enchanted ring
-            // fell through to the plain engine swap. Only a same-form pair
-            // ever routed -- its worn sibling survived on the pass's sameUnit
-            // exemption. The router must read the board BEFORE anyone clears
-            // it. (Wear ignores its list argument, so resolving srcList later
-            // costs this call nothing.)
-            if (act.slotId.empty()) {
-                if (auto* ringIn = obj->As<RE::TESObjectARMO>();
-                    ringIn && Grid::IsRing(ringIn) && !DualRing::IsCarrier(ringIn)) {
-                    // ★O-1b: the decision itself moved to RingWantsSecondSlot
-                    // so a click can aim with it. What stays here is the
-                    // FALLBACK for callers that have no board to aim from --
-                    // the wheel, which equips slotless while our menu is shut.
-                    const bool toSecond = RingWantsSecondSlot(ringIn);
-                    if (toSecond && DualRing::Wear(ringIn, nullptr)) {
-                        Grid::ForgetTile(act.srcKey);   // rule 13, same as the drop path
-                        Grid::NoteFormSeen(obj);
-                        // B4-4: one tile's exit, not a repaint (see the ringL
-                        // branch below -- same window, same reason)
-                        Grid::DropTileDisplay(act.srcKey, obj);
-                        SKSE::log::info("[EQUIP] '{}' -> second ring slot (routed)",
-                            obj->GetName());
-                        continue;
+            // ★★★EVERY ROAD A RING ARRIVES ON, ONE CALL.
+            //
+            // A click, the wheel, a drop on either ring cell or an accessory
+            // cell -- all of them land here, and DualRing arranges the body in
+            // a SINGLE decision: what comes off, who gives up the slot bit,
+            // where the player put it.
+            //
+            // ★It used to be three calls in an order the caller had to know,
+            // and the order was got wrong four times in one day -- a click path
+            // that skipped the cap, a drop path that skipped it too, a missing
+            // second step, and a removal that fought the caller's own. A caller
+            // that must know a sequence is a caller that will get it wrong.
+            const bool ringHandled = [&] {
+                auto* ringIn = obj->As<RE::TESObjectARMO>();
+                if (!ringIn || !Grid::IsRing(ringIn)) return false;
+                // The cell the player pointed at names its victim; a click and
+                // the wheel point at nothing.
+                const bool second = act.slotId == "ringL";
+                RE::TESObjectARMO* aimed = nullptr;
+                if (second || act.slotId == "ringR") {
+                    if (auto* occ = WornObjectAt(act.slotId)) {
+                        aimed = occ->As<RE::TESObjectARMO>();
                     }
                 }
-            }
+                DualRing::PrepareForEquip(ringIn, act.sig, aimed, second);
+                SKSE::log::info("[RING] '{}' -> {} cell (aimed at '{}')",
+                    obj->GetName(), second ? "second" : "first",
+                    aimed ? aimed->GetName() : "-");
+                return true;
+            }();
 
             // Same-slot conflict resolution BY HAND: while paused the engine's
             // own queued conflict pass is unreliable (stacked body armour) —
             // unequip everything sharing a biped slot with the incoming piece.
             //
-            // ★★...but a ring aimed at the SECOND slot displaces NOTHING. It
-            // never goes on the body at all -- a carrier stands in for it --
-            // and its mask still says kRing, so this pass would strip the ring
-            // already worn. Then DualRing refuses for want of a first ring and
-            // the player is left wearing NEITHER: "slot conflict: unequip"
-            // followed by "refused: kNoFirstRing" in the log.
-            if (auto* armo = obj->As<RE::TESObjectARMO>(); armo && act.slotId != "ringL") {
+            // ★★RINGS ARE EXEMPT, and that is the whole reason the ring case
+            // above exists. This pass removes every worn ring whose mask
+            // OVERLAPS the incoming one's -- and the slot bit is a FORM fact,
+            // not a unit one, so the pass can be aimed at ALL of them or NONE
+            // but never at the one the player pointed at. Three attempts to
+            // steer it produced three different failures: a phantom ring on
+            // the cursor, a pair both coming off, a third ring going on (all
+            // measured 2026-09-01). DualRing has already taken off exactly
+            // what must go; letting this run would undo it.
+            if (auto* armo = obj->As<RE::TESObjectARMO>(); armo && !ringHandled) {
                 const auto mask = static_cast<std::uint32_t>(armo->GetSlotMask().get());
                 auto worn = player->GetInventory(
                     [](RE::TESBoundObject& o) { return o.Is(RE::FormType::Armor); });
@@ -1516,78 +1538,6 @@ namespace FUI::Equip
             } else {
                 srcList = Grid::ExtraForInstance(Grid::LiveEntryOf(player, obj),
                                                  act.uid, act.xlIdx);
-            }
-            // ★The SECOND ring slot is reached by DROPPING on it, never by a
-            // plain click -- that is the rule the feature is built on, so the
-            // slot id has to survive this far. A ring aimed at the second slot
-            // does not go through the engine at all: a carrier stands in for
-            // it (DualRing), because the engine wears exactly one ring however
-            // the biped slots are arranged.
-            if (act.slotId == "ringL") {
-                if (auto* ringArmo = obj->As<RE::TESObjectARMO>()) {
-                    if (DualRing::Wear(ringArmo, srcList)) {
-                        // ★Rule 13 reaches here too: putting a ring ON forgets
-                        // the cell it came from. This path returns early and so
-                        // skipped it, and taking the ring off later put it back
-                        // in its old tile instead of the first free one --
-                        // unlike every other piece of gear in the inventory.
-                        Grid::ForgetTile(act.srcKey);
-                        // ★B4-4: one tile's exit, not a repaint -- the tail
-                        // rebuild here ran in the middle of the ring2 exclusion
-                        // handoff (the deferred blink's window). Both callers
-                        // have already taken the tile off the display by now
-                        // (the lift for a drag, WholeUse for a click), so this
-                        // is expected to be a no-op -- O-6 removes it once the
-                        // log has confirmed that.
-                        Grid::DropTileDisplay(act.srcKey, obj);
-                        continue;
-                    }
-                    // ★★A REFUSED Wear must NOT eat the ring. This branch used
-                    // to drop the tile and `continue` whatever Wear answered,
-                    // so a ring the carrier would not take (same effect, no
-                    // free biped slot) was neither worn NOR shown -- gone until
-                    // the pending-equip TTL put it back two seconds later. The
-                    // slotless router has always fallen through to the engine's
-                    // own first-slot swap on a refusal; this is the same
-                    // answer, and O-1b needs it because the click now aims
-                    // HERE instead of at that router.
-                    SKSE::log::info("[EQUIP] second ring slot refused '{}' -- "
-                                    "falling through to the first", obj->GetName());
-                }
-            }
-            // ★★...and the reverse. Equipping a ring NORMALLY while the carrier
-            // stands in for one used to make the carrier let go whenever the
-            // FORMS matched -- but form identity is not the rule (user spec):
-            // a plain pair of one form is two legal rings, and two slots exist
-            // to wear them. The carrier lets go only when it must:
-            //   - the player owns a single unit of that form, so this equip is
-            //     the very ring the carrier holds moving to the first slot,
-            //     and leaving the carrier up would show it worn twice; or
-            //   - the incoming ring shares a base effect with the carried one
-            //     (the duplication the whole feature exists to prevent --
-            //     same-form enchanted pairs land here too, since one form is
-            //     one enchantment).
-            if (auto* second = DualRing::Second(); second) {
-                auto* ringIn = obj->As<RE::TESObjectARMO>();
-                bool  letGo = false;
-                if (second == obj) {
-                    int owned = 0;
-                    {
-                        auto inv2 = player->GetInventory(
-                            [&](RE::TESBoundObject& o) { return &o == obj; });
-                        for (auto& [o2, d2] : inv2) owned = d2.first;
-                    }
-                    letGo = owned <= 1 ||
-                            (ringIn && DualRing::WouldDuplicate(ringIn));
-                } else if (ringIn && Grid::IsRing(ringIn) &&
-                           DualRing::WouldDuplicate(ringIn)) {
-                    letGo = true;
-                }
-                if (letGo) {
-                    SKSE::log::info("[EQUIP] '{}' takes the first ring slot -- "
-                                    "the carrier lets go", obj->GetName());
-                    DualRing::TakeOff();
-                }
             }
             // Rule 13 below needs to know whether the engine actually TOOK
             // units (a consumable drunk) or left them in the pack (a scripted
