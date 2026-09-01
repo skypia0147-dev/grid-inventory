@@ -81,17 +81,23 @@ first run — there is nothing to edit beforehand. Safe to add to an ongoing sav
   **Opens at its smallest zoom.**
 - **Equipment doll**: 17 slots, place to equip / right-click to unequip.
 - **Two rings**: vanilla wears one; here you can wear two.
-  - The first goes on with a plain **click**, into the left ring slot.
-  - The second must be **dragged onto the right ring slot**. Clicking will not
-    put it there — otherwise every ring would keep replacing the first one.
-  - **Two rings with the same effect are refused**, including two grades of one
-    family: the check is on the magic effect, so a different name or rating does
-    not get past it.
-  - Drag the left ring onto the right slot and **the two trade places**.
-  - The second ring's **effect applies, but it is not visible on your hand.** A
-    ring's mesh carries its own slot number inside the file, and while the first
-    ring holds that number the second cannot be drawn. That is a limit of the
-    game, not something this mod can work around.
+  - First or second, a plain **click** puts a ring in whichever ring slot is
+    **empty**. With both full, a click replaces the one **drawn on your hand**.
+  - To choose the slot, **drag onto it**. If it is taken, that ring is swapped
+    out and comes back to your cursor.
+  - **Nothing is refused.** Two of the same ring, or two rings with the same
+    effect, both go on — and both effects apply. 1.5.x had a rule against
+    matching effects, but it **only ever ran on one of the two slots**: the
+    other slot, a click and the quick wheel all let the same pair straight
+    through. A rule kept on half the roads only inconveniences the players who
+    happen to meet it, so it is gone.
+  - Both rings are **worn by the game itself**. The ring already on your hand
+    gives up its ring slot so the new one can take it, which is why
+    enchantments, tooltips and weight all behave normally.
+  - The second ring's **model is not drawn on your hand**: the one that gave up
+    its slot has nowhere for the game to draw it. The effect applies normally.
+  - If you run a mod that puts **more rings** on you (Jewelry Limiter, for
+    example), those show up on the doll as well.
 - **Gear-set tabs**: one click swaps the whole set (really equips; stats follow).
   Gear held by inactive tabs is hidden and takes no squares.
 - **Eighteen bags**: right-click opens the inner grid.
