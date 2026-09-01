@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "ui/UnitRef.h"
 #include <string>
 
 // PLAN_LOOT_BARTER — the partner window (container / merchant) that opens
@@ -111,8 +112,8 @@ namespace FUI::LootBarter
     // barter (Phase 5): item move + gold settlement + speech xp, all on Tick.
     // a_baseTotal = total BASE value of the goods — vanilla speech XP points
     // (the haggled price doesn't matter for XP).
-    void RequestBuy(RE::TESBoundObject* a_obj, int a_count, int a_price, int a_baseTotal = 0,
-                    std::uint16_t a_uid = 0, std::uint16_t a_sig = 0);   // merchant -> player
+    void RequestBuy(RE::TESBoundObject* a_obj, int a_count, int a_price, const UnitRef& a_unit,
+                    int a_baseTotal = 0);            // merchant -> player
     void RequestSell(RE::TESBoundObject* a_obj, int a_count, int a_price, int a_baseTotal = 0,
                      std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
                      bool a_fav = false, int a_xlIdx = -1,
@@ -445,8 +446,8 @@ namespace FUI::LootBarter
     // and is swept away on the very next pass -- the aimed square would be lost
     // for exactly the items most worth aiming (a named weapon, a tempered one).
     void PlaceStoredCell(RE::TESBoundObject* a_obj, int a_count,
-                         int a_col, int a_row, int a_rot = 0,
-                         std::uint16_t a_uid = 0, std::uint16_t a_sig = 0);
+                         int a_col, int a_row, const UnitRef& a_unit,
+                         int a_rot = 0);
 
     // A store with no aimed square (right-click, take-all, a slider the player
     // opened from the list): no cell is placed, but the units still have to

@@ -13906,8 +13906,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                                    /*toPlayer=*/false);
                     if (fromBundle) {
                         LootBarter::PlaceStoredCell(a_held.obj, a_held.count,
-                                                    sd.col, sd.row, a_held.rot,
-                                                    a_held.uid, a_held.sig);
+                                                    sd.col, sd.row,
+                                                    UnitRef{ a_held.uid, a_held.sig },
+                                                    a_held.rot);
                     } else {
                         LootBarter::MoveHeldCell(sd.col, sd.row, a_held.rot);
                     }
@@ -14127,8 +14128,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             a_held.uid, a_held.sig);
                         else {
                             const int total = LootBarter::BuyPrice(a_held.obj, a_held.partnerValue);
-                            LootBarter::RequestBuy(a_held.obj, 1, total, a_held.partnerValue,
-                                                   a_held.uid, a_held.sig);
+                            LootBarter::RequestBuy(a_held.obj, 1, total,
+                                                   UnitRef{ a_held.uid, a_held.sig },
+                                                   a_held.partnerValue);
                         }
                     }
                     // B2: drop-cell placement as a one-shot HINT for the
@@ -14492,9 +14494,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                      a_held.rot);   // (3) store
             if (sd.onCell && sd.freeSpot) {
                 LootBarter::PlaceStoredCell(a_held.obj, a_held.count,
-                                            sd.col, sd.row, a_held.rot,
-                                            HeldUidOf(a_held.key, a_held.uid),
-                                            a_held.sig);
+                                            sd.col, sd.row,
+                                            UnitRef{ HeldUidOf(a_held.key, a_held.uid),
+                                                     a_held.sig },
+                                            a_held.rot);
             }
             // fragment (empty key) = form-level pending only
             NotePendingRemove(a_held.obj, a_held.key, a_held.count, a_held.xlIdx);
@@ -15075,7 +15078,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             if (auto* vg = GoldCoins::VanillaGold()) {
                                 LootBarter::NoteStoredUnits(vg, moved);
                                 LootBarter::PlaceStoredCell(vg, moved,
-                                                            sd.col, sd.row, 0);
+                                                            sd.col, sd.row,
+                                                            // ★gold has no unit
+                                                            // identity: said, not
+                                                            // left unsaid
+                                                            UnitRef{});
                             }
                         }
                     }
@@ -15176,8 +15183,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             // footprint was already free, and the one that was
                             // not is the occupant now leaving.
                             LootBarter::PlaceStoredCell(a_held.obj, a_held.count,
-                                occ.col, occ.row, a_held.rot,
-                                HeldUidOf(a_held.key, a_held.uid), HeldInstanceSig());
+                                occ.col, occ.row,
+                                UnitRef{ HeldUidOf(a_held.key, a_held.uid),
+                                         HeldInstanceSig() },
+                                a_held.rot);
                             g_held.reset();
                             // GI24: same as the rearrange swap — the occupant
                             // keeps its identity and its own cell
@@ -15194,8 +15203,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         // them, which is what merging means.
                         if (sd.freeSpot) {
                             LootBarter::PlaceStoredCell(a_held.obj, a_held.count,
-                                sd.col, sd.row, a_held.rot,
-                                HeldUidOf(a_held.key, a_held.uid), HeldInstanceSig());
+                                sd.col, sd.row,
+                                UnitRef{ HeldUidOf(a_held.key, a_held.uid),
+                                         HeldInstanceSig() },
+                                a_held.rot);
                         }
                     }
                 }

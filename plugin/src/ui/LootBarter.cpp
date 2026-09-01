@@ -1376,9 +1376,11 @@ namespace FUI::LootBarter
         }
     }
 
-    void RequestBuy(RE::TESBoundObject* a_obj, int a_count, int a_price, int a_baseTotal,
-                    std::uint16_t a_uid, std::uint16_t a_sig)
+    void RequestBuy(RE::TESBoundObject* a_obj, int a_count, int a_price, const UnitRef& a_unit,
+                    int a_baseTotal)
     {
+        const std::uint16_t a_uid = a_unit.uid;
+        const std::uint16_t a_sig = a_unit.sig;
         // (the guard had no braces: a rejected buy still consumed the acting
         // spot, so the next purchase landed on a cell it was not given)
         if (a_obj && a_count > 0) {
@@ -2641,8 +2643,8 @@ namespace FUI::LootBarter
                     Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
                 } else {
                     RequestBuy(g_slider.obj, g_slider.value, total,
-                        g_slider.unitValue * g_slider.value,
-                        g_slider.uid, g_slider.sig);
+                        UnitRef{ g_slider.uid, g_slider.sig },
+                        g_slider.unitValue * g_slider.value);
                 }
                 break;
             }
@@ -5639,7 +5641,7 @@ namespace
                                 } else if (!Grid::CanFitNewItem(it.obj)) {
                                     Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
                                 } else {
-                                    RequestBuy(it.obj, 1, total, it.value, it.uid, it.sig);
+                                    RequestBuy(it.obj, 1, total, UnitRef{ it.uid, it.sig }, it.value);
                                 }
                             }
                             }
@@ -6513,9 +6515,11 @@ namespace
     }
 
     void PlaceStoredCell(RE::TESBoundObject* a_obj, int a_count,
-                         int a_col, int a_row, int a_rot,
-                         std::uint16_t a_uid, std::uint16_t a_sig)
+                         int a_col, int a_row, const UnitRef& a_unit,
+                         int a_rot)
     {
+        const std::uint16_t a_uid = a_unit.uid;
+        const std::uint16_t a_sig = a_unit.sig;
         auto* cl = BoardFor();
         if (!cl || !a_obj || a_count <= 0) return;
         const auto def = Grid::ResolveDef(a_obj);

@@ -6,6 +6,7 @@
 #include "ui/ItemDef.h"
 #include "ui/Lang.h"
 #include "ui/Theme.h"
+#include "ui/UnitRef.h"
 
 #include <functional>
 #include <string>
@@ -686,22 +687,11 @@ namespace FUI::Grid
                 a_armo->HasKeywordID(kClothingRing));
     }
 
-    // GI1: one entry's units, in a stable order, each bound to the sub-stack it
-    // belongs to. uid = ExtraUniqueID (0 when the engine assigned none),
-    // xlIdx = position in entry->extraLists (-1 = a plain unit with no list).
-    struct UnitRef
-    {
-        std::uint16_t uid = 0;     // ExtraUniqueID, 0 = the engine assigned none
-        std::uint16_t sig = 0;     // GI14 content signature, 0 = a plain unit
-        int           xlIdx = -1;  // position in entry->extraLists, -1 = plain
-        // GI41: what the WALK knew and used to throw away. Asking again later
-        // means asking by xlIdx, and a position stops being true the moment a
-        // list is added or removed -- planting an item on a pickpocket mark
-        // moved the "worn" answer onto a different cell, so the lock jumped to
-        // an item the target was not wearing. Carry it instead.
-        bool          worn = false;
-        int           hand = 0;    // 1 right, 2 left (0 = not worn)
-    };
+    // GI1: one entry's units, in a stable order, each bound to the sub-stack
+    // it belongs to. ★The type itself lives in ui/UnitRef.h now -- the
+    // transfer and trade calls need to name a unit too, and one shared type
+    // is the point. Aliased so `Grid::UnitRef` keeps meaning what it meant.
+    using UnitRef = FUI::UnitRef;
 
     // Walk an entry into per-unit refs. a_skipWorn=false keeps the body-worn
     // unit (corpses and pickpocket targets show what the NPC wears).
