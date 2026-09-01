@@ -153,6 +153,37 @@ namespace FUI::DualRing
     void PrepareForEquip(RE::TESObjectARMO* a_incoming, std::uint16_t a_sig,
                          RE::ExtraDataList* a_aimed, bool a_secondCell);
 
+    // ---- taking one off ----------------------------------------------------
+    // ★★★TAKE ONE RING OFF AND LEAVE THE OTHERS' MAGIC ALONE.
+    //
+    // ★THE ENGINE DISPELS BY ENCHANTMENT, NOT BY UNIT. An ActiveEffect
+    // remembers `spell` (the EnchantmentItem) and `source` (the item FORM), and
+    // neither of those names a unit -- so two identical enchanted rings raise
+    // two effects that are indistinguishable, and MagicTarget::DispelEffect
+    // takes a spell and a caster. Unequipping ONE of them therefore dispels
+    // BOTH: the ring still on the finger keeps its tooltip, its value and its
+    // place on the doll, and quietly stops doing anything (user report).
+    // Vanilla never had to answer this, because vanilla wears one ring.
+    //
+    // ★★There is no counterpart to Actor::DispelWornItemEnchantments to undo it
+    // with -- the engine can clear worn enchantments but has no "apply them
+    // again" -- so the survivor is simply PUT BACK ON. The equip is what
+    // establishes the effect in the first place, and re-establishing it is all
+    // this does.
+    //
+    // ★★★Deliberately NOT the sweep's job, which is where every other repair in
+    // this file lives. The sweep OBSERVES the body, and "this ring's effect is
+    // missing" is not a fact about the body: an effect can be legitimately
+    // absent (dispelled, resisted, its conditions false), and a sweep reading
+    // that as damage would re-equip rings nobody touched, forever. The
+    // collateral has one cause and it is known exactly -- so it is repaired
+    // where it is caused.
+    //
+    // ★★★★Every road a ring LEAVES on must come through here, for the same
+    // reason every road it arrives on comes through PrepareForEquip: a rule
+    // kept on half the roads is worse than no rule.
+    void RemoveWornUnit(RE::TESObjectARMO* a_armo, RE::ExtraDataList* a_xl);
+
     // ---- lifecycle --------------------------------------------------------
     // ★Per game-update tick, and it OBSERVES rather than remembers: the world
     // changes behind this system's back (a ring sold, dropped, taken by a

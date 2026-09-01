@@ -1380,6 +1380,19 @@ namespace FUI::Equip
                 }
                 auto* wornList = Grid::WornExtraMatching(Grid::LiveEntryOf(player, obj),
                                                          act.uid, act.sig, act.hand);
+                // ★A RING LEAVES THROUGH DualRing, exactly as it arrives
+                // through it. The engine dispels worn enchantments by
+                // ENCHANTMENT and not by unit, so taking one of two identical
+                // enchanted rings off here would strip the survivor's magic
+                // too -- and this is the OTHER road a ring can leave on. A rule
+                // kept on half the roads is worse than no rule (R5's lesson,
+                // and this file has learned it twice).
+                if (auto* ringOff = obj->As<RE::TESObjectARMO>();
+                    ringOff && Grid::IsRing(ringOff)) {
+                    DualRing::RemoveWornUnit(ringOff, wornList);
+                    SKSE::log::info("[EQUIP] unequip {} x1 (ring)", obj->GetName());
+                    continue;
+                }
                 em->UnequipObject(player, obj, wornList, act.count, unSlot,
                     false, false, true, true);
                 SKSE::log::info("[EQUIP] unequip {} x{}", obj->GetName(), act.count);

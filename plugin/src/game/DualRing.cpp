@@ -155,6 +155,23 @@ namespace FUI::DualRing
         // Membership changed under us -- the next reader must walk again.
         void ForgetWorn() { g_wornFrame = ~0ull; }
 
+        // ★The enchantment a worn unit actually carries: the INSTANCE'S own
+        // when the player made it (ExtraEnchantment), otherwise the record's.
+        // Both matter here -- a pair of vanilla Rings of Resist Magic share
+        // formEnchanting exactly as a pair of player-enchanted rings share
+        // their ExtraEnchantment, and the engine dispels either the same way.
+        [[nodiscard]] RE::EnchantmentItem* EnchantmentOf(const RE::TESObjectARMO* a_armo,
+                                                         RE::ExtraDataList* a_xl)
+        {
+            if (a_xl) {
+                if (const auto* xe = a_xl->GetByType<RE::ExtraEnchantment>();
+                    xe && xe->enchantment) {
+                    return xe->enchantment;
+                }
+            }
+            return a_armo ? a_armo->formEnchanting : nullptr;
+        }
+
         // ★★THE INVARIANT, restored from the body:
         //
         //     IF ANY RING IS WORN, EXACTLY ONE OF THEM HOLDS kRing.
@@ -272,6 +289,54 @@ namespace FUI::DualRing
 
     bool HasSecondCell() { return g_leftRing != 0; }
 
+    void RemoveWornUnit(RE::TESObjectARMO* a_armo, RE::ExtraDataList* a_xl)
+    {
+        auto* p  = RE::PlayerCharacter::GetSingleton();
+        auto* em = RE::ActorEquipManager::GetSingleton();
+        if (!p || !em || !a_armo) return;
+
+        // ★Read BEFORE the removal. The unequip rewrites the entry, and the
+        // list we were handed can merge with an identical spare the moment
+        // ExtraWorn comes off it.
+        auto* leaving = EnchantmentOf(a_armo, a_xl);
+
+        em->UnequipObject(p, a_armo, a_xl, 1, nullptr, false, false, false, true);
+        ForgetWorn();
+        if (!leaving) return;   // nothing was dispelled, so nothing lost it
+
+        // Whatever is STILL on that shared the dispelled enchantment lost its
+        // effect as collateral. ★Copied out before touching anything: the
+        // repair below re-equips, which rebuilds the very cache this walks --
+        // and an iterator held across a container-growing call is how this file
+        // crashed once already.
+        std::vector<std::pair<RE::TESObjectARMO*, std::uint16_t>> hurt;
+        for (const auto& w : WornRingsCached(p)) {
+            if (EnchantmentOf(w.armo, w.xl) != leaving) continue;
+            hurt.push_back({ w.armo, Grid::InstanceSigOf(w.xl) });
+        }
+        if (hurt.empty()) return;
+
+        // ★★ALL OFF, THEN ALL BACK ON -- never one at a time. Unequipping the
+        // second would dispel the enchantment again and take the FIRST one's
+        // freshly restored effect with it. (One survivor is all the cap allows
+        // today; getting the order right costs nothing and the cap is not a
+        // law of nature.)
+        for (const auto& w : WornRingsCached(p)) {
+            if (EnchantmentOf(w.armo, w.xl) != leaving) continue;
+            em->UnequipObject(p, w.armo, w.xl, 1, nullptr, false, false, false, true);
+        }
+        ForgetWorn();
+        for (const auto& [armo, sig] : hurt) {
+            // ★Resolved here and not before: the list held a moment ago is not
+            // the list this unit lives in now.
+            auto* back = Grid::ExtraForPool(Grid::LiveEntryOf(p, armo), 0, sig);
+            em->EquipObject(p, armo, back, 1, nullptr, false, false, false, true);
+            SKSE::log::info("[DUALRING] '{}' put back on -- its enchantment was "
+                            "dispelled with the ring that left", NameOf(armo));
+        }
+        ForgetWorn();
+    }
+
     void PrepareForEquip(RE::TESObjectARMO* a_incoming, std::uint16_t a_sig,
                          RE::ExtraDataList* a_aimed, bool a_secondCell)
     {
@@ -331,15 +396,33 @@ namespace FUI::DualRing
         //    ring, and three attempts to steer it produced three different
         //    failures (a phantom on the cursor, a pair both coming off, a
         //    third ring going on). The caller skips that pass for rings.
-        if (auto* em = RE::ActorEquipManager::GetSingleton()) {
-            for (const auto& v : victims) {
-                em->UnequipObject(p, v.armo, v.xl, 1, nullptr,
-                                  false, false, false, true);
-                SKSE::log::info("[DUALRING] '{}' comes off to make room",
-                                NameOf(v.armo));
-            }
+        //    ★Through RemoveWornUnit, never a bare UnequipObject: the engine
+        //    dispels worn enchantments by ENCHANTMENT rather than by unit, so a
+        //    bare removal here would strip the magic from the identical ring
+        //    the player is KEEPING (see the header).
+        //    ★★Named by (form, signature) and RE-RESOLVED for each one, never
+        //    by the list pointers collected above: the first removal re-equips
+        //    a survivor, and that rewrites the entry the later pointers live
+        //    in. Two victims only arise past a cap of two, which nothing
+        //    reaches today -- but a stale ExtraDataList* is not a bug that
+        //    waits politely for the case that produces it.
+        std::vector<std::pair<RE::TESObjectARMO*, std::uint16_t>> leaving;
+        leaving.reserve(victims.size());
+        for (const auto& v : victims) {
+            leaving.push_back({ v.armo, Grid::InstanceSigOf(v.xl) });
         }
-        if (!victims.empty()) ForgetWorn();
+        victims.clear();   // its pointers are about to stop meaning anything
+        for (const auto& [armo, sig] : leaving) {
+            RE::ExtraDataList* xl = nullptr;
+            for (const auto& w : WornRingsCached(p)) {
+                if (w.armo != armo || Grid::InstanceSigOf(w.xl) != sig) continue;
+                xl = w.xl;
+                break;
+            }
+            if (!xl) continue;   // it left on its own between then and now
+            SKSE::log::info("[DUALRING] '{}' comes off to make room", NameOf(armo));
+            RemoveWornUnit(armo, xl);
+        }
 
         // 3. WHOEVER STAYS GIVES UP THE SLOT, so the engine has nothing to
         //    single-end when the incoming ring goes on.
