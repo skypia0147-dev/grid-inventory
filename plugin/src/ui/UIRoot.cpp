@@ -4756,13 +4756,29 @@ namespace FUI::UIRoot
         {
             static int      s_wantFrames = 0;
             static unsigned s_charsAtFocus = 0;
+            static unsigned s_keysAtFocus = 0;
             static bool     s_said = false;
             if (io.WantTextInput) {
                 if (s_wantFrames == 0) {
                     s_charsAtFocus = g_wmCharSeen.load(std::memory_order_relaxed);
+                    s_keysAtFocus  = g_wmKeySeen.load(std::memory_order_relaxed);
                 }
                 ++s_wantFrames;
+                // ★★AND ONLY IF THEY WERE TYPING. "No characters in two seconds"
+                // was read as a dead road, and it is also what a person looks
+                // like while they think -- click a number field in EDIT, pause,
+                // and this fired at ERROR level on ordinary behaviour (measured
+                // 2026-09-02: `chars 2 keys 5`, the road plainly alive).
+                //
+                // ★The keystroke count is the missing half, and it was already
+                // being PRINTED here. Both faults this watches for -- the road
+                // gone, or the characters taken upstream -- can only show
+                // themselves while keys are arriving. No keys is not a fault;
+                // it is somebody deciding what to type. Requiring the keys to
+                // have moved makes the line rarer and every instance of it
+                // real, which is the point of logging it at all.
                 if (s_wantFrames == 120 && !s_said &&
+                    g_wmKeySeen.load(std::memory_order_relaxed) > s_keysAtFocus &&
                     g_wmCharSeen.load(std::memory_order_relaxed) == s_charsAtFocus) {
                     s_said = true;
                     // ★`msgs` is the liveness signal: it counts EVERY message
