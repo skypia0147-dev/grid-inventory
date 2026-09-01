@@ -184,8 +184,8 @@ namespace FUI::Grid
     // a_count: how many units ride the cursor. One for anything worn a copy at
     // a time — but a quiver is unequipped whole, so the carry has to be whole
     // too, or the rest of it lands in the pack the instant it comes off.
-    void BeginCarry(RE::TESBoundObject* a_obj, std::uint16_t a_uid = 0,
-                    std::uint16_t a_sig = 0, int a_hand = 0,
+    void BeginCarry(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
+                    std::uint16_t a_sig, int a_hand = 0,
                     bool a_swappedOut = false, int a_count = 1);
 
     // Phase 5-B: carry a PARTNER (merchant/container) item on the cursor.

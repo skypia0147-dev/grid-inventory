@@ -22,7 +22,7 @@ namespace FUI::Equip
     // EquipCountFor); every other form is equipped one at a time whatever the
     // tile holds.
     bool EquipItem(RE::TESBoundObject* a_obj, const std::string& a_slotId,
-                   std::uint16_t a_uid = 0, int a_xlIdx = -1, std::uint16_t a_sig = 0,
+                   std::uint16_t a_uid, int a_xlIdx, std::uint16_t a_sig,
                    const std::string& a_srcKey = {}, int a_tileCount = 1);
 
     // ★★A quiver is not equipped one arrow at a time. Vanilla puts the whole
@@ -68,8 +68,8 @@ namespace FUI::Equip
     // engine has marked worn, and that needs no vtable.
     [[nodiscard]] RE::TESAmmo* EquippedAmmo(RE::Actor* a_actor);
 
-    bool UseItem(RE::TESBoundObject* a_obj, std::uint16_t a_uid = 0, int a_xlIdx = -1,
-                 std::uint16_t a_sig = 0, const std::string& a_srcKey = {},
+    bool UseItem(RE::TESBoundObject* a_obj, std::uint16_t a_uid, int a_xlIdx,
+                 std::uint16_t a_sig, const std::string& a_srcKey = {},
                  int a_tileCount = 1);
 
     // Take a worn item off. ★Same queue as everything else, so it is safe from
@@ -78,8 +78,8 @@ namespace FUI::Equip
     // need it as a call.
     // a_hand: 0 none, 1 right, 2 left. It matters when both hands wear
     // identical units; 0 lets the engine pick, which is right for armour.
-    bool UnequipItem(RE::TESBoundObject* a_obj, std::uint16_t a_uid = 0,
-                     std::uint16_t a_sig = 0, int a_hand = 0, int a_count = 1);
+    bool UnequipItem(RE::TESBoundObject* a_obj, std::uint16_t a_uid,
+                     std::uint16_t a_sig, int a_hand = 0, int a_count = 1);
 
     // ★Ring session: a cancelled carry returns to the slot it was lifted
     // from (origin rule). Queues through the same pending pipeline as every
