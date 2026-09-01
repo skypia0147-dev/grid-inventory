@@ -578,7 +578,7 @@ namespace FUI::LootBarter
                         b.count = take;
                         if (take > 0) GoldCoins::ExpectIncoming(take);
                     }
-                    if (take > 0) RequestTake(obj, take, 0, b.sig, false);
+                    if (take > 0) RequestTake(obj, take, UnitRef{ 0, b.sig });
                 }
             }
             SKSE::log::info("[LOOT] nested bag leaves with {} entr(ies)",
@@ -836,7 +836,7 @@ namespace FUI::LootBarter
                             if (take > 0) GoldCoins::ExpectIncoming(take);
                         }
                         if (take <= 0) continue;
-                        RequestTake(obj, take, 0, b.sig, false);
+                        RequestTake(obj, take, UnitRef{ 0, b.sig });
                     }
                 }
                 SKSE::log::info("[LOOT] bag taken back, {} bundled kind(s) follow",
@@ -1300,9 +1300,11 @@ namespace FUI::LootBarter
     }
 
     bool RequestTake(RE::TESBoundObject* a_obj, int a_count,
-                     std::uint16_t a_uid, std::uint16_t a_sig, bool a_fromWorn,
-                     bool a_useAfter)
+                     const UnitRef& a_unit, bool a_useAfter)
     {
+        const std::uint16_t a_uid      = a_unit.uid;
+        const std::uint16_t a_sig      = a_unit.sig;
+        const bool          a_fromWorn = a_unit.worn;
         if (a_obj && a_count > 0) {
             // GI42: refuse BEFORE arming any suppression -- a transfer that will
             // not run must not leave the board and the engine disagreeing.
@@ -1329,8 +1331,11 @@ namespace FUI::LootBarter
     }
 
     int RequestTakeAll(RE::TESBoundObject* a_obj, int a_count,
-                       std::uint16_t a_uid, std::uint16_t a_sig, bool a_fromWorn)
+                       const UnitRef& a_unit)
     {
+        const std::uint16_t a_uid      = a_unit.uid;
+        const std::uint16_t a_sig      = a_unit.sig;
+        const bool          a_fromWorn = a_unit.worn;
         if (!a_obj || a_count <= 0) return 0;
         // ★GOLD IS EXEMPT FROM THE CLAMP, not from the rule. Coins are a
         // mirror of the ledger and occupy no cells, so "how many fit" has no
@@ -1344,7 +1349,7 @@ namespace FUI::LootBarter
                 return 0;
             }
         }
-        if (!RequestTake(a_obj, want, a_uid, a_sig, a_fromWorn)) return 0;
+        if (!RequestTake(a_obj, want, a_unit)) return 0;
         // ★Partial is a RESULT, not a refusal: what fit is already on its way,
         // and the note explains the units still sitting in the container so
         // the shortfall is never read as the click having missed.
@@ -1357,9 +1362,12 @@ namespace FUI::LootBarter
     }
 
     void RequestStore(RE::TESBoundObject* a_obj, int a_count,
-                      std::uint16_t a_uid, std::uint16_t a_sig, bool a_fav,
-                      int a_xlIdx, const std::string& a_srcKey, int a_rot)
+                      const UnitRef& a_unit, bool a_fav,
+                      const std::string& a_srcKey, int a_rot)
     {
+        const std::uint16_t a_uid   = a_unit.uid;
+        const std::uint16_t a_sig   = a_unit.sig;
+        const int           a_xlIdx = a_unit.xlIdx;
         if (a_obj && a_count > 0) {
             g_xfer.push_back({ XferReq::kStore, a_obj, a_count, 0, 0, a_srcKey,
                                a_uid, a_sig, false, a_fav, a_xlIdx });
@@ -1416,8 +1424,11 @@ namespace FUI::LootBarter
     }
 
     void RequestPickTake(RE::TESBoundObject* a_obj, int a_count,
-                         std::uint16_t a_uid, std::uint16_t a_sig, bool a_fromWorn)
+                         const UnitRef& a_unit)
     {
+        const std::uint16_t a_uid      = a_unit.uid;
+        const std::uint16_t a_sig      = a_unit.sig;
+        const bool          a_fromWorn = a_unit.worn;
         // (the guard had no braces, so the spot was consumed even when nothing
         // was queued -- a rejected request stole the next cell's placement)
         if (a_obj && a_count > 0) {
@@ -2624,8 +2635,9 @@ namespace FUI::LootBarter
                 break;
             }
             case XferDir::kPickTake:
-                RequestPickTake(g_slider.obj, g_slider.value, g_slider.uid, g_slider.sig,
-                                g_slider.worn);
+                RequestPickTake(g_slider.obj, g_slider.value,
+                                UnitRef{ g_slider.uid, g_slider.sig, -1,
+                                         g_slider.worn });
                 break;
             case XferDir::kPickStore:
                 // pending-remove is noted on the WIN inside the Tick (a lost
@@ -3401,7 +3413,7 @@ namespace
             std::erase_if(bundle,
                 [&](const BundleItem& b) { return b.id == takeId; });
             g_actingSpot.clear();
-            RequestTake(takeObj, takeCount, 0, takeSig);
+            RequestTake(takeObj, takeCount, UnitRef{ 0, takeSig });
         }
 
         // ★(1.3.2) drop ghost, the same one both boards draw: green = the
@@ -4051,7 +4063,7 @@ namespace
             return;
         }
         g_actingSpot = req.spot;   // GI20: the read cell is the one that leaves
-        RequestTake(obj, 1, req.uid, req.sig, false);
+        RequestTake(obj, 1, UnitRef{ req.uid, req.sig });
         SKSE::log::info("[LOOT] book taken from the page (E)");
     }
 
@@ -5567,7 +5579,8 @@ namespace
                                 // so passing through it is the only road there
                                 // is, not a shortcut.
                                 g_actingSpot = it.spotKey;   // GI20
-                                RequestTake(it.obj, 1, it.uid, it.sig, it.worn,
+                                RequestTake(it.obj, 1,
+                                            UnitRef{ it.uid, it.sig, it.xlIdx, it.worn },
                                             /*useAfter=*/true);
                             }
                         } else if (rc || splitLc) {
@@ -5596,7 +5609,8 @@ namespace
                                 // occupies no cells (mirror), same exemption
                                 // the pickpocket branch states.
                                 g_actingSpot = it.spotKey;   // GI20
-                                RequestTake(it.obj, it.count, it.uid, it.sig, it.worn);
+                                RequestTake(it.obj, it.count,
+                                            UnitRef{ it.uid, it.sig, it.xlIdx, it.worn });
                             } else {
                                 // ★(1.5.x stack flow) THE WHOLE CELL, exactly
                                 // as the gold branch above hauls its whole
@@ -5609,7 +5623,8 @@ namespace
                                 // amount never stopped being possible -- it
                                 // stopped being compulsory.
                                 g_actingSpot = it.spotKey;   // GI20
-                                RequestTakeAll(it.obj, it.count, it.uid, it.sig, it.worn);
+                                RequestTakeAll(it.obj, it.count,
+                                               UnitRef{ it.uid, it.sig, it.xlIdx, it.worn });
                             }
                         }
                     } else if (g_mode == Mode::kPickpocket) {
@@ -5630,7 +5645,8 @@ namespace
                                            UnitRef{ it.uid, it.sig, -1, it.worn });
                             } else {
                                 g_actingSpot = it.spotKey;
-                                RequestPickTake(it.obj, 1, it.uid, it.sig, it.worn);
+                                RequestPickTake(it.obj, 1,
+                                                UnitRef{ it.uid, it.sig, it.xlIdx, it.worn });
                             }
                         }
                     } else if (g_mode == Mode::kBarter) {
@@ -6025,7 +6041,7 @@ namespace
                 int free = Grid::SpaceTotal() - Grid::SpaceUsed();
                 for (auto& c : cells) {
                     if (c.obj->IsGold()) {
-                        RequestTake(c.obj, c.count);   // gold bypasses space
+                        RequestTake(c.obj, c.count, UnitRef{});   // gold bypasses space
                         continue;
                     }
                     const int span = Grid::CellSpanOf(c.obj);
@@ -6034,7 +6050,7 @@ namespace
                         // pouch gold and bag bundles ride the slot, and the
                         // pool-prune fallback only ran for vanished pools.
                         g_actingSpot = c.spotKey;
-                        RequestTake(c.obj, c.count);
+                        RequestTake(c.obj, c.count, UnitRef{ c.uid, c.sig, c.xlIdx });
                         free -= span;
                     }
                 }
@@ -6520,9 +6536,9 @@ namespace
     }
 
     void NoteStoredUnits(RE::TESBoundObject* a_obj, int a_count,
-                         std::uint16_t a_uid, std::uint16_t a_sig)
+                         const UnitRef& a_unit)
     {
-        NoteIn(a_obj, a_uid, a_sig, a_count);
+        NoteIn(a_obj, a_unit.uid, a_unit.sig, a_count);
     }
 
     void PlaceStoredCell(RE::TESBoundObject* a_obj, int a_count,

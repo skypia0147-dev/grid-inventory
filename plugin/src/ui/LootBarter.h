@@ -75,8 +75,8 @@ namespace FUI::LootBarter
     // ExpectIncoming): a promise made for a transfer that was refused up front
     // is a lie, and the refusal is invisible from outside without this.
     bool RequestTake(RE::TESBoundObject* a_obj, int a_count,
-                     std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
-                     bool a_fromWorn = false, bool a_useAfter = false);
+                     const UnitRef& a_unit,   // .worn = it came off the body
+                     bool a_useAfter = false);
     // ★(1.5.x stack flow) THE WHOLE CELL, clamped to what the boards can hold.
     //
     // Right-clicking a stack used to open the quantity window; it hauls the
@@ -90,8 +90,7 @@ namespace FUI::LootBarter
     // question. Returns the units requested (0 = none fit; the note has
     // already played, and the caller must not queue anything else).
     int RequestTakeAll(RE::TESBoundObject* a_obj, int a_count,
-                       std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
-                       bool a_fromWorn = false);
+                       const UnitRef& a_unit);
     // a_xlIdx: where the outgoing unit sits, so the sink removes THAT one
     // (see XferReq::xlIdx). -1 = unknown, historical behaviour.
     // a_srcKey: the tile the units leave (B3-b) -- rides the ledger request so
@@ -105,8 +104,7 @@ namespace FUI::LootBarter
     // stored itself standing, and the turn the player made was thrown away
     // somewhere between the drop and the shelf.
     void RequestStore(RE::TESBoundObject* a_obj, int a_count,
-                      std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
-                      bool a_fav = false, int a_xlIdx = -1,
+                      const UnitRef& a_unit, bool a_fav = false,
                       const std::string& a_srcKey = {},
                       int a_rot = 0);   // player -> partner (GI36: a_fav)
     // barter (Phase 5): item move + gold settlement + speech xp, all on Tick.
@@ -122,8 +120,7 @@ namespace FUI::LootBarter
     // on the Tick (crime / XP / detection handled by the engine); a failed
     // roll force-closes the menu, already-succeeded moves stay.
     void RequestPickTake(RE::TESBoundObject* a_obj, int a_count,                      // target -> player
-                         std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
-                         bool a_fromWorn = false);
+                         const UnitRef& a_unit);
     void RequestPickStore(RE::TESBoundObject* a_obj, int a_count,                       // player -> target
                           std::uint16_t a_uid, std::uint16_t a_sig,
                           const std::string& a_srcKey = {},
@@ -451,7 +448,7 @@ namespace FUI::LootBarter
     // count as present until the engine catches up, or the reconcile would show
     // them arriving twice.
     void NoteStoredUnits(RE::TESBoundObject* a_obj, int a_count,
-                         std::uint16_t a_uid = 0, std::uint16_t a_sig = 0);
+                         const UnitRef& a_unit);
 
     // ⛔AimStoreAt is gone (1.5.x stack flow). It held the square a stack was
     //  dropped on ACROSS the store quantity popup, because the drop happened

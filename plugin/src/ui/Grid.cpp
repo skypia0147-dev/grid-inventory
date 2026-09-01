@@ -1302,7 +1302,7 @@ namespace FUI::Grid
                     const int moved =
                         GoldCoins::StoreToContainer(dst, it.coinValue);
                     if (moved <= 0) continue;   // refused: the tile stays home
-                    LootBarter::NoteStoredUnits(vg, moved);
+                    LootBarter::NoteStoredUnits(vg, moved, UnitRef{});   // gold has no unit
                     if (moved < it.coinValue) {
                         SetCoinRecord(it.key, it.coinValue - moved);
                     } else {
@@ -1326,8 +1326,9 @@ namespace FUI::Grid
                     if (!seen.insert(it.key).second) continue;
                     todo.push_back({ it.key, bid });
                 }
-                LootBarter::RequestStore(it.obj, it.count, it.uid, it.sig, it.fav,
-                                         it.xlIdx, it.key);
+                LootBarter::RequestStore(it.obj, it.count,
+                                         UnitRef{ it.uid, it.sig, it.xlIdx },
+                                         it.fav, it.key);
                 NotePendingRemove(it.obj, it.key, it.count, it.xlIdx);
                 // ★(1.3.2) the tile's marker bits ride along; the favourite
                 // star does NOT -- RequestStore's fav argument strips it as
@@ -14077,7 +14078,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             if (onOwnBoard && a_held.obj->IsGold() &&
                 LootBarter::IsLootMode(LootBarter::CurrentMode())) {
                 const int take = a_held.count;
-                if (LootBarter::RequestTake(a_held.obj, take, a_held.uid, a_held.sig)) {
+                if (LootBarter::RequestTake(a_held.obj, take, UnitRef{ a_held.uid, a_held.sig })) {
                     GoldCoins::ExpectIncoming(take);
                     g_held.reset();
                     CarryWithdrawnGold(take);   // nets to zero against the above
@@ -14153,14 +14154,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         // remainder stays in the container exactly as it did
                         // when the slider was clamped to the same number
                         tookNow = LootBarter::RequestTakeAll(a_held.obj, cnt,
-                                                             a_held.uid, a_held.sig);
+                                                             UnitRef{ a_held.uid, a_held.sig });
                     } else if (LootBarter::CurrentMode() ==
                                LootBarter::Mode::kPickpocket) {
                         // F6b: dragging out of a mark's pockets rolls too
                         if (cnt > 1) LootBarter::OpenSlider(a_held.obj, cnt,
                             LootBarter::XferDir::kPickTake,
                             UnitRef{ a_held.uid, a_held.sig });
-                        else LootBarter::RequestPickTake(a_held.obj, cnt, a_held.uid, a_held.sig);
+                        else LootBarter::RequestPickTake(a_held.obj, cnt, UnitRef{ a_held.uid, a_held.sig });
                     } else {   // kBarter
                         if (cnt > 1) LootBarter::OpenSlider(a_held.obj, cnt,
                             LootBarter::XferDir::kBuy,
@@ -14529,8 +14530,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // tile -- it is MORE aimed, since the player already chose how many.
             const auto sd = LootBarter::QueryStoreDrop();
             LootBarter::RequestStore(a_held.obj, a_held.count,
-                                     HeldUidOf(a_held.key, a_held.uid), a_held.sig,
-                                     a_held.fav, -1, a_held.key,
+                                     UnitRef{ HeldUidOf(a_held.key, a_held.uid),
+                                              a_held.sig },
+                                     a_held.fav, a_held.key,
                                      a_held.rot);   // (3) store
             if (sd.onCell && sd.freeSpot) {
                 LootBarter::PlaceStoredCell(a_held.obj, a_held.count,
@@ -15116,7 +15118,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         const auto sd = LootBarter::QueryStoreDrop();
                         if (sd.onCell && sd.freeSpot) {
                             if (auto* vg = GoldCoins::VanillaGold()) {
-                                LootBarter::NoteStoredUnits(vg, moved);
+                                LootBarter::NoteStoredUnits(vg, moved, UnitRef{});   // gold has no unit
                                 LootBarter::PlaceStoredCell(vg, moved,
                                                             sd.col, sd.row,
                                                             // ★gold has no unit
@@ -15182,8 +15184,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     // a home to stay in. Here they would have to come back to
                     // the cursor, which is what shift+left split is for.
                     LootBarter::RequestStore(a_held.obj, a_held.count,
-                                             HeldUidOf(a_held.key, a_held.uid), a_held.sig,
-                                             a_held.fav, a_held.xlIdx, a_held.key,
+                                             UnitRef{ HeldUidOf(a_held.key, a_held.uid),
+                                                      a_held.sig, a_held.xlIdx },
+                                             a_held.fav, a_held.key,
                                              a_held.rot);
                     NotePendingRemove(a_held.obj, a_held.key, a_held.count, a_held.xlIdx);
                     queued = true;   // O-2: this tile really is leaving
@@ -16506,8 +16509,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // GRID comes through, one step earlier.
         if (g_held->isBag) StoreBagContents(g_held->key, obj);
         LootBarter::RequestStore(obj, g_held->count,
-            HeldUidOf(g_held->key, g_held->uid), g_held->sig, g_held->fav,
-            -1, g_held->key);
+            UnitRef{ HeldUidOf(g_held->key, g_held->uid), g_held->sig },
+            g_held->fav, g_held->key);
         NotePendingRemove(obj, g_held->key, g_held->count, g_held->xlIdx);
         if (g_sound) g_sound(obj, false);
         g_held.reset();
