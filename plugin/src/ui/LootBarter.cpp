@@ -4989,6 +4989,14 @@ namespace
                 const auto def = Grid::ResolveDef(obj);
                 const bool perUnit = Grid::StackCap(obj) <= 1;
                 auto* xl = Grid::ExtraForInstance(entry, c.uid, c.xlIdx);
+                // ★...and a position that resolves to the WRONG list is worse
+                // than one that resolves to none: the pool ask below is refused
+                // its turn because something was found. Checked against the
+                // signature the cell records, so only a stale hit is dropped.
+                if (xl && c.uid == 0 && c.sig != 0 &&
+                    Grid::InstanceSigOf(xl) != c.sig) {
+                    xl = nullptr;
+                }
                 // ★★★FALL BACK TO THE POOL WHEN THE INSTANCE CANNOT BE NAMED.
                 //
                 // ExtraForInstance finds a list by uid, or failing that by its

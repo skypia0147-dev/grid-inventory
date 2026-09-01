@@ -1410,8 +1410,16 @@ namespace FUI::Equip
                     FUI::Sfx::Notify(spell->GetName(), "UISpellLearned");
                     // GI36: name the copy being consumed instead of letting the
                     // engine pick, and let rule 58 take its star with it.
-                    auto* bxl = Grid::ExtraForInstance(
-                        Grid::LiveEntryOf(player, book), act.uid, act.xlIdx);
+                    auto* bentry = Grid::LiveEntryOf(player, book);
+                    auto* bxl = Grid::ExtraForInstance(bentry, act.uid, act.xlIdx);
+                    // ★The index is a hint; the signature is the fact. A stale
+                    // position resolves to a real list belonging to somebody
+                    // else, and here that decides whether the tome consumed was
+                    // the STARRED one.
+                    if (bxl && act.uid == 0 && act.sig != 0 &&
+                        Grid::InstanceSigOf(bxl) != act.sig) {
+                        bxl = Grid::ExtraForPool(bentry, act.uid, act.sig);
+                    }
                     const int starred =
                         (bxl && bxl->HasType<RE::ExtraHotkey>()) ? 1 : 0;
                     player->RemoveItem(book, 1, RE::ITEM_REMOVE_REASON::kRemove,

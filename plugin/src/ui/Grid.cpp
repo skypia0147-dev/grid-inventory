@@ -5703,7 +5703,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 }
             }
             // D2: the crafted-enchant glow belongs to THIS unit
-            if (const auto* xl = ExtraForTile(a_entry, it.uid, it.xlIdx)) {
+            // ★★A POSITION IS A HINT, AND A HINT CAN BE CHECKED. The index was
+            // recorded a frame or more ago and the engine reorders extraLists
+            // behind us, so a stale one still resolves to a REAL list -- just
+            // somebody else's. Grid.cpp's own removal path already answers this
+            // the right way ("a stale position can cost accuracy, never
+            // correctness"): take the position's answer, then hold it against
+            // the identity we are carrying and drop it if they disagree.
+            // ★The order is NOT flipped to pool-first, deliberately: the pool
+            // resolver refuses worn lists by design, and some of these cells
+            // are worn (a corpse's armour, a doll slot). Validating keeps that
+            // reach and only removes the wrong answers.
+            const RE::ExtraDataList* glowXl = ExtraForTile(a_entry, it.uid, it.xlIdx);
+            if (glowXl && it.uid == 0 && it.sig != 0 &&
+                InstanceSig(const_cast<RE::ExtraDataList*>(glowXl)) != it.sig) {
+                glowXl = ExtraForPool(a_entry, it.uid, it.sig);
+            }
+            if (const auto* xl = glowXl) {
                 if (const auto* xe = xl->GetByType<RE::ExtraEnchantment>();
                     xe && xe->enchantment) {
                     it.glow |= 1;
