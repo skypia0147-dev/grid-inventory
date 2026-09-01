@@ -3619,7 +3619,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                 // a wrong whole-cell move is undone with one
                                 // more click. Dropping scatters.
                                 LootBarter::OpenSlider(it.obj, it.count,
-                                    LootBarter::XferDir::kDrop, it.key);
+                                    LootBarter::XferDir::kDrop,
+                                    UnitRef{ it.uid, it.sig, it.xlIdx },
+                                    it.key);
                             } else {
                                 DropTileUnits(it.key, 1);
                             }
@@ -3644,7 +3646,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             // G4: shift+left-click on a gold tile = VALUE split
                             // slider (1..coinValue, starts at half). The chosen
                             // amount lands on the cursor as a pinned purse.
-                            LootBarter::OpenSlider(it.obj, it.coinValue, LootBarter::XferDir::kPickup, it.key);
+                            LootBarter::OpenSlider(it.obj, it.coinValue, LootBarter::XferDir::kPickup,
+                                                   UnitRef{ it.uid, it.sig, it.xlIdx }, it.key);
                         } else if (io.KeyShift && GoldCoins::IsPouch(lfid)) {
                             // G2: shift+left-click on the pouch = withdraw
                             // window, same as right-click (user shortcut)
@@ -3657,7 +3660,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                             // — plain inventory too). The chosen amount lands on
                             // the cursor; drop it on the container to store, or
                             // outside every window to discard just that many.
-                            LootBarter::OpenSlider(it.obj, it.count, LootBarter::XferDir::kPickup, it.key);
+                            LootBarter::OpenSlider(it.obj, it.count, LootBarter::XferDir::kPickup,
+                                                   UnitRef{ it.uid, it.sig, it.xlIdx }, it.key);
                         } else {
                             // ★GI62c/d: the cursor takes the item by its PIVOT
                             // CELL, wherever it was clicked. Holding the clicked
@@ -14120,12 +14124,14 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                                LootBarter::Mode::kPickpocket) {
                         // F6b: dragging out of a mark's pockets rolls too
                         if (cnt > 1) LootBarter::OpenSlider(a_held.obj, cnt,
-                            LootBarter::XferDir::kPickTake, {}, 0, a_held.uid, a_held.sig);
+                            LootBarter::XferDir::kPickTake,
+                            UnitRef{ a_held.uid, a_held.sig });
                         else LootBarter::RequestPickTake(a_held.obj, cnt, a_held.uid, a_held.sig);
                     } else {   // kBarter
                         if (cnt > 1) LootBarter::OpenSlider(a_held.obj, cnt,
-                            LootBarter::XferDir::kBuy, {}, a_held.partnerValue,
-                            a_held.uid, a_held.sig);
+                            LootBarter::XferDir::kBuy,
+                            UnitRef{ a_held.uid, a_held.sig }, {},
+                            a_held.partnerValue);
                         else {
                             const int total = LootBarter::BuyPrice(a_held.obj, a_held.partnerValue);
                             LootBarter::RequestBuy(a_held.obj, 1, total,
@@ -14524,8 +14530,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     Sfx::FailNote(Lang::T(Lang::Str::MerchantNoGold));
                 } else {
                     LootBarter::RequestSell(a_held.obj, a_held.count,
-                        total, val * a_held.count, a_held.uid, a_held.sig, a_held.fav,
-                        a_held.xlIdx, a_held.key);
+                        total, UnitRef{ a_held.uid, a_held.sig, a_held.xlIdx },
+                        val * a_held.count, a_held.fav, a_held.key);
                     // GI25: the split fragment still belongs to a POOL, and the
                     // pending bookkeeping has to say which one -- an empty key
                     // fell back to "deduct from the plain pool", the same
@@ -15265,8 +15271,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 } else if (a_held.count > 1) {
                     // srcKey rides along: pending-remove fires on CONFIRM
                     LootBarter::OpenSlider(a_held.obj, a_held.count,
-                        LootBarter::XferDir::kSell, a_held.key, val, a_held.uid, a_held.sig,
-                        false, a_held.fav);
+                        LootBarter::XferDir::kSell,
+                        UnitRef{ a_held.uid, a_held.sig },
+                        a_held.key, val, a_held.fav);
                 } else {
                     const int total = val > 0 ? LootBarter::SellPrice(a_held.obj, val) : 0;
                     if (total > 0 && LootBarter::MerchantGold() < total) {
@@ -15279,12 +15286,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         // and the silent one was the dangerous half. Unifying
                         // the paths is what made the difference visible; the
                         // safer answer wins.
-                        LootBarter::AskSellConfirm(a_held.obj, 1, total, val, a_held.key,
-                                                   a_held.uid, a_held.sig,
-                                                   a_held.fav, a_held.xlIdx);
+                        LootBarter::AskSellConfirm(a_held.obj, 1, total,
+                                                   UnitRef{ a_held.uid, a_held.sig,
+                                                            a_held.xlIdx },
+                                                   val, a_held.key, a_held.fav);
                     } else {
-                        LootBarter::RequestSell(a_held.obj, 1, total, val, a_held.uid, a_held.sig,
-                                                a_held.fav, a_held.xlIdx, a_held.key);
+                        LootBarter::RequestSell(a_held.obj, 1, total,
+                                                UnitRef{ a_held.uid, a_held.sig,
+                                                         a_held.xlIdx },
+                                                val, a_held.fav, a_held.key);
                         NotePendingRemove(a_held.obj, a_held.key, 1, a_held.xlIdx);
                         queued = 1;   // O-3: one unit really is leaving
                         if (a_held.isBag) {   // contents reflow to main on sale (E4)
@@ -15336,8 +15346,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // Pending-remove is noted on the WIN inside the Tick.
                 if (a_held.count > 1) {
                     LootBarter::OpenSlider(a_held.obj, a_held.count,
-                        LootBarter::XferDir::kPickStore, a_held.key, 0, a_held.uid, a_held.sig,
-                        false, a_held.fav);
+                        LootBarter::XferDir::kPickStore,
+                        UnitRef{ a_held.uid, a_held.sig },
+                        a_held.key, 0, a_held.fav);
                 } else {
                     LootBarter::RequestPickStore(a_held.obj, 1, a_held.uid, a_held.sig, a_held.key,
                                                  a_held.fav, a_held.xlIdx);

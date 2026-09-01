@@ -1157,10 +1157,13 @@ namespace FUI::LootBarter
     bool SliderActive() { return g_slider.active; }
 
     void OpenSlider(RE::TESBoundObject* a_obj, int a_max, XferDir a_dir,
-                    const std::string& a_srcKey, int a_unitValue,
-                    std::uint16_t a_uid, std::uint16_t a_sig, bool a_worn, bool a_fav,
-                    int a_xlIdx)
+                    const UnitRef& a_unit, const std::string& a_srcKey,
+                    int a_unitValue, bool a_fav)
     {
+        const std::uint16_t a_uid   = a_unit.uid;
+        const std::uint16_t a_sig   = a_unit.sig;
+        const int           a_xlIdx = a_unit.xlIdx;
+        const bool          a_worn  = a_unit.worn;
         if (!a_obj || a_max <= 1) return;
         // player-receiving dirs: cap the slider at what the boards (main +
         // open bags + partial stacks) can actually accept, so a stack buy/take
@@ -1396,10 +1399,13 @@ namespace FUI::LootBarter
         }
     }
 
-    void RequestSell(RE::TESBoundObject* a_obj, int a_count, int a_price, int a_baseTotal,
-                     std::uint16_t a_uid, std::uint16_t a_sig, bool a_fav,
-                     int a_xlIdx, const std::string& a_srcKey)
+    void RequestSell(RE::TESBoundObject* a_obj, int a_count, int a_price,
+                     const UnitRef& a_unit, int a_baseTotal, bool a_fav,
+                     const std::string& a_srcKey)
     {
+        const std::uint16_t a_uid   = a_unit.uid;
+        const std::uint16_t a_sig   = a_unit.sig;
+        const int           a_xlIdx = a_unit.xlIdx;
         if (a_obj && a_count > 0) {
             g_xfer.push_back({ XferReq::kSell, a_obj, a_count, a_price, a_baseTotal,
                                a_srcKey, a_uid, a_sig, false, a_fav, a_xlIdx });
@@ -2654,9 +2660,9 @@ namespace FUI::LootBarter
                     Sfx::FailNote(Lang::T(Lang::Str::MerchantNoGold));
                 } else {
                     RequestSell(g_slider.obj, g_slider.value, total,
+                        UnitRef{ g_slider.uid, g_slider.sig, g_slider.xlIdx },
                         g_slider.unitValue * g_slider.value,
-                        g_slider.uid, g_slider.sig, g_slider.fav, g_slider.xlIdx,
-                        g_slider.srcKey);
+                        g_slider.fav, g_slider.srcKey);
                     Grid::NotePendingRemove(g_slider.obj, g_slider.srcKey, g_slider.value,
                                             g_slider.xlIdx);
                 }
@@ -2671,10 +2677,13 @@ namespace FUI::LootBarter
         ImGui::End();
     }
 
-    void AskSellConfirm(RE::TESBoundObject* a_obj, int a_count, int a_price, int a_baseTotal,
-                        const std::string& a_srcKey, std::uint16_t a_uid, std::uint16_t a_sig,
-                        bool a_fav, int a_xlIdx)
+    void AskSellConfirm(RE::TESBoundObject* a_obj, int a_count, int a_price,
+                        const UnitRef& a_unit, int a_baseTotal,
+                        const std::string& a_srcKey, bool a_fav)
     {
+        const std::uint16_t a_uid   = a_unit.uid;
+        const std::uint16_t a_sig   = a_unit.sig;
+        const int           a_xlIdx = a_unit.xlIdx;
         if (a_obj && a_count > 0) {
             g_confirm = { true, a_obj, a_count, a_price, a_baseTotal, a_srcKey, a_uid, a_sig,
                           a_fav, a_xlIdx };
@@ -2741,9 +2750,9 @@ namespace FUI::LootBarter
         const bool cancel = Sfx::Button(Lang::T(Lang::Str::Cancel), ImVec2(btnW, 0), true) ||
                             ImGui::IsKeyPressed(ImGuiKey_Escape, false);
         if (ok) {
-            RequestSell(g_confirm.obj, g_confirm.count, g_confirm.price, g_confirm.base,
-                        g_confirm.uid, g_confirm.sig, g_confirm.fav, g_confirm.xlIdx,
-                        g_confirm.srcKey);
+            RequestSell(g_confirm.obj, g_confirm.count, g_confirm.price,
+                        UnitRef{ g_confirm.uid, g_confirm.sig, g_confirm.xlIdx },
+                        g_confirm.base, g_confirm.fav, g_confirm.srcKey);
             Grid::NotePendingRemove(g_confirm.obj, g_confirm.srcKey, g_confirm.count,
                                     g_confirm.xlIdx);
             g_confirm.active = false;
@@ -5573,8 +5582,8 @@ namespace
                                 // the whole cell home.
                                 g_actingSpot = it.spotKey;   // GI20
                                 OpenSlider(it.obj, it.count, XferDir::kShelfSplit,
-                                           it.spotKey, it.value, it.uid, it.sig,
-                                           it.worn, false, it.xlIdx);
+                                           UnitRef{ it.uid, it.sig, it.xlIdx, it.worn },
+                                           it.spotKey, it.value);
                             } else if (it.obj->IsGold()) {
                                 // ★(PLAN_SPACE_AUTHORITY §7, user rule) a
                                 // right-click on a GOLD cell hauls THAT cell's
@@ -5617,7 +5626,8 @@ namespace
                             } else if (!(it.obj->IsGold() || Grid::CanFitNewItem(it.obj))) {
                                 Sfx::FailNote(Lang::T(Lang::Str::InventoryFull));
                             } else if (it.count > 1) {
-                                OpenSlider(it.obj, it.count, XferDir::kPickTake, {}, 0, it.uid, it.sig, it.worn);
+                                OpenSlider(it.obj, it.count, XferDir::kPickTake,
+                                           UnitRef{ it.uid, it.sig, -1, it.worn });
                             } else {
                                 g_actingSpot = it.spotKey;
                                 RequestPickTake(it.obj, 1, it.uid, it.sig, it.worn);
@@ -5633,7 +5643,8 @@ namespace
                             } else {
                             g_actingSpot = it.spotKey;   // GI20
                             if (it.count > 1) {
-                                OpenSlider(it.obj, it.count, XferDir::kBuy, {}, it.value, it.uid, it.sig);
+                                OpenSlider(it.obj, it.count, XferDir::kBuy,
+                                           UnitRef{ it.uid, it.sig }, {}, it.value);
                             } else {
                                 const int total = BuyPrice(it.obj, it.value);
                                 if (Grid::GoldAmount() < total) {

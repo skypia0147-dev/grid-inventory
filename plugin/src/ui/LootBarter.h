@@ -114,9 +114,9 @@ namespace FUI::LootBarter
     // (the haggled price doesn't matter for XP).
     void RequestBuy(RE::TESBoundObject* a_obj, int a_count, int a_price, const UnitRef& a_unit,
                     int a_baseTotal = 0);            // merchant -> player
-    void RequestSell(RE::TESBoundObject* a_obj, int a_count, int a_price, int a_baseTotal = 0,
-                     std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
-                     bool a_fav = false, int a_xlIdx = -1,
+    void RequestSell(RE::TESBoundObject* a_obj, int a_count, int a_price,
+                     const UnitRef& a_unit, int a_baseTotal = 0,
+                     bool a_fav = false,
                      const std::string& a_srcKey = {});  // player -> merchant (GI36: a_fav)
     // F6b: pickpocket moves — each rolls PlayerCharacter::AttemptPickpocket
     // on the Tick (crime / XP / detection handled by the engine); a failed
@@ -318,20 +318,17 @@ namespace FUI::LootBarter
     // GI25: a_uid/a_sig name the POOL the units come from, so the deferred
     // confirm still moves the right sub-stack.
     void OpenSlider(RE::TESBoundObject* a_obj, int a_max, XferDir a_dir,
+                    const UnitRef& a_unit,  // uid/sig/xlIdx/worn, in one piece
                     const std::string& a_srcKey = {}, int a_unitValue = 0,
-                    std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
-                    bool a_worn = false,    // a_worn: the cell came off the body
-                    bool a_fav = false,     // GI36: the cell wore a star
-                    int a_xlIdx = -1);      // (1.3.3) which unit leaves
+                    bool a_fav = false);    // GI36: the cell wore a star
     void DrawSlider();   // UIRoot::Render (top level)
     [[nodiscard]] bool SliderActive();
 
     // Phase 5: favorite-sale confirm popup. a_baseTotal = speech XP points.
-    void AskSellConfirm(RE::TESBoundObject* a_obj, int a_count, int a_price, int a_baseTotal = 0,
+    void AskSellConfirm(RE::TESBoundObject* a_obj, int a_count, int a_price,
+                        const UnitRef& a_unit, int a_baseTotal = 0,
                         const std::string& a_srcKey = {},
-                        std::uint16_t a_uid = 0, std::uint16_t a_sig = 0,
-                        bool a_fav = true,
-                        int a_xlIdx = -1);   // GI25 / GI36 (this popup only fires for a star)
+                        bool a_fav = true);   // GI25 / GI36 (this popup only fires for a star)
     void DrawConfirm();   // UIRoot::Render (top level)
     [[nodiscard]] bool ConfirmActive();
 
