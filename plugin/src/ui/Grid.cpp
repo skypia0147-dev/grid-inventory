@@ -8528,8 +8528,25 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // ★Says WHICH path seated this tile. Without it a run of
                 // clean logs is ambiguous: MISLABEL can be zero because the
                 // labels agree, or because the unchecked path never ran.
-                // PLAN_TILE_IDENTITY §3 cannot be closed on the first
-                // reading alone, and this is the line that tells them apart.
+                //
+                // ★★AND IT SETTLED THE QUESTION IT WAS ADDED FOR. The reading
+                // was that this path inherits the TILE's old identity instead
+                // of writing the returning unit's -- which it does; every other
+                // seat (the rebuild placer, both mints, the carry landing)
+                // writes it and this one does not. The conclusion drawn from
+                // that was wrong.
+                //
+                // Measured 2026-09-02: 25 adopted, 10 INHERITED, zero
+                // mislabels -- and one of the ten carried a real signature,
+                // `unit(s4BF1) tile(s4BF1)`, a tempered dagger returning
+                // through the unguarded path onto an entry that already
+                // matched. It matches because the key assignment pairs a unit
+                // with its OWN tile, so what is inherited is already that
+                // unit's pool. To be wrong the walk would have to hand out a
+                // key belonging to another pool.
+                //
+                // ★So this is not a defect, and the probe stays because it is
+                // the only thing holding that verdict up.
                 adopt ? "adopted" : "inherited",
                 mislabel ? " ★MISLABEL" : "");
         }
