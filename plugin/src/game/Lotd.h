@@ -2,7 +2,12 @@
 
 // Legacy of the Dragonborn — the museum index.
 //
-// LOTD pairs TWO FormLists per section, at matching indices:
+// ★★★TWO SOURCES, and the second one is why an add-on's relics show up at
+// all. Read (1) for what the museum itself knows and (2) for what the rest of
+// the load order knows; Of() consults them in that order.
+//
+//
+// (1) LOTD ITSELF. It pairs TWO FormLists per section, at matching indices:
 //
 //   DBM_Section<X>        the display slots -- one ObjectReference per spot
 //                         in the museum
@@ -20,6 +25,34 @@
 // pair agrees on size. Two shapes have to be handled and are counted here so
 // nobody rediscovers them -- 77 nested FormLists (one slot accepting several
 // variants) and 19 slots that are not references at all.
+//
+//
+// (2) ★THE CURATOR'S COMPANION (DBM_RelicNotifications.esp), when installed.
+//
+// Source (1) sees only what ships in LegacyoftheDragonborn.esm. A museum
+// add-on -- JaySuS Swords was the one reported -- puts its relics somewhere
+// else entirely, so the inventory called them ordinary items while the game's
+// own museum UI called them displayable. Reported 2026-09-02.
+//
+// The Curator's Companion keeps FOUR FormLists that answer exactly the
+// question this file exists to answer, and it is already the thing moreHUD
+// reads to draw its relic tag:
+//
+//   dbmMaster  0x609634   every relic the museum knows
+//   dbmNew     0x558285   not seen yet
+//   dbmFound   0x558286   seen, not donated
+//   dbmDisp    0x558287   donated
+//
+// ★MEASURED from the plugin: all four are EMPTY on disk. Papyrus fills them
+// at runtime, which is why they are re-read on Refresh() and not just once in
+// Rebuild(). Its own MCM shows their sizes as the moreHUD counts and holds
+// them to New + Found + Disp == Master, and its support table names 127 mods.
+//
+// ★WHY (1) STILL WINS where both answer: a section slot is an
+// ObjectReference whose enabled state IS the donation, read straight from the
+// game. dbmDisp is a Papyrus-maintained copy of that fact and can lag it. The
+// add-on lists are the reason to consult (2) at all -- not a reason to stop
+// trusting (1).
 namespace FUI::Lotd
 {
     enum class Status : std::uint8_t
@@ -40,6 +73,11 @@ namespace FUI::Lotd
     // resolving a handle on every frame of every draw. Donating requires
     // closing the inventory, so a sweep taken as the menu opens cannot go stale
     // while the menu is up.
+    //
+    // ★This is also where source (2) is picked up, for a different reason: its
+    // lists start empty and Papyrus fills them somewhere after load, so a read
+    // taken once in Rebuild() could hold nothing at all. Rebuilt only when a
+    // list's SIZE has moved, so the usual open costs two size reads.
     void Refresh();
 
     // O(1) lookup against the cache. This is what a tile calls.
@@ -51,4 +89,10 @@ namespace FUI::Lotd
 
     // For the log line only -- how much the index is holding.
     [[nodiscard]] std::size_t Size();
+
+    // Likewise, and kept apart from Size() on purpose: these two count
+    // different things (pedestals we resolved vs forms another mod listed),
+    // and adding them would report a total that is true of neither. 0 when the
+    // Curator's Companion is not installed.
+    [[nodiscard]] std::size_t CuratorSize();
 }

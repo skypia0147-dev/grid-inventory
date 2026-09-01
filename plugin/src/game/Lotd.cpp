@@ -116,15 +116,96 @@ namespace FUI::Lotd
             // player is unlikely to meet. Revisit only if a report names it.
             g_index.try_emplace(a_item->GetFormID(), Entry{ a_slot, false });
         }
+
+        // ★★★SOURCE (2) -- see the header. Local ids in kCurator, resolved the
+        // same way as the sections: form id first, EditorID second.
+        constexpr const char* kCurator = "DBM_RelicNotifications.esp";
+        enum : std::size_t { kMaster = 0, kDisp, kFound, kNew, kListCount };
+        constexpr struct { std::uint32_t id; const char* name; } kCuratorLists[] = {
+            { 0x609634, "dbmMaster" },
+            { 0x558287, "dbmDisp"   },
+            { 0x558286, "dbmFound"  },
+            { 0x558285, "dbmNew"    },
+        };
+
+        // ★These are static forms, not references -- they live as long as the
+        // load order does, which is why they may be held (원칙 2 is about
+        // Actor/TESObjectREFR). Cleared at the session boundary all the same.
+        RE::BGSListForm* g_cur[kListCount] = {};
+        std::size_t      g_curSizes[kListCount] = {
+            static_cast<std::size_t>(-1), static_cast<std::size_t>(-1),
+            static_cast<std::size_t>(-1), static_cast<std::size_t>(-1),
+        };
+        std::unordered_map<RE::FormID, bool> g_curator;  // form -> donated
+
+        // Defensive about nesting the way AddItem is: this list is consolidated
+        // by somebody else's script and we do not own its shape.
+        void AddCuratorForm(RE::TESForm* a_form, bool a_donated, int a_depth)
+        {
+            if (!a_form) return;
+            if (auto* list = a_form->As<RE::BGSListForm>()) {
+                if (a_depth >= 4) return;
+                for (auto* sub : list->forms) {
+                    AddCuratorForm(sub, a_donated, a_depth + 1);
+                }
+                return;
+            }
+            // ★Master is walked first with false, then Disp with true, so this
+            // must never demote: a form in both lists IS donated.
+            auto& donated = g_curator[a_form->GetFormID()];
+            donated = donated || a_donated;
+        }
+
+        void RefreshCurator()
+        {
+            if (!g_cur[kMaster] || !g_cur[kDisp]) return;
+
+            // ★Sizes first. This runs on every inventory open, and rebuilding
+            // a few thousand entries to learn that nothing moved is the kind of
+            // work that only shows up on somebody else's machine.
+            std::size_t now[kListCount] = {};
+            bool        moved = false;
+            for (std::size_t i = 0; i < kListCount; ++i) {
+                now[i] = g_cur[i] ? g_cur[i]->forms.size() : 0;
+                if (now[i] != g_curSizes[i]) moved = true;
+            }
+            if (!moved) return;
+            std::copy(std::begin(now), std::end(now), std::begin(g_curSizes));
+
+            g_curator.clear();
+            for (auto* f : g_cur[kMaster]->forms) AddCuratorForm(f, false, 0);
+            for (auto* f : g_cur[kDisp]->forms)   AddCuratorForm(f, true, 0);
+
+            std::size_t donated = 0, novel = 0;
+            for (const auto& [id, d] : g_curator) {
+                if (d) ++donated;
+                // ★The number this whole source exists for: forms the 47
+                // sections never held. It is what an add-on brought, and it is
+                // the one figure that says whether reading (2) was worth it.
+                if (!g_index.contains(id)) ++novel;
+            }
+            // ★All four sizes, because the fourth is a free self-test: its own
+            // MCM holds them to new + found + disp == master, so a line where
+            // they do not add up says the lists were read mid-fill.
+            logger::info("[LOTD] curator: {} relic(s), {} donated, {} beyond the "
+                         "sections (master={} new={} found={} disp={})",
+                         g_curator.size(), donated, novel,
+                         now[kMaster], now[kNew], now[kFound], now[kDisp]);
+        }
     }
 
     void Clear()
     {
         g_index.clear();
         g_lastShown = static_cast<std::size_t>(-1);
+        g_curator.clear();
+        for (auto*& p : g_cur) p = nullptr;
+        for (auto& s : g_curSizes) s = static_cast<std::size_t>(-1);
     }
 
     std::size_t Size() { return g_index.size(); }
+
+    std::size_t CuratorSize() { return g_curator.size(); }
 
     void Rebuild()
     {
@@ -135,9 +216,18 @@ namespace FUI::Lotd
         // It used to be a lookup of one section's EditorID, and that conflated
         // "LOTD is not here" with "EditorIDs are not here" -- two very
         // different situations reported as the same sentence.
-        auto* dh = RE::TESDataHandler::GetSingleton();
-        if (!dh || !dh->LookupModByName(kPlugin)) {
+        auto* dh   = RE::TESDataHandler::GetSingleton();
+        auto* file = dh ? dh->LookupModByName(kPlugin) : nullptr;
+        if (!file) {
             logger::info("[LOTD] not installed -- museum marks are off");
+            return;
+        }
+        // ★And the case LookupModByName alone cannot tell apart -- see the
+        // longer note at kCurator. Present on disk, unchecked in the load
+        // order: an entry answers, every form behind it does not.
+        if (file->GetCompileIndex() == 0xFF) {
+            logger::warn("[LOTD] {} is installed but NOT ENABLED in the load "
+                         "order -- museum marks are off", kPlugin);
             return;
         }
 
@@ -180,6 +270,38 @@ namespace FUI::Lotd
             }
         }
 
+        // ★Source (2), resolved once -- the lists themselves are empty on disk,
+        // so WHAT they hold is read in Refresh(). Master and Disp are the two
+        // that must answer; Found and New are carried for the log line only.
+        auto* curFile = dh->LookupModByName(kCurator);
+        // ★★LookupModByName answers for a file that EXISTS, not one that is
+        // LOADED. A plugin left unchecked in the load order still has an entry
+        // -- with compileIndex 0xFF and no forms behind it, so every lookup
+        // returns null. Measured 2026-09-02: the first test run had exactly
+        // that, and the warning below used to read "is loaded but did not
+        // resolve", which sent the search into the form ids instead of the
+        // load order. Say which one it is.
+        if (curFile && curFile->GetCompileIndex() == 0xFF) {
+            logger::warn("[LOTD] {} is installed but NOT ENABLED in the load "
+                         "order -- add-on relics are off", kCurator);
+        } else if (curFile) {
+            for (std::size_t i = 0; i < kListCount; ++i) {
+                g_cur[i] = dh->LookupForm<RE::BGSListForm>(kCuratorLists[i].id, kCurator);
+                if (!g_cur[i]) {
+                    g_cur[i] = RE::TESForm::LookupByEditorID<RE::BGSListForm>(
+                        kCuratorLists[i].name);
+                }
+            }
+            if (g_cur[kMaster] && g_cur[kDisp]) {
+                logger::info("[LOTD] Curator's Companion present -- add-on relics "
+                             "will be read from its moreHUD lists");
+            } else {
+                logger::warn("[LOTD] {} is loaded but dbmMaster/dbmDisp did not "
+                             "resolve -- add-on relics are off", kCurator);
+                for (auto*& p : g_cur) p = nullptr;
+            }
+        }
+
         Refresh();
 
         logger::info("[LOTD] indexed {} form(s) from {} section(s), {} slot(s), "
@@ -202,7 +324,10 @@ namespace FUI::Lotd
         // EditorID map missing, which is what powerofthree's Tweaks supplies.
         // Said plainly, because the alternative is a player told their museum
         // mod is not installed.
-        if (g_index.empty()) {
+        // ★Runs after Refresh(), so source (2) has already answered if it can:
+        // with the Curator's Companion present the marks are NOT off, and
+        // saying so would send someone chasing an EditorID map that is fine.
+        if (g_index.empty() && g_curator.empty()) {
             logger::warn("[LOTD] {} is loaded but no section resolved -- museum "
                          "marks are off", kPlugin);
         }
@@ -210,6 +335,11 @@ namespace FUI::Lotd
 
     void Refresh()
     {
+        // ★Source (2) does not depend on source (1) having found anything, so
+        // it is swept even when no section resolved. It used to be one early
+        // return for the whole function.
+        RefreshCurator();
+
         if (g_index.empty()) return;
 
         std::size_t shown = 0;
@@ -231,9 +361,21 @@ namespace FUI::Lotd
 
     Status Of(RE::FormID a_base)
     {
-        if (g_index.empty()) return Status::kNotRelic;
-        const auto it = g_index.find(a_base);
-        if (it == g_index.end()) return Status::kNotRelic;
-        return it->second.donated ? Status::kDonated : Status::kUndonated;
+        // (1) first: a pedestal's enabled state is the donation itself.
+        if (!g_index.empty()) {
+            const auto it = g_index.find(a_base);
+            if (it != g_index.end()) {
+                return it->second.donated ? Status::kDonated : Status::kUndonated;
+            }
+        }
+        // (2) second, and this is where a museum add-on's relics live -- the
+        // sections above only ever held what ships in LOTD itself.
+        if (!g_curator.empty()) {
+            const auto it = g_curator.find(a_base);
+            if (it != g_curator.end()) {
+                return it->second ? Status::kDonated : Status::kUndonated;
+            }
+        }
+        return Status::kNotRelic;
     }
 }
