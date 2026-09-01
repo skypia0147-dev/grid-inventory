@@ -21,12 +21,28 @@
 //     worn     -- the engine confirmed (TESEquipEvent), or wore it unasked
 //                 (slot-conflict removal's counterpart, loadout, script)
 //
-// An unequip event retires one worn entry. (A `doffing` state -- our unequip
-// request in flight -- joins in B4-2c, where the doll-carry question needs
-// it; nothing consumes the ledger until then.)
+// An unequip event retires one worn entry. A `doffing` state -- our unequip
+// request in flight -- joined in B4-2c for the doll-carry question, and
+// ★that question CONSUMES the ledger now: Doffing() is the carry clock (see
+// Grid.cpp's off-board walk). The sentence here used to end "nothing consumes
+// the ledger until then" and stayed after B4-2c landed. The audit is still
+// observation-only -- the engine remains the authority for the counts -- but
+// "nothing" has not been true for a while.
 //
-// One entry = one WORN LIST (a quiver equips as one list however many arrows
-// ride in it, and the event fires once) -- the unit both sides agree on.
+// One entry = one WORN LIST -- the unit both sides agree on.
+//
+// ★★EXCEPT AMMO, and this note used to claim ammo was the EXAMPLE ("a quiver
+// equips as one list however many arrows ride in it, and the event fires
+// once"). It is the counterexample. The engine POOLS arrows on its own terms:
+// measured 2026-09-02 in one session, the same quiver appeared as one worn
+// list of 200 and as three of 99/49/52, and an unequip logged
+// `Steel Arrow x199 (3 worn list(s))`. Counting entries against a number that
+// moves by itself produced "ledger 9 vs engine 0" for four sessions running.
+//
+// ★So an ammo form keeps ONE entry with its units summed, and the audit asks
+// whether the quiver is ON THE BACK rather than how many lists said so. The
+// count stays the engine's -- the doll already reads it there.
+//
 // Rebaselined wholesale at every load (rule 3). Every menu open and close
 // audits entry counts against a fresh ExtraWorn walk AND reports lifecycle
 // residue (a pending that never landed), bending to the engine on mismatch
