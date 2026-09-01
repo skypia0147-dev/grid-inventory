@@ -6039,7 +6039,29 @@ namespace
                 // total/used already span the bags (open or closed) — adding
                 // bag room on top of that double-counted it and over-took
                 int free = Grid::SpaceTotal() - Grid::SpaceUsed();
+                // ★★★TAKE-ALL LEAVES A LIVING FOLLOWER DRESSED.
+                //
+                // Strip an NPC of every outfit item and the engine puts the
+                // whole outfit back -- HasOutfitItems goes false and
+                // AddWornOutfit MINTS fresh copies (RE/A/Actor.h). An outfit is
+                // a template, not an inventory, so the player ends up holding
+                // the gear AND the follower wearing it again. Measured
+                // 2026-09-02: taking everything but the shield was fine; the
+                // shield tipped it, and the whole default outfit came back.
+                //
+                // ★This is the engine's rule and it is NOT overridden here:
+                // right-click still takes a worn piece, corpses still strip
+                // bare, and a follower handed a replacement outfit first can
+                // still be emptied. What changes is the scope of R, which is
+                // OUR key -- vanilla has no take-all at all, so what it reaches
+                // for is ours to decide. It reaches for the pack, not the body.
+                //
+                // ★★Living followers only. A dead one is a corpse and loots
+                // like any other container (CompanionPartner says so), and a
+                // chest has no body to undress.
+                const bool dressedPartner = CompanionPartner();
                 for (auto& c : cells) {
+                    if (dressedPartner && c.worn) continue;
                     if (c.obj->IsGold()) {
                         RequestTake(c.obj, c.count, UnitRef{});   // gold bypasses space
                         continue;
@@ -6050,7 +6072,12 @@ namespace
                         // pouch gold and bag bundles ride the slot, and the
                         // pool-prune fallback only ran for vanished pools.
                         g_actingSpot = c.spotKey;
-                        RequestTake(c.obj, c.count, UnitRef{ c.uid, c.sig, c.xlIdx });
+                        // ★c.worn RIDES TOO. The cell knows whether the unit
+                        // is on the body, and this dropped it when the four
+                        // loose arguments became one -- a bundled value only
+                        // helps if it is FILLED.
+                        RequestTake(c.obj, c.count,
+                                    UnitRef{ c.uid, c.sig, c.xlIdx, c.worn });
                         free -= span;
                     }
                 }
