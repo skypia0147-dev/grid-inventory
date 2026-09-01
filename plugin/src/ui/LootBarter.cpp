@@ -409,6 +409,17 @@ namespace FUI::LootBarter
             // locked, the other is not), so worn-ness partitions the match
             // rather than merely scoring it.
             bool worn = false;
+
+            // ★THE WHOLE IDENTITY, so a caller cannot take half of it by
+            // accident. Hand-assembling `UnitRef{ x.uid, x.sig, ... }` is how a
+            // field goes missing: measured 2026-09-02, one source type was
+            // being written out FIVE different ways across the file, and the
+            // take-all lost `worn` that way -- the item came off a follower and
+            // the resolver was told it had not.
+            // ★A subset is still allowed where it is meant; it just has to be
+            // written on purpose now, next to a reason, instead of looking
+            // exactly like the complete answer.
+            [[nodiscard]] UnitRef unit() const { return { uid, sig, xlIdx, worn }; }
         };
         struct ContLayout
         {
@@ -4463,6 +4474,17 @@ namespace
                 if (((rot ^ a_rot) & 1) != 0) std::swap(w, h);
                 rot = a_rot & 3;
             }
+
+            // ★THE WHOLE IDENTITY, so a caller cannot take half of it by
+            // accident. Hand-assembling `UnitRef{ x.uid, x.sig, ... }` is how a
+            // field goes missing: measured 2026-09-02, one source type was
+            // being written out FIVE different ways across the file, and the
+            // take-all lost `worn` that way -- the item came off a follower and
+            // the resolver was told it had not.
+            // ★A subset is still allowed where it is meant; it just has to be
+            // written on purpose now, next to a reason, instead of looking
+            // exactly like the complete answer.
+            [[nodiscard]] UnitRef unit() const { return { uid, sig, xlIdx, worn }; }
         };
 
         // F7: this frame's partner-grid geometry for drop-cell math — set by
@@ -4598,6 +4620,17 @@ namespace
             int                 w = 1;
             int                 h = 1;
             int                 rot = 0;
+
+            // ★THE WHOLE IDENTITY, so a caller cannot take half of it by
+            // accident. Hand-assembling `UnitRef{ x.uid, x.sig, ... }` is how a
+            // field goes missing: measured 2026-09-02, one source type was
+            // being written out FIVE different ways across the file, and the
+            // take-all lost `worn` that way -- the item came off a follower and
+            // the resolver was told it had not.
+            // ★A subset is still allowed where it is meant; it just has to be
+            // written on purpose now, next to a reason, instead of looking
+            // exactly like the complete answer.
+            [[nodiscard]] UnitRef unit() const { return { uid, sig, xlIdx, worn }; }
         };
 
         void ReconcileContainer(ContLayout& a_cl, RE::TESObjectREFR* a_source,
@@ -5575,7 +5608,7 @@ namespace
                                 // is, not a shortcut.
                                 g_actingSpot = it.spotKey;   // GI20
                                 RequestTake(it.obj, 1,
-                                            UnitRef{ it.uid, it.sig, it.xlIdx, it.worn },
+                                            it.unit(),
                                             /*useAfter=*/true);
                             }
                         } else if (rc || splitLc) {
@@ -5590,7 +5623,7 @@ namespace
                                 // the whole cell home.
                                 g_actingSpot = it.spotKey;   // GI20
                                 OpenSlider(it.obj, it.count, XferDir::kShelfSplit,
-                                           UnitRef{ it.uid, it.sig, it.xlIdx, it.worn },
+                                           it.unit(),
                                            it.spotKey, it.value);
                             } else if (it.obj->IsGold()) {
                                 // ★(PLAN_SPACE_AUTHORITY §7, user rule) a
@@ -5605,7 +5638,7 @@ namespace
                                 // the pickpocket branch states.
                                 g_actingSpot = it.spotKey;   // GI20
                                 RequestTake(it.obj, it.count,
-                                            UnitRef{ it.uid, it.sig, it.xlIdx, it.worn });
+                                            it.unit());
                             } else {
                                 // ★(1.5.x stack flow) THE WHOLE CELL, exactly
                                 // as the gold branch above hauls its whole
@@ -5619,7 +5652,7 @@ namespace
                                 // stopped being compulsory.
                                 g_actingSpot = it.spotKey;   // GI20
                                 RequestTakeAll(it.obj, it.count,
-                                               UnitRef{ it.uid, it.sig, it.xlIdx, it.worn });
+                                               it.unit());
                             }
                         }
                     } else if (g_mode == Mode::kPickpocket) {
@@ -5641,7 +5674,7 @@ namespace
                             } else {
                                 g_actingSpot = it.spotKey;
                                 RequestPickTake(it.obj, 1,
-                                                UnitRef{ it.uid, it.sig, it.xlIdx, it.worn });
+                                                it.unit());
                             }
                         }
                     } else if (g_mode == Mode::kBarter) {
@@ -6072,7 +6105,7 @@ namespace
                         // loose arguments became one -- a bundled value only
                         // helps if it is FILLED.
                         RequestTake(c.obj, c.count,
-                                    UnitRef{ c.uid, c.sig, c.xlIdx, c.worn });
+                                    c.unit());
                         free -= span;
                     }
                 }
