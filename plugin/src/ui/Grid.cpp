@@ -5702,7 +5702,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                     if (InstanceSig(xl) == it.sig) { it.xlIdx = here; break; }
                 }
             }
-            // D2: the crafted-enchant glow belongs to THIS unit
+            // D2: the crafted-enchant mark belongs to THIS unit. (★The field
+            // is still spelled `glow` and the glow itself is gone -- these bits
+            // drive the RARITY WEDGE and the poison drop in the marker tray
+            // now. Renaming it is a sweep of its own; saying so here costs
+            // nothing and stops the next reader looking for a halo.)
             // ★★A POSITION IS A HINT, AND A HINT CAN BE CHECKED. The index was
             // recorded a frame or more ago and the engine reorders extraLists
             // behind us, so a stale one still resolves to a REAL list -- just
