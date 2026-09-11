@@ -141,6 +141,7 @@ namespace FUI::Lang
         X(SellFavoriteConfirm, "Sell this favorited item?")                                                 \
         X(MerchantWontBuy, "The merchant doesn't deal in that")   /* Phase 6 restriction */                 \
         X(QuestItemLocked, "Quest items can't be removed")   /* Phase 7 quest guard */                      \
+        X(OnlyOneHeld, "You only have one of those")   /* GI88: wheel, both hands */                        \
         X(TakeLabel, "Take")   /* slider action labels */                                                   \
         X(StoreLabel, "Store")                                                                              \
         X(SplitLabel, "Split")                                                                              \
