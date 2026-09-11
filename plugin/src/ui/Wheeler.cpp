@@ -2452,28 +2452,19 @@ namespace FUI::Wheeler
                         held = n;
                     }
                     if (held < 2) {
-                        // ★A ONE-HANDED WEAPON MOVES; ANYTHING ELSE STAYS PUT.
-                        // "Put it in my other hand" is what the click means and
-                        // a one-hander can honour it -- both hands take one.
-                        // A shield, a torch, a bow or a greatsword cannot, and
-                        // unequipping one to attempt a hand the engine will
-                        // refuse would leave the player empty-handed. Refusing
-                        // is the honest answer there.
-                        auto* weap = obj->As<RE::TESObjectWEAP>();
-                        const bool oneHanded =
-                            weap && (weap->IsOneHandedSword() || weap->IsOneHandedDagger() ||
-                                     weap->IsOneHandedAxe() || weap->IsOneHandedMace());
-                        if (oneHanded) {
-                            SKSE::log::info("[WHEEL] '{}': only one held -- moving it to the {} hand",
-                                obj->GetName(), a_leftHand ? "left" : "right");
-                            Equip::UnequipItem(obj, a_list[a_slot].uid, a_list[a_slot].sig,
-                                               a_leftHand ? 0 : 2, 1);
-                        } else {
-                            SKSE::log::info("[WHEEL] '{}': only one held and it is already in the "
-                                            "other hand -- refused", obj->GetName());
-                            Sfx::FailNote(Lang::T(Lang::Str::OnlyOneHeld));
-                            return;
-                        }
+                        // ★★IT MOVES. One of something cannot be in two hands,
+                        // and the click already said which hand is wanted -- so
+                        // the other one gives it up and the equip below puts it
+                        // where it was asked for. No message: this is not a
+                        // refusal, it is the gesture doing what it looks like.
+                        // ★The equip still goes through the engine, so anything
+                        // that can only live in one hand (a shield, a torch) is
+                        // simply put back where it belongs. The engine decides;
+                        // we only stop asking it to hold one thing twice.
+                        SKSE::log::info("[WHEEL] '{}': only one held -- moving it to the {} hand",
+                            obj->GetName(), a_leftHand ? "left" : "right");
+                        Equip::UnequipItem(obj, a_list[a_slot].uid, a_list[a_slot].sig,
+                                           a_leftHand ? 0 : 2, 1);
                     }
                 }
             }
