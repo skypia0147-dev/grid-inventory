@@ -30,6 +30,10 @@ namespace FUI::LootBarter
     // a merchant's stock is the vendor faction's container. Declared up here
     // because the ledgers below need to ask it what is already on the shelf.
     RE::TESObjectREFR* SourceRef();
+    // ★GI86: a shop is the chest AND the shopkeeper. Declared here because the
+    // buy runs (ProcessTransfers) long before these are defined.
+    RE::Actor*         MerchantActor();
+    RE::TESObjectREFR* HolderOf(RE::TESBoundObject* a_obj);
     // (defined with the other board writes) split a shelf cell in two and
     // give the smaller half to the cursor -- the slider's confirm needs it
     // before the definitions further down.
@@ -2255,7 +2259,13 @@ namespace FUI::LootBarter
             }
             case XferReq::kBuy: {
                 // merchant -> player; player pays, merchant receives.
-                const auto pick = SourceUnit(source, r);
+                // ★GI86: the ware may live on the SHOPKEEPER rather than in the
+                // chest (see HolderOf). The gold still moves through the chest
+                // below -- that is where a shop's till is -- but the item has to
+                // leave the hand that is actually holding it.
+                auto* holder = HolderOf(r.obj);
+                if (!holder) holder = source;
+                const auto pick = SourceUnit(holder, r);
                 if (!pick.ok()) {   // GI42: e.g. the merchant WEARS the twin
                     ClearOut(r.obj, r.uid, r.sig, r.count);
                     Sfx::FailNote(Lang::T(Lang::Str::AmbiguousUnit));
@@ -2263,11 +2273,15 @@ namespace FUI::LootBarter
                         "{:04X} sig {:04X}", r.obj->GetName(), r.uid, r.sig);
                     break;
                 }
-                GuardedRemove(source, r.obj,
+                GuardedRemove(holder, r.obj,
                     pick.kind == Grid::PickKind::kFallback, "buy", [&]() {
-                    source->RemoveItem(r.obj, r.count, RE::ITEM_REMOVE_REASON::kRemove,
+                    holder->RemoveItem(r.obj, r.count, RE::ITEM_REMOVE_REASON::kRemove,
                         pick.xl, player);
                 });
+                if (holder != source) {
+                    SKSE::log::info("[XFER] buy '{}' from the shopkeeper, not the chest",
+                        r.obj->GetName());
+                }
                 if (gold && r.price > 0) {
                     player->RemoveItem(gold, r.price, RE::ITEM_REMOVE_REASON::kRemove,
                         nullptr, nullptr);
@@ -4338,6 +4352,81 @@ namespace
         return partner;
     }
 
+    // ★★★GI86: A SHOP IS THE CHEST *AND* THE SHOPKEEPER.
+    //
+    // SourceRef above returns the chest and stops, on the reasoning written
+    // beside it: the actor's own inventory is "the merchant's personal
+    // belongings". That is half true and the missing half is a whole class of
+    // wares. Skyrim offers BOTH: the faction chest, and whatever the merchant
+    // is carrying that passes their sell/buy list. That is how a unique
+    // shopkeeper sells a unique thing without a chest of their own for it --
+    // and it is why Revus Sarvani's Kagrumez Resonance Gem was on the SkyUI
+    // screen and missing from ours (reported, 1.6.1, confirmed by the reporter
+    // switching mods back and forth on the same save).
+    //
+    // So the actor is a SECOND source. It is not a second board: the wares are
+    // merged into one list, and the only thing that has to remember where a
+    // unit lives is the buy, which asks HolderOf.
+    [[nodiscard]] RE::Actor* MerchantActor()
+    {
+        if (g_mode != Mode::kBarter) return nullptr;
+        auto* partner = Partner();
+        auto* actor = partner ? partner->As<RE::Actor>() : nullptr;
+        if (!actor) return nullptr;
+        // No chest means SourceRef already IS the actor -- there is no second
+        // source to add, and merging the actor with itself would double it.
+        auto* fac = actor->GetVendorFaction();
+        if (!fac || !fac->vendorData.merchantContainer) return nullptr;
+        return actor;
+    }
+
+    // Does this merchant's list let them trade in this item? The same test
+    // vanilla applies, and the same one GoldCoins::SeedVendorStock already
+    // makes for the bag wares: the list is a whitelist of KEYWORDS unless
+    // notBuySell flips it into a blacklist. A vendor with no list at all is
+    // unrestricted.
+    [[nodiscard]] bool VendorSells(RE::Actor* a_merchant, RE::TESBoundObject* a_obj)
+    {
+        if (!a_merchant || !a_obj) return false;
+        auto* fac = a_merchant->GetVendorFaction();
+        if (!fac) return false;
+        auto* list = fac->vendorData.vendorSellBuyList;
+        if (!list) return true;
+        bool inList = list->HasForm(a_obj);
+        if (!inList) {
+            if (const auto* kwf = a_obj->As<RE::BGSKeywordForm>()) {
+                for (std::uint32_t i = 0; i < kwf->numKeywords; ++i) {
+                    if (const auto* kw = kwf->keywords[i]; kw && list->HasForm(kw)) {
+                        inList = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return fac->vendorData.vendorValues.notBuySell ? !inList : inList;
+    }
+
+    // Which of the two actually holds this form right now. The chest answers
+    // first because that is where the ordinary stock and the merchant's gold
+    // live; the shopkeeper answers for what only they carry.
+    // ★Asked at the moment of the buy, never remembered on the cell: the board
+    // is rebuilt around pools, and a remembered ref is the kind of fact that
+    // goes stale between the click and the engine (the rule this file already
+    // keeps for extra lists).
+    [[nodiscard]] RE::TESObjectREFR* HolderOf(RE::TESBoundObject* a_obj)
+    {
+        auto* chest = SourceRef();
+        if (!a_obj || !chest) return chest;
+        auto* m = MerchantActor();
+        if (!m) return chest;
+        if (chest->GetInventoryCounts([&](RE::TESBoundObject& o) {
+                return &o == a_obj;
+            }).empty()) {
+            return m;
+        }
+        return chest;
+    }
+
     namespace
     {
         // UESP barter formula: factor = fBarterMax - (fBarterMax-fBarterMin) *
@@ -4716,6 +4805,40 @@ namespace
             [[nodiscard]] UnitRef unit() const { return { uid, sig, xlIdx, worn }; }
         };
 
+        // ★GI86: fold the shopkeeper's own sellable wares into the shop list.
+        // One board, two holders -- see MerchantActor / HolderOf. Worn gear is
+        // left out whole: what a merchant is wearing is not for sale, and
+        // over-excluding one of two identical items is the safe side of that.
+        void MergeMerchantStock(InvMap& a_inv)
+        {
+            auto* m = MerchantActor();
+            if (!m) return;
+            int added = 0, worn = 0;
+            auto own = m->GetInventory([&](RE::TESBoundObject& o) {
+                return VendorSells(m, &o);
+            });
+            for (auto& [obj, d] : own) {
+                if (!obj || d.first <= 0) continue;
+                if (d.second && d.second->IsWorn()) { ++worn; continue; }
+                if (const auto it = a_inv.find(obj); it != a_inv.end()) {
+                    it->second.first += d.first;   // the chest stocks it too
+                } else {
+                    a_inv.emplace(obj, std::move(d));
+                }
+                ++added;
+            }
+            // ★One line per shop open, always. The whole reason this bug
+            // survived a release is that nothing anywhere said which of the
+            // two lists a missing ware should have been in.
+            static RE::FormID s_said = 0;
+            if (s_said != m->GetFormID()) {
+                s_said = m->GetFormID();
+                SKSE::log::info("[VENDOR] {}: {} ware(s) carried by the shopkeeper "
+                                "merged into the shop list ({} worn, not for sale)",
+                    m->GetDisplayFullName(), added, worn);
+            }
+        }
+
         void ReconcileContainer(ContLayout& a_cl, RE::TESObjectREFR* a_source,
                                 const InvMap& a_inv)
         {
@@ -5036,7 +5159,8 @@ namespace
             auto* cl = BoardFor();
             if (!cl) return cells;
 
-            const auto inv = source->GetInventory();
+            auto inv = source->GetInventory();
+            MergeMerchantStock(inv);   // GI86: the shopkeeper's own wares too
             ReconcileContainer(*cl, source, inv);
 
             // ---- the VIEW ----
