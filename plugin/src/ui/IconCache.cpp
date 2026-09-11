@@ -45,35 +45,72 @@ namespace FUI
     // Is there room to capture at all? See the note at the call site for why
     // this is asked BEFORE arming a queue entry rather than after failing one.
     //
-    // ★A FRACTION, FENCED AT BOTH ENDS -- all three numbers earn their place.
+    // ★★★GI89: THE QUESTION IS "CAN THIS ALLOCATION SUCCEED", AND FREE PHYSICAL
+    // RAM DOES NOT ANSWER IT.
     //
-    // The FRACTION is the honest measure of "this machine is running out":
-    // the reported crash sat at 1.13 of 23.91 GB, which is 4.7%.
+    // This used to demand a TENTH of installed RAM free, floored at 512MB and
+    // ceilinged at 2GB. The ceiling already cancelled the fraction on anything
+    // past 20GB, so the rule in practice was one number: 2GB of free physical
+    // memory. That number is wrong twice over.
     //
-    // The FLOOR exists because a fraction alone is meaningless on a small
-    // machine -- 10% of 8GB is 800MB, and one that size lives near there
-    // normally. Below 512MB nothing should be captured on any box.
+    //   1. It measures the wrong thing. Windows lends every spare page to the
+    //      file cache, so a healthy machine running a heavy load order sits
+    //      near zero free physical as a matter of course. That is not distress
+    //      -- and it describes exactly the setups with the most icons to
+    //      capture. Reported: caching stalls on high-end PCs, which is the
+    //      gate firing forever on machines in no trouble at all.
+    //   2. It is forty times the cost. A capture is two 2048² targets and a
+    //      mesh -- about 50MB, the same on every machine. The old comment said
+    //      the cost does not scale with RAM and then wrote a rule that did.
     //
-    // The CEILING exists because a capture's cost does NOT scale with RAM. It
-    // is two 2048² targets and a mesh, the same on every machine, so demanding
-    // 6.4GB free on a 64GB box would stall captures on the machine least
-    // likely to be in trouble. Past 2GB of headroom the question is settled.
+    // What makes an allocation FAIL is running out of COMMIT, not out of free
+    // physical pages: with commit headroom the allocation succeeds and Windows
+    // pages for it; without it, `new` returns null wherever it is called --
+    // including inside the engine's NIF loader, which is where the crash this
+    // gate was written for actually died.
     //
-    // ★10%, not the 5% first written: 5% would have cleared the reported crash
-    // by 0.3 of a percentage point, and a margin that thin is not a margin.
-    [[nodiscard]] static bool MemoryHeadroom()
+    // ★So: commit headroom, a flat floor, ten times the real cost. It does not
+    // scale with RAM because the thing it guards does not either.
+    // ★The physical test stays as a BACKSTOP at a level no healthy machine of
+    // any size reaches. It is not the rule any more; it is the tripwire for a
+    // box genuinely at the wall (the reported crash was thrashing at 6.6M page
+    // faults), and it costs nothing when things are fine.
+    // ★★HONEST FOOTING: this gate has never been shown to prevent anything.
+    // It was built from ONE crash, after that crash. What it HAS done is stop
+    // icons caching on healthy machines. Both numbers below are deliberately
+    // loose for that reason, and the pause says which one it was so the next
+    // report settles it in one line rather than another release.
+    struct MemGate
+    {
+        bool  ok = true;
+        int   commitMB = -1;   // headroom on what this process may commit
+        int   physMB = -1;
+        const char* why = "";
+    };
+
+    [[nodiscard]] static MemGate MemoryHeadroom()
     {
         MEMORYSTATUSEX ms{};
         ms.dwLength = sizeof(ms);
         // ★Cannot ask -> proceed. A capture that might fail beats an icon
         // system that silently never runs because one API said no.
-        if (!::GlobalMemoryStatusEx(&ms)) return true;
-        constexpr ULONGLONG kFloor   =  512ull * 1024 * 1024;
-        constexpr ULONGLONG kCeiling = 2048ull * 1024 * 1024;
-        const ULONGLONG tenth = ms.ullTotalPhys / 10;
-        const ULONGLONG need =
-            (std::min)(kCeiling, (std::max)(kFloor, tenth));
-        return ms.ullAvailPhys >= need;
+        if (!::GlobalMemoryStatusEx(&ms)) return {};
+        constexpr ULONGLONG kMB = 1024ull * 1024;
+        // ~10x a capture's real cost. Flat: see above.
+        constexpr ULONGLONG kCommitFloor = 512ull * kMB;
+        // Backstop only. A machine below this is thrashing, not merely busy.
+        constexpr ULONGLONG kPhysFloor   = 256ull * kMB;
+        MemGate g;
+        g.commitMB = static_cast<int>(ms.ullAvailPageFile / kMB);
+        g.physMB   = static_cast<int>(ms.ullAvailPhys / kMB);
+        if (ms.ullAvailPageFile < kCommitFloor) {
+            g.ok = false;
+            g.why = "no commit headroom";
+        } else if (ms.ullAvailPhys < kPhysFloor) {
+            g.ok = false;
+            g.why = "physical memory exhausted";
+        }
+        return g;
     }
 
     // 'FIC8': no rotation field.
@@ -2489,14 +2526,16 @@ namespace FUI
         // stopped, correctly, while C walked straight past: the most expensive
         // request this plugin makes, a 900px model at 3x scale, going into the
         // same engine NIF loader the reported crash died inside.
-        const bool memOk = MemoryHeadroom();
+        const MemGate mem = MemoryHeadroom();
+        const bool memOk = mem.ok;
 
         if (m_inspect && !m_pendingBusy) {
             if (!memOk) {
                 if (!m_memPaused) {
                     m_memPaused = true;
-                    SKSE::log::warn("[ICONS] paused: system memory is low -- the inspect "
-                                    "capture waits until it frees up");
+                    SKSE::log::warn("[ICONS] paused ({}): commit headroom {}MB, physical "
+                                    "{}MB -- the inspect capture waits until it frees up",
+                        mem.why, mem.commitMB, mem.physMB);
                 }
                 return;   // nothing dropped; the next frame simply asks again
             }
@@ -2557,9 +2596,9 @@ namespace FUI
         // an icon.
         if (!memOk && !m_memPaused && !m_queue.empty()) {
             m_memPaused = true;
-            SKSE::log::warn("[ICONS] paused: system memory is low -- {} icon(s) "
-                            "stay queued and resume when it frees up",
-                m_queue.size());
+            SKSE::log::warn("[ICONS] paused ({}): commit headroom {}MB, physical {}MB "
+                            "-- {} icon(s) stay queued and resume when it frees up",
+                mem.why, mem.commitMB, mem.physMB, m_queue.size());
         } else if (memOk && m_memPaused) {
             m_memPaused = false;
             SKSE::log::info("[ICONS] resumed: memory recovered");
