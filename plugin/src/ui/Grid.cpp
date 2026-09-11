@@ -10344,6 +10344,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
     bool IsOverloaded() { return g_overloaded; }
 
     int SpaceUsed() { return g_spaceUsed; }
+    int TileCount() { return static_cast<int>(g_items.size()); }
 
     // ⛔The old companion `BagFreeCells()` is gone. It existed because the
     //  total counted only the main board, so the take-all budget had to add

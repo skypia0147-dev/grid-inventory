@@ -2349,6 +2349,30 @@ namespace FUI
 
     void IconCache::QueueCapture(RE::TESBoundObject* a_obj)
     {
+        // ★★★GI90: THE DRAW'S SHARE OF A SLOW FIRST OPEN.
+        //
+        // This runs from the tile loop, once per tile per frame, and the first
+        // time it sees an item it can pay for a fresh archive probe (MeshMissing
+        // -> PathMissing, which memoises, so the cost is once per nif ever). The
+        // queue DRAIN budgets that work at 64 a frame and says why in its own
+        // comment -- 'a load order missing a whole mesh pack can have hundreds in
+        // a row, which would land as one long hitch'. This side has no budget at
+        // all, and on a first open every tile arrives here at once.
+        //
+        // ★Measured before it is changed. Whether this or the placement search
+        // dominates is exactly what the report cannot tell us and a timer can.
+        // The accumulator is per FRAME (PreRender clears it), so the line reads
+        // as one hitch rather than a thousand fragments.
+        const auto t0 = std::chrono::steady_clock::now();
+        ++m_queueAsks;
+        struct Charge {
+            IconCache* self;
+            std::chrono::steady_clock::time_point t;
+            ~Charge() {
+                self->m_queueUs += std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - t).count();
+            }
+        } charge{ this, t0 };
         if (!Capturable(a_obj)) return;
         const auto key = KeyFor(a_obj, ResolveDef(a_obj));
 
@@ -2508,6 +2532,14 @@ namespace FUI
 
     void IconCache::PreRender()
     {
+        // ★GI90: report the PREVIOUS frame's queueing cost, then reset. 30ms is
+        // already a dropped frame; below that there is nothing to investigate.
+        if (m_queueUs >= 30000) {
+            SKSE::log::warn("[ICONS] queueing cost {}ms in one frame over {} tile ask(s)",
+                m_queueUs / 1000, m_queueAsks);
+        }
+        m_queueUs = 0;
+        m_queueAsks = 0;
         auto* pv = ItemPreview::GetSingleton();
         if (!pv->IsRunning()) return;
 

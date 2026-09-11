@@ -422,6 +422,11 @@ namespace FUI
         // sliced silhouette and the pixel style turns into a literal frame
         // (its 1-dot outline traces the straight cut). When the box cannot
         // grow, shrink the MODEL instead: fewer pixels, but real ones.
+        // ★GI90: per-frame cost of the draw's QueueCapture asks, reported and
+        // reset by PreRender. Diagnostic only -- see the note at QueueCapture.
+        long long m_queueUs = 0;
+        int       m_queueAsks = 0;
+
         float m_captureShrink = 1.0f;
         static constexpr float kMinCaptureShrink = 0.4f;   // 2.5x -> 1.0x floor
 

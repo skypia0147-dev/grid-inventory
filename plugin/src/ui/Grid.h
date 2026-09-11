@@ -424,6 +424,9 @@ namespace FUI::Grid
     // left" (take-all budget included). Both halves span the main board plus
     // every owned bag, open or closed; the trash is storage for neither.
     [[nodiscard]] int SpaceUsed();
+    // ★GI90: tiles on the board right now. Diagnostic only -- the open timer
+    // needs a size to report its milliseconds against.
+    [[nodiscard]] int TileCount();
     [[nodiscard]] int SpaceTotal();
     [[nodiscard]] int CellSpanOf(RE::TESBoundObject* a_obj);   // grid cells an item occupies
     // shift+lclick split -> held fragment. a_srcKey = the tile it leaves.

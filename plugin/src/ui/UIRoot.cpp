@@ -4237,6 +4237,22 @@ namespace FUI::UIRoot
 
     void OnShow()
     {
+        // ★★★GI90: WHERE THE FIRST OPEN GOES. A player with a very large
+        // inventory reports the game hanging on the first open after installing,
+        // and the first open is genuinely the expensive one: nothing has a
+        // remembered cell yet, so every tile goes through the placement search,
+        // and no mesh has been probed yet, so every item pays that once. Which
+        // of those dominates is not something to GUESS at -- the local save is
+        // 98 tiles and opens in 23ms, which cannot be extrapolated to three
+        // thousand because neither cost is linear.
+        // ★One line, only when it is slow enough to be worth reading. The
+        // draw's own share is NOT here -- QueueCapture runs from the tile loop,
+        // so it lands in the frames after this one (see the frame probe in
+        // IconCache).
+        const auto t0 = std::chrono::steady_clock::now();
+        auto ms = [](auto a, auto b2) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(b2 - a).count();
+        };
         // PHASE 0 PROBE: the state the menu is opening onto. After a save/load
         // this is the reading that matters -- kPostLoadGame fires before the 3D
         // is back, so the report there cannot see what the body actually built.
@@ -4273,7 +4289,9 @@ namespace FUI::UIRoot
 
         // Callback FIRST: it hot-reloads the item defs which the grid and the
         // capture queue key off (building before the reload uses stale defs).
+        const auto tPre = std::chrono::steady_clock::now();
         if (g_onShow) g_onShow();
+        const auto tBuilt = std::chrono::steady_clock::now();
 
         // ★B4-1: conditional since the demolition began. A closed-menu count
         // delta raised the flag through its event; the census gate in
@@ -4299,6 +4317,14 @@ namespace FUI::UIRoot
 
         SKSE::log::info("[UI] menu shown ({} icons cached)",
             IconCache::GetSingleton()->CachedCount());
+        // ★GI90: 50ms is a frame and a half -- below that nobody felt
+        // anything and the line would only be noise in every log we read.
+        if (const auto total = ms(t0, std::chrono::steady_clock::now()); total >= 50) {
+            SKSE::log::warn("[UI] menu open took {}ms: prelude {} / board {} / "
+                            "epilogue {} -- {} tile(s)",
+                total, ms(t0, tPre), ms(tPre, tBuilt),
+                ms(tBuilt, std::chrono::steady_clock::now()), Grid::TileCount());
+        }
 
         // ★AUTHOR TOOLING, on the same watch-file idiom as the vanilla
         // passthrough: drop the file, open the bag once, and the shipping pak
