@@ -11457,6 +11457,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // nothing, and a page with no quest context cut off at the first
             // token (reported).
             RE::FormID    owner = 0;
+            // ★GI84: what the book was worth BEFORE the read, carried into the
+            // deferred stage so the tome's spending can be decided once the
+            // engine's queued Use has actually landed. See ProcessBookRead.
+            int           heldBefore = 0;
+            bool          hadSpell   = false;
+            bool          took       = false;   // Read() accepted it
         };
         std::optional<PendingRead> g_pendingRead;
         // ★(1.5.x) a SHELF book's page (no owner involved) -- see
@@ -11832,6 +11838,32 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 SKSE::log::info("[BOOK] read consumed it -- no page to raise");
                 return;
             }
+            // ★★★GI84: THE TOME'S SPENDING, DECIDED HERE AND NOWHERE ELSE.
+            //
+            // Read() teaches without taking the book, so somebody has to take
+            // it -- but only if nobody else already did. By this line the
+            // queued Use has run, which means the engine has had its chance to
+            // spend the tome AND any script riding OnEquipped has had its
+            // chance to hand a copy back. Both show up in the same number, so
+            // the test is the one it always was, asked at the only moment it
+            // is true: the read was accepted, the spell arrived across it, and
+            // the count has still not moved.
+            //
+            // ★The `held <= 0` return above is the other half: when the engine
+            // did take it, we are already gone and cannot take it twice. That
+            // pairing is the whole fix -- spending against a count read before
+            // the Use landed is how the Destruction ritual book was lost.
+            if (req.took && held == req.heldBefore) {
+                auto* sp = book->GetSpell();
+                if (sp && !req.hadSpell && player->HasSpell(sp)) {
+                    player->RemoveItem(book, 1, RE::ITEM_REMOVE_REASON::kRemove,
+                                       nullptr, nullptr);
+                    SKSE::log::info("[BOOK] tome spent (the engine left it at {})", held);
+                    NotePendingRemove(book, {}, 1, -1);
+                    RequestRebuild();
+                    return;   // nothing left to raise a page for
+                }
+            }
             // ★★★AND NOT IN FRONT OF ONE THE ENGINE TOOK OVER. The Elder Scroll
             // is EQUIPPED by the Use -- that is the unfurl, and the scroll's
             // script waits for the menus to be gone before it plays. Our page
@@ -11918,36 +11950,58 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         const int heldBefore = HeldCountOf(player, book);
 
         const bool took = book->Read(player);
-        // Read settles a TOME (it teaches; the spending is below). Anything it
-        // refuses is handed to the engine's Use instead, which is the door the
-        // rest of the world's books go through.
-        bool used = false;
-        if (!took) used = Equip::UseItem(book, req.uid, -1, req.sig, {}, 1);
+        // ★★★GI84: AND THE ENGINE'S DOOR AS WELL, ALWAYS — NOT ONLY WHEN READ
+        // REFUSES.
+        //
+        // Read() teaches. It is not what Skyrim calls reading a book, and the
+        // difference is a quest that cannot be finished. Vanilla reads a book
+        // by USING it, which is ActorEquipManager::EquipObject, and that is
+        // what raises OnEquipped -- the event quest fragments hang off. The
+        // Destruction Ritual Spell is exactly that shape (vanilla
+        // MGRDestructionBook04Script):
+        //
+        //     Event OnEquipped(Actor AkActor)
+        //         Game.GetPlayer().Additem(MGRDestructionFinal, 1)
+        //         Self.GetReference().Disable()
+        //         MGRitual01.SetStage(200)
+        //     EndEvent
+        //
+        // Read() accepts a tome, so `if (!took)` skipped the Use outright and
+        // that event never fired. Our own log had been saying so all along:
+        //     'Spell Tome: Ash Rune'  Read=true  Use=false
+        //     'Line and Lure'         Read=false Use=true
+        // The player learned Fire Storm, we spent the book below, and the
+        // script that would have handed it back never ran at all -- "the game
+        // refuses to add the book back" (reported, 1.6.1). It is not this one
+        // quest either: every book whose script hangs off being equipped was
+        // reachable only by the books Read() happened to turn away.
+        //
+        // ★Both doors, because they answer different halves. Read() is what
+        // applies `teaches` here and now (the skill gate and the page below
+        // depend on having asked it); the Use is what tells the world the book
+        // was read. Re-teaching a spell already known is a no-op, so the
+        // overlap costs nothing.
+        const bool used = Equip::UseItem(book, req.uid, -1, req.sig, {}, 1);
 
         const bool hasSpell = spell ? player->HasSpell(spell) : false;
         const int heldAfter = HeldCountOf(player, book);
 
-        // ★★★AND THE TOME IS SPENT. Read() is the engine's door and it does
-        // teach -- measured: `Read -> 1; spell 0 -> 1` on a spell the player
-        // did not have. What it does NOT do is take the book: `held 2 -> 2`.
-        // In the vanilla menu something downstream of the page spends it, and
-        // that something is not reachable from here.
+        // ★★★THE TOME IS SPENT — BUT NOT HERE ANY MORE (GI84).
         //
-        // So the spending is done explicitly, and only on the exact evidence
-        // that it is owed: the read was accepted, the spell arrived across it,
-        // and the count did not move. If a gate refuses the read -- vanilla's
-        // or a mod's -- `took` is false, nothing was learned, and the book
-        // stays, which is the whole point of asking the engine first.
-        if (took && spell && hasSpell && !hadSpell && heldAfter == heldBefore &&
-            heldAfter > 0) {
-            player->RemoveItem(book, 1, RE::ITEM_REMOVE_REASON::kRemove,
-                               nullptr, nullptr);
-            SKSE::log::info("[BOOK] tome spent");
-            NotePendingRemove(book, {}, 1, -1);
-            RequestRebuild();
-        }
-        // the page is owed only if the engine raises none of its own
+        // Read() teaches and does NOT take the book (measured: `spell 0 -> 1`,
+        // `held 2 -> 2`), so the spending has to be done by hand. What changed
+        // is WHEN. The Use issued above is QUEUED, so at this line it has not
+        // run: the engine may yet take the book itself, and a quest script may
+        // yet hand one back. Spending against a count read before any of that
+        // is how one book becomes none.
+        //
+        // So the decision moves to the deferred stage below, which already
+        // waits for exactly this and already re-reads the count. The evidence
+        // it needs travels with the request.
         g_pageOwed = req;
+        g_pageOwed->heldBefore = heldBefore;
+        g_pageOwed->hadSpell   = hadSpell;
+        g_pageOwed->took       = took;
         g_pageOwedWait = 8;
         // ⓔⓖ PROBE. Two reports say our reading is not the game's reading: the
         // Dawnguard Elder Scroll does nothing at all, and a spell tome skips
