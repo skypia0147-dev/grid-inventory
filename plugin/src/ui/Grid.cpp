@@ -11612,7 +11612,30 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             return a_sex == RE::SEX::kFemale ? a_f : a_sex == RE::SEX::kMale ? a_m : a_n;
         }
 
-        void ResolveTextTokens(std::string& a_text, const RE::ExtraDataList* a_xl)
+        // ★GI87: the list on this entry that carries the quest context, which is
+        // not necessarily the one the pool named. a_preferred wins when it has
+        // the data; otherwise the entry is scanned. Null when nobody has it --
+        // and that is a fact worth logging, not a silent empty page.
+        [[nodiscard]] const RE::ExtraDataList* TextContextList(
+            RE::InventoryEntryData* a_entry, const RE::ExtraDataList* a_preferred)
+        {
+            auto has = [](const RE::ExtraDataList* x) {
+                if (!x) return false;
+                const auto* t = const_cast<RE::ExtraDataList*>(x)
+                                    ->GetByType<RE::ExtraTextDisplayData>();
+                return t && t->ownerQuest;
+            };
+            if (has(a_preferred)) return a_preferred;
+            if (a_entry && a_entry->extraLists) {
+                for (const auto* x : *a_entry->extraLists) {
+                    if (has(x)) return x;
+                }
+            }
+            return a_preferred;   // nothing better; the resolver reports why
+        }
+
+        void ResolveTextTokens(std::string& a_text, const RE::ExtraDataList* a_xl,
+                               const char* a_what)
         {
             if (a_text.find('<') == std::string::npos) return;
             const RE::ExtraTextDisplayData* xt = nullptr;
@@ -11620,6 +11643,20 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 xt = const_cast<RE::ExtraDataList*>(a_xl)->GetByType<RE::ExtraTextDisplayData>();
             }
             RE::TESQuest* quest = xt ? xt->ownerQuest : nullptr;
+            // ★★★GI87 DIAGNOSTIC: NAME THE BOOK AND THE MISSING PIECE.
+            //
+            // "The alias is a blank space" is what an unresolved tag looks like
+            // from the outside, and from the inside it can be any of four
+            // different failures. One line per page says which, and names the
+            // book so a reporter's save can be pointed at directly.
+            const char* what = a_what && *a_what ? a_what : "?";
+            SKSE::log::info("[BOOK] tokens in '{}': list={} textdata={} quest={} instance={}",
+                what, a_xl ? "yes" : "NONE", xt ? "yes" : "NONE",
+                quest ? (quest->GetFormEditorID() && *quest->GetFormEditorID()
+                             ? quest->GetFormEditorID()
+                             : "(unnamed)")
+                      : "NONE",
+                xt ? static_cast<int>(xt->ownerInstance.get()) : -1);
             const std::int32_t instId =
                 xt ? static_cast<std::int32_t>(xt->ownerInstance.get()) : -1;
             const RE::BGSQuestInstanceText* inst = nullptr;
@@ -11638,8 +11675,16 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             };
             // The form that fills an alias: the instance's record first, the
             // quest's live alias second.
+            // ★GI87: and it SAYS WHY when it comes back empty. Four different
+            // failures used to look identical on the page (a blank space), and
+            // telling them apart from a report was impossible.
             auto formOf = [&](std::string_view a_alias) -> RE::TESForm* {
-                if (!quest) return nullptr;
+                if (!quest) {
+                    SKSE::log::warn("[BOOK] '{}': <{}> has no quest behind it -- "
+                                    "the note carries no ExtraTextDisplayData we can see",
+                        what, a_alias);
+                    return nullptr;
+                }
                 for (const auto* al : quest->aliases) {
                     if (!al || !ieq(al->aliasName.c_str(), a_alias)) continue;
                     if (inst) {
@@ -11650,10 +11695,23 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                         }
                     }
                     if (al->GetVMTypeID() == RE::BGSRefAlias::VMTYPEID) {
-                        return static_cast<const RE::BGSRefAlias*>(al)->GetReference();
+                        auto* ref = static_cast<const RE::BGSRefAlias*>(al)->GetReference();
+                        if (!ref) {
+                            SKSE::log::warn("[BOOK] '{}': alias '{}' (id {}) is in the quest "
+                                            "but holds no reference right now",
+                                what, a_alias, al->aliasID);
+                        }
+                        return ref;
                     }
+                    SKSE::log::warn("[BOOK] '{}': alias '{}' (id {}) is not a reference alias "
+                                    "and the instance had no name for it",
+                        what, a_alias, al->aliasID);
                     return nullptr;
                 }
+                SKSE::log::warn("[BOOK] '{}': quest '{}' has no alias named '{}' "
+                                "({} alias(es) searched)",
+                    what, quest->GetFormEditorID() ? quest->GetFormEditorID() : "?",
+                    a_alias, quest->aliases.size());
                 return nullptr;
             };
             auto nameOf = [](RE::TESForm* a_f) -> std::string {
@@ -11786,11 +11844,37 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         RE::TESObjectREFR* owner =
             a_owner ? RE::TESForm::LookupByID<RE::TESObjectREFR>(a_owner) : nullptr;
         if (!owner) owner = player;
-        auto* xl = ExtraForPool(LiveEntryOf(owner, a_book), a_uid, a_sig);
+        auto* entry = LiveEntryOf(owner, a_book);
+        auto* xl = ExtraForPool(entry, a_uid, a_sig);
         RE::BSString raw;
         a_book->GetDescription(raw, a_book);
         std::string text = raw.c_str() ? raw.c_str() : "";
-        ResolveTextTokens(text, xl);   // GI79
+        // ★★★GI87: THE QUEST CONTEXT IS NOT NECESSARILY ON THE LIST THE POOL
+        // PICKED.
+        //
+        // GI79 handed `xl` straight to the resolver, and `xl` is whatever
+        // ExtraForPool named for the tile that was clicked. When that list is
+        // not the one carrying ExtraTextDisplayData -- a null pool answer, a
+        // note whose unit the signature hashes into a different pool
+        // (ExtraTextDisplayData is deliberately NOT part of InstanceSig, see
+        // the note there), a uniqueID the tile never recorded -- the resolver
+        // finds no quest, every alias resolves to nothing, and the tag is
+        // replaced by EMPTY. That is the second half of the report: "no longer
+        // truncating, however the alias itself is a blank space" (Kalian2015,
+        // 1.6.1).
+        //
+        // The quest context belongs to the UNIT that has it, so ask the whole
+        // entry rather than one list. The pool's answer is still preferred --
+        // it is the unit the player pointed at -- and the scan is the fallback.
+        // ★Only the RESOLVER gets this list. openBook below keeps `xl`, which
+        // is the display list and answers a different question (the name on
+        // the page).
+        const RE::ExtraDataList* ctx = TextContextList(entry, xl);
+        if (ctx != xl) {
+            SKSE::log::info("[BOOK] '{}': the quest context is on another unit's list, "
+                            "not the one the tile named", a_book->GetName());
+        }
+        ResolveTextTokens(text, ctx, a_book->GetName());   // GI79 + GI87
         RE::BSString desc(text.c_str());
         // ★★The NG line declares BookMenu::OpenBookMenu and never defines it,
         // so the call is made here through the same address-library id
