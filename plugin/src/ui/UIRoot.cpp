@@ -4298,6 +4298,7 @@ namespace FUI::UIRoot
         // GridMenu::OnShow covers event-less value drifts (the grindstone).
         // A quiet open keeps the board untouched and every ladder idle.
         Grid::RebuildIfNeeded();
+        const auto tRebuilt = std::chrono::steady_clock::now();
 
         // B: prefetch EVERYTHING the player carries the moment the menu
         // opens — one up-front caching burst instead of per-scroll/per-bag
@@ -4320,10 +4321,16 @@ namespace FUI::UIRoot
         // ★GI90: 50ms is a frame and a half -- below that nobody felt
         // anything and the line would only be noise in every log we read.
         if (const auto total = ms(t0, std::chrono::steady_clock::now()); total >= 50) {
-            SKSE::log::warn("[UI] menu open took {}ms: prelude {} / board {} / "
-                            "epilogue {} -- {} tile(s)",
-                total, ms(t0, tPre), ms(tPre, tBuilt),
-                ms(tBuilt, std::chrono::steady_clock::now()), Grid::TileCount());
+            // ★★The first labels were WRONG and the first measurement said so:
+            // "board 8 / epilogue 59" read as if the board were cheap, when the
+            // board is not built by g_onShow at all -- that reloads the defs and
+            // the filters. The rebuild happens in RebuildIfNeeded, which sat
+            // inside "epilogue" with everything else. A stage name that points
+            // at the wrong code is worse than no timer.
+            SKSE::log::warn("[UI] menu open took {}ms: prelude {} / defs {} / "
+                            "board {} / rest {} -- {} tile(s)",
+                total, ms(t0, tPre), ms(tPre, tBuilt), ms(tBuilt, tRebuilt),
+                ms(tRebuilt, std::chrono::steady_clock::now()), Grid::TileCount());
         }
 
         // ★AUTHOR TOOLING, on the same watch-file idiom as the vanilla
