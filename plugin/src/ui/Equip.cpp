@@ -1400,37 +1400,31 @@ namespace FUI::Equip
                 continue;
             }
 
-            // Spell tome: right-click = LEARN (a BookMenu can't open inside
-            // our movie-less UI, so teach directly and consume the tome —
-            // same net result as vanilla reading)
-            if (auto* book = obj->As<RE::TESObjectBOOK>(); book && book->TeachesSpell()) {
-                auto* spell = book->GetSpell();
-                if (spell && !player->HasSpell(spell)) {
-                    player->AddSpell(spell);
-                    FUI::Sfx::Notify(spell->GetName(), "UISpellLearned");
-                    // GI36: name the copy being consumed instead of letting the
-                    // engine pick, and let rule 58 take its star with it.
-                    auto* bentry = Grid::LiveEntryOf(player, book);
-                    auto* bxl = Grid::ExtraForInstance(bentry, act.uid, act.xlIdx);
-                    // ★The index is a hint; the signature is the fact. A stale
-                    // position resolves to a real list belonging to somebody
-                    // else, and here that decides whether the tome consumed was
-                    // the STARRED one.
-                    if (bxl && act.uid == 0 && act.sig != 0 &&
-                        Grid::InstanceSigOf(bxl) != act.sig) {
-                        bxl = Grid::ExtraForPool(bentry, act.uid, act.sig);
-                    }
-                    const int starred =
-                        (bxl && bxl->HasType<RE::ExtraHotkey>()) ? 1 : 0;
-                    player->RemoveItem(book, 1, RE::ITEM_REMOVE_REASON::kRemove,
-                        Grid::ResolveExitUnit(book, act.uid, act.sig, 1, starred,
-                                              act.xlIdx),
-                        nullptr);
-                    Grid::RequestRebuild();
-                    SKSE::log::info("[EQUIP] learned spell '{}'", spell->GetName());
-                }
-                continue;
-            }
+            // ★★★GI85: THE SPELL TOME FALLS THROUGH TO THE ENGINE NOW.
+            //
+            // A branch used to stand here that taught the spell and removed the
+            // book by hand, on the reasoning that a BookMenu cannot open inside
+            // our movie-less UI so this was "the same net result as vanilla
+            // reading". It is not the same, and the difference is a quest that
+            // cannot be finished: vanilla reads a book by EQUIPPING it, and the
+            // equip is what raises OnEquipped. Teaching the spell ourselves
+            // reproduces the visible half and skips the event entirely.
+            //
+            // ★This is the SECOND door the tome was kept away from, and the
+            // reason GI84 alone changed nothing. GI84 stopped ProcessBookRead
+            // from skipping the Use -- and the Use arrived here, hit this
+            // branch, found the spell already taught by Read() a few lines
+            // earlier, and did NOTHING AT ALL before `continue`. Two guards,
+            // one behind the other, both built on the same wrong idea.
+            // (Reported twice by the same player: Destruction Ritual Spell,
+            // 1.6.1 and the first 1.6.2 test build.)
+            //
+            // Nothing replaces it: a book is an ordinary object here and the
+            // generic EquipObject below is the door every other book already
+            // uses (measured: 'Line and Lure' Read=false Use=true). The engine
+            // teaches, the engine spends, and the event reaches the scripts
+            // that were waiting for it. ProcessBookRead's deferred stage sees
+            // the count move and knows not to spend it a second time.
 
             // ★★★EVERY ROAD A RING ARRIVES ON, ONE CALL.
             //
