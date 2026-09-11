@@ -39,6 +39,8 @@ namespace FUI::Lang
         X(LanguageLabel, "LANGUAGE")                                                                        \
         X(Gold, "GOLD")                                                                                     \
         X(Items, "ITEMS")                                                                                   \
+        X(Contents, "CONTENTS")   /* partner window: a container's shelf */                                 \
+        X(Wares, "WARES")         /* ...and a merchant's */                                                 \
         X(EquipTab, "EQUIP")                                                                                \
         X(CloseHint, "I / ESC to close")                                                                    \
         X(ResetDefault, "Reset to default")                                                                 \

@@ -6599,7 +6599,12 @@ namespace
                                              : Lang::Str::PickpocketTitle),
                                  &warn);
         } else {
-            UIRoot::SectionLabel(g_mode == Mode::kLoot ? "CONTENTS" : "WARES");
+            // ★GI92: these two were the last hardcoded English in the window.
+            // Every other label on both boards goes through Lang; a reporter
+            // running the mod in Korean saw "CONTENTS" sitting among translated
+            // text and said so.
+            UIRoot::SectionLabel(Lang::T(g_mode == Mode::kLoot ? Lang::Str::Contents
+                                                               : Lang::Str::Wares));
         }
         // merchant gold moved to the bottom GOLD bar (design pass C) — the
         // player and partner windows now mirror each other's layout

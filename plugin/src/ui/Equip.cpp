@@ -1475,6 +1475,30 @@ namespace FUI::Equip
             // what must go; letting this run would undo it.
             if (auto* armo = obj->As<RE::TESObjectARMO>(); armo && !ringHandled) {
                 const auto mask = static_cast<std::uint32_t>(armo->GetSlotMask().get());
+                // ★★★GI91: DECIDE INSIDE THE SNAPSHOT, ACT AFTER IT.
+                //
+                // GetInventory hands back COPIES of the entries -- but the copy
+                // constructor copies the ExtraDataList POINTERS, not the lists
+                // (CommonLibSSE InventoryEntryData.cpp). So `worn` holds raw
+                // pointers into live engine state, and UnequipObject merges a
+                // worn unit back into its stack, which DESTROYS that unit's
+                // list. The unequip used to happen inside this very loop, so
+                // the next iteration's IsWorn() walked a freed list.
+                //
+                // Reported as a CTD from repeatedly switching equipment
+                // (A -> B -> A) with the inventory open, which is exactly the
+                // shape that puts a SECOND conflicting piece after the first in
+                // the same snapshot. The crash log resolved to it exactly:
+                //     AdvanceMovie -> UIRoot::Tick -> Equip::ProcessPending
+                //       -> InventoryEntryData::IsWorn -> ExtraDataList::HasType
+                // reading a presence bitfield through a base pointer of 2.
+                //
+                // ★Only FORMS cross the boundary. A TESBoundObject is a
+                // permanent record and outlives any amount of equipping; an
+                // ExtraDataList does not, which is the whole lesson (rule 4-3
+                // 원칙 2, and the reason WornExtraOf is re-asked below rather
+                // than carried).
+                std::vector<RE::TESBoundObject*> conflicts;
                 auto worn = player->GetInventory(
                     [](RE::TESBoundObject& o) { return o.Is(RE::FormType::Armor); });
                 for (auto& [o2, d2] : worn) {
@@ -1503,11 +1527,18 @@ namespace FUI::Equip
                     // removes any that stopped being needed.
                     if (Costume::IsAnchor(o2)) continue;
                     if (static_cast<std::uint32_t>(a2->GetSlotMask().get()) & mask) {
-                        em->UnequipObject(player, o2,
-                            Grid::WornExtraOf(Grid::LiveEntryOf(player, o2)), 1, nullptr,
-                            false, false, false, true);
-                        SKSE::log::info("[EQUIP] slot conflict: unequip {}", o2->GetName());
+                        conflicts.push_back(o2);
                     }
+                }
+                // ★The snapshot dies HERE, before a single list is touched.
+                worn.clear();
+                for (auto* o2 : conflicts) {
+                    // ★Re-asked, never carried: the previous unequip in this
+                    // very loop can have rebuilt this form's lists.
+                    em->UnequipObject(player, o2,
+                        Grid::WornExtraOf(Grid::LiveEntryOf(player, o2)), 1, nullptr,
+                        false, false, false, true);
+                    SKSE::log::info("[EQUIP] slot conflict: unequip {}", o2->GetName());
                 }
             }
 
