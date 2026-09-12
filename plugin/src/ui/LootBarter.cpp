@@ -2191,7 +2191,27 @@ namespace FUI::LootBarter
                     // ★It is passing through, not moving in: a typed bag must not
                     // adopt a unit that is about to be drunk.
                     Grid::NoteTransientArrival(r.obj->GetFormID());
-                    Equip::UseItem(r.obj, r.uid, -1, r.sig, {}, r.count);
+                    // ★★★GI95: A BOOK IS READ, NOT USED.
+                    //
+                    // "The player-side path already knows every kind" above
+                    // was true of the spell tome only while ProcessPending
+                    // still carried its own tome branch -- teach the spell,
+                    // remove the book. GI85 took that branch out (it was the
+                    // second guard that kept quest tomes from ever being
+                    // equipped), and from then on this Use reached the engine
+                    // as a bare EquipObject, which raises OnEquipped and does
+                    // NOTHING else for a tome: measured, the tome sat in the
+                    // pack with the page sound played and the spell unlearned,
+                    // and a second shift+right-click found the spell still
+                    // unknown. The player-side path grew Read() and the
+                    // deferred spending for exactly this, so a book taken off
+                    // the shelf goes through the same door a book right-clicked
+                    // on the board does. Everything else still uses.
+                    if (auto* bk = r.obj->As<RE::TESObjectBOOK>()) {
+                        Grid::RequestBookRead(bk, r.uid, r.sig);
+                    } else {
+                        Equip::UseItem(r.obj, r.uid, -1, r.sig, {}, r.count);
+                    }
                 }
                 break;
             }
