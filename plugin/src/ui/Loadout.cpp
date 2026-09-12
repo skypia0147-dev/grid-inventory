@@ -162,12 +162,31 @@ namespace FUI::Loadout
             if (auto* ammo = Equip::EquippedAmmo(a_p)) {
                 a_em->UnequipObject(a_p, ammo, worn(ammo, 0), 1, nullptr, false, false, true, true);
             }
-            auto inv = a_p->GetInventory(
-                [](RE::TESBoundObject& o) { return o.Is(RE::FormType::Armor); });
-            for (auto& [obj, data] : inv) {
-                if (data.first > 0 && data.second && data.second->IsWorn()) {
-                    a_em->UnequipObject(a_p, obj, worn(obj, 0), 1, nullptr, false, false, true, true);
+            // ★★★GI93: DECIDE INSIDE THE SNAPSHOT, ACT AFTER IT.
+            //
+            // The same shape as the slot-conflict pass in Equip.cpp (GI91),
+            // for the same reason. GetInventory copies the ENTRIES but not the
+            // lists they point at, and UnequipObject can free a worn unit's
+            // list -- so unequipping from inside the walk left every later
+            // IsWorn() reading through pointers that the unequip before it, or
+            // whatever answered that unequip inside the engine, may already
+            // have taken apart. A tab switch strips every worn piece in one
+            // walk: N pieces, N-1 reads after a mutation, on every switch.
+            //
+            // Only FORMS cross the boundary. The worn list is re-asked at the
+            // moment of each call (that is what the `worn` lambda is for).
+            std::vector<RE::TESBoundObject*> strip;
+            {
+                auto inv = a_p->GetInventory(
+                    [](RE::TESBoundObject& o) { return o.Is(RE::FormType::Armor); });
+                for (auto& [obj, data] : inv) {
+                    if (data.first > 0 && data.second && data.second->IsWorn()) {
+                        strip.push_back(obj);
+                    }
                 }
+            }   // ★the snapshot dies here, before a single list is touched
+            for (auto* obj : strip) {
+                a_em->UnequipObject(a_p, obj, worn(obj, 0), 1, nullptr, false, false, true, true);
             }
         }
 
