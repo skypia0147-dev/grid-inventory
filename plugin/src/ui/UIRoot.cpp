@@ -283,8 +283,13 @@ namespace FUI::UIRoot
                 // over us owns the keyboard, and this road bypasses Scaleform
                 // entirely -- leaving it open would feed every keystroke into
                 // our ImGui behind somebody else's editor.
+                // ★GI94: and the BOOK is a window over us on this road as much
+                // as the console is. Keys pressed to turn or close a page were
+                // queued into ImGui here and replayed on the first frame back.
+                // IsBoardLive does not know about the book (it never needed
+                // to: the Scaleform road asks IsBookOpen itself), so ask here.
                 if (auto* ui = RE::UI::GetSingleton();
-                    IsBoardLive() &&
+                    IsBoardLive() && !IsBookOpen() &&
                     ui && !ui->IsMenuOpen(RE::Console::MENU_NAME) &&
                     ImGui::GetCurrentContext()) {
                     if (m == WM_CHAR) {
@@ -4710,6 +4715,39 @@ namespace FUI::UIRoot
         if (g_hiddenWas) {
             // ★back to us: MouseHandler takes the cursor again from here on
             g_hiddenWas = false;
+            // ★★★GI94: THE KEYS WERE NEVER RELEASED EITHER.
+            //
+            // The hide edge above queues the two mouse releases. Nothing did
+            // the same for the keyboard: every key event that arrives while a
+            // book (or a suppressing window) has the screen is dropped at
+            // GridMenu::ProcessMessage, so a key that was DOWN when the page
+            // came up never sees its release on that road, and ImGui resumed
+            // with it held. Shift is the one that matters -- the shelf read
+            // is shift+right-click, so it is down at exactly that moment --
+            // and a held Shift turns every click on the partner board into
+            // the split/use grammar: the ordinary pick-up is gated on
+            // !KeyShift and simply stops answering. Self-healing (the next
+            // Shift press clears it, and so does closing the menu), which is
+            // how it went unmeasured here. The console edge below has cleared
+            // for the same reason since 1.5.x; this edge never did.
+            ImGui::GetIO().ClearInputKeys();
+            // ★★AND THE PAD'S OWN MASK, which is the case that does not need
+            // a dead keyboard road to go wrong. The input sink drops every pad
+            // event while the page is up (main.cpp: "the book has input"), so
+            // the split button -- the pad's Shift -- that was held to read
+            // the shelf book loses its release in the mask as well as in
+            // ImGui. TranslatePadButtons only speaks on EDGES, and a bit that
+            // is still set on both sides has none: the release would never be
+            // spoken, and the next press would be swallowed pairing it. The
+            // same three resets OnClose makes, for the same reason. A stick
+            // deflected when the page came up is zeroed too, or the pointer
+            // drifts on the first frame back until the stick moves again.
+            g_padRaw.store(0);
+            g_padHeld.store(0);
+            g_padPrev = 0;
+            g_padMoveX.store(0.0f);
+            g_padMoveY.store(0.0f);
+            g_padScrollY.store(0.0f);
             // ★(1.5.x) the page just closed: if E flagged a shelf take while
             // it was up, this is where the transfer starts (render thread,
             // like every other request)
