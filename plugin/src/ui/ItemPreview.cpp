@@ -70,6 +70,49 @@ namespace FUI
             return false;
         }
 
+        // ★★★GI96: THE ENTRY CARRIES FOUR POINTERS AND THE GUARDS CHECKED TWO.
+        //
+        // LoadInFlight covers spModel, SceneModelIncomplete covers the geometry
+        // hanging off it. Neither looks at the two FORM pointers in the same
+        // entry, and End3D walks those: the engine loop that crashed advances
+        // by 0x20, which is exactly sizeof(LoadedInventoryModel), and the
+        // per-entry helper it calls read [rcx] with rcx = 0.
+        //
+        //   ItemPreview.cpp:705 TeardownWhenIdle
+        //     -> 51756 End3D +0x77  (add rbx, 0x20 — the per-entry loop)
+        //       -> 51774 +0xA8      (mov rax, [rcx]   rcx = 0)
+        //   (crash 2026-09-13, 1.6.3, own machine, 628-tile first open)
+        //
+        // BOTH existing guards passed that teardown intact, so the null was
+        // neither spModel nor its radius. itemBase and modelObj are what is
+        // left in the entry, and neither is ever legitimately null for
+        // anything WE load: Inv3D::Load is handed a TESBoundObject and the
+        // engine fills both from it, which is also why FindCurrentModel is
+        // allowed to compare against either one.
+        //
+        // ★Still a GUARD, NOT A DIAGNOSIS -- the same honesty the note above
+        // keeps. If this crash is reported again with these checks in place,
+        // the null is somewhere this side cannot see, and the answer then is to
+        // stop calling End3D at all rather than to invent a fifth test.
+        const char* SceneEntryHalfBuilt(RE::Inventory3DManager* a_mgr)
+        {
+            for (auto& lm : a_mgr->GetRuntimeData().loadedModels) {
+                if (!lm.itemBase) return "an entry has no itemBase";
+                if (!lm.modelObj) return "an entry has no modelObj";
+            }
+            return nullptr;
+        }
+
+        // ★The one question every End3D road has to ask, in one place so the
+        // roads cannot drift apart. nullptr = safe to tear the scene down;
+        // anything else is the reason it is not, ready to be logged.
+        const char* SceneUnsafeToTearDown(RE::Inventory3DManager* a_mgr)
+        {
+            if (LoadInFlight(a_mgr))         return "a load is still in flight";
+            if (SceneModelIncomplete(a_mgr)) return "an entry has no geometry yet";
+            return SceneEntryHalfBuilt(a_mgr);
+        }
+
         // ★★1.0.5 — the capture rig, measured from the shipped scene:
         //   item (-12.4,-500,-26.25)   lamp (100,-350,100)   |d| = 226
         // Read as spherical about the item, with the camera at the origin
@@ -607,40 +650,72 @@ namespace FUI
         }
 
         if (auto* mgr = RE::Inventory3DManager::GetSingleton()) {
-            // ★★★GI73: ADOPT A SCENE THAT IS STILL UP, DO NOT STACK ANOTHER ONE.
+            // ★★★GI100: A SCENE LEFT STANDING IS NOT STILL OURS.
             //
-            // This called Begin3D whenever m_running was false -- and m_running
-            // is OUR state, cleared the instant the menu hides, while the engine
-            // scene lives until a teardown actually runs. TeardownWhenIdle
-            // returns WITHOUT End3D in two cases: the menu reopened (the session
-            // changed), or three hundred retries were exhausted. Its comment
-            // says the new session's own End() pairs the teardown -- but the new
-            // session had already added a second Begin3D by then, so the count
-            // came out two-to-one and one scene was left standing.
+            // GI73 adopted it, on the premise that our Begin3D was outstanding
+            // and the scene still up was therefore the scene this session
+            // wanted. The premise is false, and two independent measurements
+            // say so.
             //
-            // ★An outstanding UI 3D scene draws the item and the player and not
-            // the world, which is exactly the report: "everything other than the
-            // player character will stop rendering, NPCs, objects, even the
-            // skybox", and it happened on the SECOND open (LO13OL75, 1.6.0).
-            // That reporter settled on another mod as the cause and may well be
-            // right about what stalled the first teardown -- but a stalled
-            // teardown is a thing this side has to survive, and it did not.
+            // Between our close and our next open the VANILLA InventoryMenu
+            // opens and closes -- it is on the road to every one of our opens,
+            // and the intercept logs it every time:
             //
-            // ★m_scene3D tracks the only question that matters: is a Begin3D
-            // outstanding. When one is, the scene still up IS the scene this
-            // session wants, so it is adopted and the eventual End3D pairs the
-            // original call exactly.
+            //   [INV] intercepted InventoryMenu -> deferring GridInventoryMenu open
+            //   [INV] InventoryMenu closed -> GridInventoryMenu opening
+            //
+            // That menu drives this very same Inventory3DManager. Whatever an
+            // unpaired Begin3D of ours left behind does not survive it.
+            //
+            // ★MEASURED ACROSS THE BOUNDARY, one menu close apart:
+            //
+            //   before (our own scene)  every capture lands, ~30ms each
+            //   after  (adopted scene)  ZERO land. Every item reads "no model"
+            //                           and goes onto the PERMANENT fail list,
+            //                           so the adoption does not merely fail to
+            //                           work -- it condemns good items.
+            //
+            // ★And the close that follows is the CTD: three for three, always
+            // the same instruction inside End3D (51774+0xA8), always on an
+            // adopted scene. GI96's extra pointer tests passed it intact and
+            // GI99's removal of the Unload in front of it did not stop it,
+            // because the entry End3D walks belongs to a scene that is gone.
+            //
+            // So the old scene is neither adopted nor torn down -- both were
+            // measured as crashes. The claim is dropped and a fresh scene is
+            // opened.
+            //
+            // ★★The honest cost: IF our old Begin3D really were still
+            // outstanding, this counts two against one and leaves a scene
+            // standing at the end -- the rendering fault GI73 was written for
+            // ("everything other than the player stops rendering", LO13OL75,
+            // 1.6.0). Against a CTD plus a poisoned icon cache, that trade is
+            // not close. The warning below is how a log will say it happened.
             if (m_scene3D) {
-                SKSE::log::warn("[PREVIEW] Begin3D SKIPPED -- the previous scene is "
-                                "still up (its teardown was deferred or refused). "
-                                "Adopting it so the pair stays 1:1.");
-            } else {
-                Inv3D::Begin3D(mgr, RE::INTERFACE_LIGHT_SCHEME::kInventory);
-                m_scene3D = true;
-                SKSE::log::info("[PREVIEW] Begin3D");
+                // ★Name what the teardown was still waiting on. Dropping the
+                // claim is safe but it is not free -- it spends a Begin3D that
+                // no End3D of ours will ever pair -- so the next question is
+                // why the close could not finish, and only the blocking reason
+                // can answer it. Measured on the first build that had this
+                // rule: thirteen drops in ninety seconds, every successful
+                // teardown landing on frame ZERO. That is not a slow load; it
+                // is a condition that never clears, and this line says which.
+                const char* blocked = SceneUnsafeToTearDown(mgr);
+                SKSE::log::warn("[PREVIEW] the previous scene was still claimed ({}, "
+                                "blocked on: {}) -- dropping the claim and opening a "
+                                "fresh one, because the vanilla InventoryMenu has been "
+                                "through this manager since (GI100)",
+                                m_sceneRefused ? "teardown refused" : "teardown never ran",
+                                blocked ? blocked : "nothing right now");
             }
+            m_scene3D      = false;
+            m_sceneRefused = false;
+            Inv3D::Begin3D(mgr, RE::INTERFACE_LIGHT_SCHEME::kInventory);
+            m_scene3D = true;
+            SKSE::log::info("[PREVIEW] Begin3D");
             m_running = true;
             ++m_session;   // cancels any teardown still deferred from the last close
+            m_teardownPending = false;
         } else {
             SKSE::log::warn("[PREVIEW] Begin: Inventory3DManager null");
         }
@@ -650,7 +725,7 @@ namespace FUI
     {
         const bool wasRunning = m_running;
         // ★Put the light back BEFORE anything else in the teardown — the scene
-        // is still whole here, whereas TeardownWhenIdle may run frames later
+        // is still whole here, whereas TeardownTick may run frames later
         // (or be skipped entirely on a stuck load).
         RestoreCaptureLight();
         // still running, node still reachable: take our zoom off it before
@@ -664,52 +739,122 @@ namespace FUI
         // Engine teardown may have to wait for an in-flight model load (menu
         // closed mid-capture) — End3D right now would be the null-spModel CTD.
         if (wasRunning) {
-            TeardownWhenIdle(m_session, 0);
+            m_teardownPending = true;
+            m_teardownSession = m_session;
+            m_teardownFrames  = 0;
+            TeardownTick();   // the ordinary case lands on this very frame
         }
     }
 
-    void ItemPreview::TeardownWhenIdle(std::uint32_t a_session, int a_tries)
+    // The teardown itself, in one place because three roads reach it now: the
+    // close, the per-frame wait behind it, and GI98's retry at the next open.
+    // nullptr when the scene is down; otherwise the reason it is not.
+    const char* ItemPreview::AttemptTeardown(RE::Inventory3DManager* a_mgr)
     {
+        if (const char* why = SceneUnsafeToTearDown(a_mgr)) return why;
+        // ★★★GI99: NOTHING TOUCHES THE ARRAY BEFORE End3D WALKS IT.
+        //
+        // An Inv3D::Unload stood here, and EVERY crash of this shape has that
+        // call immediately in front of End3D:
+        //
+        //   2026-08-21  ResetScene       -> Unload -> End3D -> rcx = 0
+        //   2026-09-13  TeardownWhenIdle -> Unload -> End3D -> rcx = 0  (1.6.3)
+        //   2026-09-13  AttemptTeardown  -> Unload -> End3D -> rcx = 0  (GI96-98)
+        //
+        // all three at the identical instruction, 51774+0xA8, reached from
+        // 51756 = End3D's per-entry loop. The one teardown in those same logs
+        // that did NOT crash is the one where the scene was empty and the
+        // Unload therefore did nothing.
+        //
+        // ★And the call was never buying anything. This project's own A/B
+        // measured it and wrote it down in IconCache::FinishPending: "Inv3D::
+        // Unload is Inventory3DManager::Clear3D ... and Clear3D does NOT give
+        // the slot back: loadedModels only empties at End3D." So it clears the
+        // model OUT OF an entry that then STAYS in the array -- and End3D
+        // walks that entry. End3D empties the array by itself, which is the
+        // whole reason ResetScene is built out of End3D + Begin3D.
+        //
+        // ★This is also why the 2026-08-21 answer -- ask the guard AGAIN after
+        // the Unload -- could not work, and why the crash came back twice with
+        // that re-ask in place. The guard reads pointers, and an entry the
+        // engine has cleared does not have to answer null.
+        //
+        // ★GI96's two extra pointer tests stay. They cost nothing and they are
+        // how we will know, next time, that the entry was whole going in.
+        {
+            // One line per entry, once per menu close, at most seven: if this
+            // ever crashes again the log names the array End3D was about to
+            // walk, which the crash dump cannot.
+            for (auto& lm : a_mgr->GetRuntimeData().loadedModels) {
+                SKSE::log::info("[PREVIEW]   End3D entry {:08X} '{}' model={} r={:.1f}",
+                    lm.itemBase ? lm.itemBase->GetFormID() : 0,
+                    lm.itemBase && lm.itemBase->GetName() ? lm.itemBase->GetName() : "-",
+                    lm.spModel ? 1 : 0,
+                    lm.spModel ? lm.spModel->worldBound.radius : -1.0f);
+            }
+        }
+        Inv3D::End3D(a_mgr);
+        m_scene3D      = false;   // GI73: the pair is closed; the next open opens a scene
+        m_sceneRefused = false;
+        return nullptr;
+    }
+
+    // ★★★GI97: ONE TRY PER FRAME, AND A FRAME HAS TO BE A FRAME.
+    //
+    // This waited by reposting itself through SKSE's task interface and
+    // counting the reposts, on the reading that one repost was one frame of
+    // patience. It is not: a task queued while the task queue is DRAINING is
+    // drained in that same pass, so the loop spun inside a single frame and
+    // spent the whole budget before the engine had one opportunity to finish
+    // the load it was waiting for. Measured, in the log this was found in:
+    //
+    //   00:38:42.158  [UI] menu hidden
+    //   00:38:42.165  [PREVIEW] End: model never finished (load stuck in
+    //                 flight), teardown skipped
+    //
+    // Three hundred "frames" of patience in SEVEN MILLISECONDS. The scene was
+    // left standing, the next open adopted it (GI98), and that session's close
+    // was the CTD. The budget was never the problem; the wait was.
+    //
+    // Tick() runs from the PlayerCharacter update hook on every unpaused
+    // frame, which is exactly the window this waits in: the menu is shut, so
+    // the AdvanceMovie road is gone and the game is running again. So 300 is
+    // now the five seconds it always read as.
+    void ItemPreview::TeardownTick()
+    {
+        constexpr int kTeardownFrames = 300;   // ~5s at 60fps
+        if (!m_teardownPending) return;
         // the menu reopened: the NEW session owns the scene now and its own
         // End() pairs the teardown — this stale one must not fire
-        if (a_session != m_session || m_running) return;
+        if (m_teardownSession != m_session || m_running) {
+            m_teardownPending = false;
+            return;
+        }
         auto* mgr = RE::Inventory3DManager::GetSingleton();
-        if (!mgr) return;
-        // ★Two questions, not one: has a load yet to LAND (null spModel), and
-        // has one landed only PARTLY (spModel with no geometry). The second is
-        // the 2026-09-03 crash; see SceneModelIncomplete.
-        if (LoadInFlight(mgr) || SceneModelIncomplete(mgr)) {
-            if (a_tries >= 300) {
-                // a load that never lands: leave the scene untouched (next
-                // open/close cycle pairs End3D) rather than risk the CTD
-                SKSE::log::warn("[PREVIEW] End: model never finished ({}), "
-                                "teardown skipped",
-                    LoadInFlight(mgr) ? "load stuck in flight" : "no geometry");
-                return;
-            }
-            SKSE::GetTaskInterface()->AddTask([this, a_session, a_tries]() {
-                TeardownWhenIdle(a_session, a_tries + 1);
-            });
+        if (!mgr) {
+            m_teardownPending = false;
             return;
         }
-        Inv3D::Unload(mgr);
-        // ★Same hole as ResetScene's, and the same answer: the guard above ran
-        // before Unload, End3D walks the array Unload just touched.
-        if (LoadInFlight(mgr) || SceneModelIncomplete(mgr)) {
-            SKSE::GetTaskInterface()->AddTask([this, a_session, a_tries]() {
-                TeardownWhenIdle(a_session, a_tries + 1);
-            });
+        if (const char* why = AttemptTeardown(mgr)) {
+            if (++m_teardownFrames < kTeardownFrames) return;   // wait a real frame
+            // A load that never lands: leave the scene untouched rather than
+            // risk the CTD -- and REMEMBER that we did, so the next open does
+            // not quietly build on it (GI98).
+            m_teardownPending = false;
+            m_sceneRefused    = true;
+            SKSE::log::warn("[PREVIEW] End: the scene never settled ({}) in {} "
+                            "frames -- teardown skipped, and the next open will "
+                            "not build on it (GI98)", why, kTeardownFrames);
             return;
         }
-        Inv3D::End3D(mgr);
-        m_scene3D = false;   // GI73: the pair is closed; the next open opens a scene
+        m_teardownPending = false;
         // ★GI73: ALWAYS, not only when it was deferred. A successful teardown
         // used to log nothing at all, so a log could show Begin3D twice and give
         // no way to tell whether an End3D had run between them -- which is why
         // the unbalanced pair could not be seen in any of the three reporter
         // logs that went past it. One line per menu close buys the whole
         // question back.
-        SKSE::log::info("[PREVIEW] End3D (deferred {} tasks)", a_tries);
+        SKSE::log::info("[PREVIEW] End3D (waited {} frame(s))", m_teardownFrames);
     }
 
     RE::NiAVObject* ItemPreview::FindCurrentModel() const
@@ -835,25 +980,32 @@ namespace FUI
         if (LoadInFlight(mgr)) {
             return false;   // deferred — caller retries once the load lands
         }
-        RestoreNodeScale();
-        Inv3D::Unload(mgr);
-        // ★★ASK AGAIN, AFTER THE UNLOAD. The check above happened BEFORE
-        // Unload touched loadedModels, and End3D is what walks that array
-        // dereferencing each entry's spModel -- so the answer the guard gave
-        // was about a state that no longer exists by the time it matters.
-        // (Crash log 2026-08-21: EXCEPTION_ACCESS_VIOLATION reading [rcx] with
-        // rcx = 0, inside 51756 = End3D, reached from Request's ResetScene
-        // during an icon precache. The guard was there and was simply asked at
-        // the wrong moment.)
-        //
-        // Skipping the teardown costs nothing: the scene stays as it is, the
-        // caller's Load runs against a full array and fails quietly, and the
-        // next pass tries again. A crash costs the session.
-        if (LoadInFlight(mgr)) {
-            SKSE::log::warn("[PREVIEW] scene reset: a load landed mid-teardown "
-                            "-- End3D skipped");
+        // ★GI96: this road calls the same End3D, so it asks the same
+        // null-pointer question. NOT the radius one: that is a "not yet" and
+        // this path is unbounded (see SceneModelIncomplete's note), whereas an
+        // entry with no form pointer is a defect no amount of waiting mends.
+        if (const char* half = SceneEntryHalfBuilt(mgr)) {
+            SKSE::log::warn("[PREVIEW] scene reset refused: {}", half);
             return false;
         }
+        RestoreNodeScale();
+        // ★★★GI99: AND NO Inv3D::Unload HERE EITHER -- see AttemptTeardown.
+        //
+        // This is the call site of the 2026-08-21 crash, and it had the same
+        // Unload-then-End3D pair. The answer taken then was to ask the guard a
+        // SECOND time, after the Unload, on the reading that the first answer
+        // had gone stale. It could not work: a guard reads pointers, and an
+        // entry the engine has cleared does not have to answer null. The crash
+        // returned twice.
+        //
+        // Clear3D does not free the slot anyway (measured -- IconCache::
+        // FinishPending has the A/B), so the call was buying nothing and
+        // handing End3D an entry it had already been through. End3D on its own
+        // is what empties the array, which is the whole point of this function.
+        //
+        // ★RestoreNodeScale above stays and stays FIRST: that is OUR write on
+        // an engine node, and it has to come off while the node is still ours
+        // to reach.
         // ★GI73: balanced IN PLACE -- one out, one straight back in -- so the
         // outstanding-Begin3D count is unchanged and m_scene3D stays true. It is
         // written rather than left implied because the two calls have to move
@@ -869,6 +1021,11 @@ namespace FUI
 
     void ItemPreview::Tick()
     {
+        // ★GI97: BEFORE the running guard -- this is the job that belongs to a
+        // CLOSED menu. Tick() arrives here from the PlayerCharacter update hook
+        // on unpaused frames, which is the only per-frame heartbeat left once
+        // our own AdvanceMovie has stopped driving one.
+        TeardownTick();
         if (!m_running) return;
         UpdateParking();
     }

@@ -199,11 +199,16 @@ namespace FUI
         void LoadForCapture(RE::Inventory3DManager* a_mgr, RE::TESBoundObject* a_item);
 
         void UpdateParking();   // apply def + move model under the park point
-        // Engine scene teardown, retried via main-thread tasks until no model
-        // load is in flight (see ResetScene note). Aborts when a_session no
-        // longer matches (the menu reopened; the new session pairs its own
-        // End3D).
-        void TeardownWhenIdle(std::uint32_t a_session, int a_tries);
+        // Unload + End3D, once, if the scene is safe to take apart. Returns
+        // nullptr on success, else the reason it was left standing.
+        const char* AttemptTeardown(RE::Inventory3DManager* a_mgr);
+        // ★GI97: the engine scene teardown, retried ONE TRY PER FRAME from
+        // Tick() until the scene settles or the frame budget runs out. It used
+        // to retry by reposting an SKSE task, which drains in the same pass and
+        // so waited for nothing at all -- see the note on the definition.
+        // Abandoned when the session no longer matches (the menu reopened; the
+        // new session pairs its own End3D).
+        void TeardownTick();
         // ★Put the capture zoom back on the node before letting go of it.
         // Every path that unloads MUST call this first — see m_scaledNode.
         void RestoreNodeScale();
@@ -226,6 +231,18 @@ namespace FUI
         // still standing is adopted instead of having a second one stacked on
         // it. See Begin() for the report that found it.
         bool                m_scene3D     = false;
+        // ★GI97: the deferred teardown, waiting on real frames. m_teardownFrames
+        // counts frames waited, not tasks reposted, which is the whole point.
+        bool                m_teardownPending = false;
+        std::uint32_t       m_teardownSession = 0;
+        int                 m_teardownFrames  = 0;
+        // ★★GI98: the scene still standing was GIVEN UP ON, not merely waited
+        // for. A deferred teardown leaves a whole scene the next open may adopt;
+        // a refused one leaves the very scene we could not take apart, and
+        // adopting THAT is how the 2026-09-13 CTD was reached. Begin() tells the
+        // two apart on this flag: a refused scene is retried once and, failing
+        // that, left alone with no 3D for the open rather than built upon.
+        bool                m_sceneRefused    = false;
 
         ImVec2 m_capturePos       = ImVec2(0.0f, 0.0f);
         ImVec2 m_captureSize      = ImVec2(0.0f, 0.0f);  // full rect including safety margin
