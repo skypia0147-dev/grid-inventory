@@ -17,6 +17,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>   // GI104: PathMissing is reached from two threads now
 
 namespace FUI
 {
@@ -696,14 +697,84 @@ namespace FUI
     // Returns the object itself when there is nothing better -- so an item is
     // untouched, and a spell with no display object falls through to the drawn
     // category icon exactly as it does today.
+    // ★★★GI102: A SCROLL IS A SPELLITEM, AND IT IS NOT A SPELL.
+    //
+    // ScrollItem derives from SpellItem in the engine's own class tree
+    // (CommonLibSSE ScrollItem.h: `class ScrollItem : public SpellItem, public
+    // TESModelTextureSwap, ...`). So As<SpellItem>() SUCCEEDS on every scroll,
+    // and every "is this a spell" in this file answered yes for one. Five
+    // places took that answer, and each did something a scroll must not have:
+    //
+    //   CaptureSourceOf   photographed its MENU DISPLAY OBJECT, not the scroll
+    //   CaptureKeyOf      salted its key as a spell capture
+    //   PreRender         asked the preview for the spell backdrop (black)
+    //   PostRender        turned brightness into alpha -- the spell rule, which
+    //                     makes a pale sheet of paper mostly transparent
+    //   PostRender        re-centred it by light, the correction for a glow
+    //
+    // The first is the one reported. For vanilla scrolls the display object
+    // names a mesh Bethesda never shipped, measured on this machine:
+    //
+    //   [ICONS] 'Scroll of Heal Other' skipped: mesh not found
+    //           ('Clutter\Books\TestBook01HighPoly.nif')
+    //
+    // so every scroll was judged model-less and skipped, and the board drew
+    // them as though they had never been cached (zhenguoce, 2026-09-13: "the
+    // scroll icons in my inventory have disappeared ... they look like they
+    // haven't been cached yet"). Present since the spell pictures arrived in
+    // 1.6.0 (88f716f).
+    //
+    // A scroll is a thing held in the hand, with a real model on its own
+    // TESModelTextureSwap. That is its picture, and everything downstream
+    // treats it as the ITEM it is.
+    [[nodiscard]] static bool IsSpellCapture(const RE::TESForm* a_form)
+    {
+        return a_form && a_form->As<RE::SpellItem>() != nullptr &&
+               !a_form->Is(RE::FormType::Scroll);
+    }
+
+    namespace
+    {
+        bool PathMissing(const char* a_rel);   // defined with the mesh probes below
+    }
+
     static RE::TESBoundObject* CaptureSourceOf(RE::TESBoundObject* a_obj)
     {
-        auto* sp = a_obj ? a_obj->As<RE::SpellItem>() : nullptr;
+        if (!IsSpellCapture(a_obj)) return a_obj;   // GI102: a scroll keeps its own model
+        auto* sp = a_obj->As<RE::SpellItem>();
         if (!sp) return a_obj;
+        // ★★★GI104: A PATH IS NOT A MESH.
+        //
+        // This asked only whether the record NAMES a model, and a name costs a
+        // record nothing: it can point at a file that was never shipped. When the
+        // spell's OWN display object is one of those, this returned it and never
+        // looked at the effect's -- which is where nearly every vanilla spell
+        // keeps the picture that actually renders. The capture then asked the
+        // mesh probe about a dead path, was told "missing", and the spell went
+        // without a picture for good, on every save, because the answer is a
+        // fact about the record and not about the save.
+        //
+        // That is the shape of the report: "only the novice Destruction spell
+        // Flames has no icon" (zhenguoce), while Firebolt and Fireball -- whose
+        // own display object is empty, so they fall through to the effect's --
+        // come up fine. It is also exactly the scroll bug beside it (GI102),
+        // where the dead path is measured: 'Clutter\Books\TestBook01HighPoly.nif'.
+        // A test asset left in the records, and a leftover of the same kind on
+        // a spell made in the same early pass is the obvious candidate.
+        //
+        // ★So a candidate is a picture only when its mesh EXISTS, and a dead one
+        // hands the question on to the next -- own, then first effect, then the
+        // spell itself, the order the magic menu already uses. The probe
+        // memoises per path, so this is one archive lookup per nif, ever.
+        // ★Not a diagnosis of Flames by itself: GI104's wheel line says what
+        // actually happened to it, and this is the fix that line will confirm
+        // or rule out.
         const auto renderable = [](RE::TESBoundObject* a_o) -> RE::TESBoundObject* {
             if (!a_o) return nullptr;
             const auto* m = a_o->As<RE::TESModel>();
-            return (m && m->GetModel() && m->GetModel()[0]) ? a_o : nullptr;
+            const char* path = m ? m->GetModel() : nullptr;
+            if (!path || !path[0]) return nullptr;
+            return PathMissing(path) ? nullptr : a_o;
         };
         if (auto* own = renderable(sp->GetMenuDisplayObject())) return own;
         // ★FIRST effect only, which is what the magic menu itself shows -- and
@@ -916,7 +987,7 @@ namespace FUI
         // 01. Those records are as wrong as the purple ones and have to be
         // orphaned the same way, or the retest serves them straight back.
         constexpr std::uint32_t kSpellCaptureSalt = 0x5BE11A02u;   // "spell 2"
-        if (a_obj && a_obj->As<RE::SpellItem>()) rot ^= kSpellCaptureSalt;
+        if (IsSpellCapture(a_obj)) rot ^= kSpellCaptureSalt;   // GI102: never a scroll
         return (static_cast<std::uint64_t>(ModelSlot32(a_obj)) << 32) | rot;
     }
 
@@ -2279,14 +2350,26 @@ namespace FUI
                 if (c == '/') c = '\\';
                 c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             }
+            // ★GI104: LOCKED, because this now has two threads. It used to be
+            // reached only from the capture queue (render thread). The spell
+            // source picker asks it as well, and that runs under KeyFor -- which
+            // the draw calls on the render thread and OnShow's Prefetch calls on
+            // the UI thread. An unguarded map read beside an emplace is a
+            // corrupted bucket list, not a stale answer. The probe is memoised,
+            // so the lock is uncontended after the first sight of each nif.
+            static std::mutex s_lock;
             static std::unordered_map<std::string, bool> s_missing;
-            if (const auto it = s_missing.find(path); it != s_missing.end()) {
-                return it->second;
+            {
+                std::scoped_lock lock(s_lock);
+                if (const auto it = s_missing.find(path); it != s_missing.end()) {
+                    return it->second;
+                }
             }
             // records store the path relative to meshes\, but not always
             const std::string full =
                 path.starts_with("meshes\\") ? path : ("meshes\\" + path);
             const bool missing = !RE::BSResourceNiBinaryStream(full.c_str()).good();
+            std::scoped_lock lock(s_lock);
             s_missing.emplace(path, missing);
             return missing;
         }
@@ -2345,6 +2428,31 @@ namespace FUI
             }
             return true;
         }
+    }
+
+    // ★★GI104: ONE LINE THAT SAYS WHY.
+    //
+    // "Only Flames has no icon, on every save" (zhenguoce, 2026-09-12). Every
+    // road that could produce that ends in the same silence -- a key on the
+    // fail list, a display object whose mesh was never shipped (the scroll
+    // bug, GI102, was exactly this), a record Capturable() refuses, a picture
+    // shared with a cousin that failed -- and the wheel cannot tell them apart
+    // from the outside. This names the branch, so one open of the wheel
+    // answers what no amount of reading the code could.
+    std::string IconCache::DescribeMiss(RE::TESBoundObject* a_obj) const
+    {
+        if (!a_obj) return "no object";
+        auto* src = CaptureSourceOf(a_obj);
+        const auto key = KeyFor(a_obj, ResolveDef(a_obj));
+        return fmt::format(
+            "source='{}' ({:08X}) path='{}' meshMissing={} capturable={} "
+            "key={:016X} failed={} deferred={} spellCapture={}",
+            src && src->GetName() ? src->GetName() : "-",
+            src ? src->GetFormID() : 0,
+            ModelPathOf(a_obj), MeshMissing(a_obj) ? 1 : 0,
+            Capturable(a_obj) ? 1 : 0, key,
+            m_failed.contains(key) ? 1 : 0, m_deferred.contains(key) ? 1 : 0,
+            IsSpellCapture(a_obj) ? 1 : 0);
     }
 
     void IconCache::QueueCapture(RE::TESBoundObject* a_obj)
@@ -2758,7 +2866,7 @@ namespace FUI
         // the pink-square regression.
         pv->Request(CaptureSourceOf(m_pending.obj), ImVec2(0.0f, 0.0f),
             ImVec2(boxPx, boxPx), -1.0f, 0.0f, 0.0f, &def,
-            m_pending.obj && m_pending.obj->As<RE::SpellItem>() != nullptr);
+            IsSpellCapture(m_pending.obj));   // GI102: a scroll is shot as an item
         if (m_pending.boost > 0.0f) {
             pv->BoostCapture(m_pending.boost);   // B4: resume the clip-boost ladder
         }
@@ -3229,8 +3337,7 @@ namespace FUI
         // ★GI74: one answer for the content probe and the sprite pass both,
         // taken here at function scope -- the gates above have just confirmed
         // the pending object is live -- so neither stage re-derives it.
-        const bool spellCapture =
-            m_pending.obj && m_pending.obj->As<RE::SpellItem>() != nullptr;
+        const bool spellCapture = IsSpellCapture(m_pending.obj);   // GI102
 
         // Pixel rect of the FULL margin region (kSafetyMargin x inner box):
         // rotation diagonals that outgrow the inner box stay uncut; tiles
@@ -3721,7 +3828,7 @@ namespace FUI
         // ★ITEMS ARE LEFT ALONE, deliberately. A wine bottle measures 0.48 /
         // 0.64 because it is heavy at the base, and "correcting" that would
         // float it in its cell. Its box is honest; a spell's is not.
-        if (m_pending.obj->As<RE::SpellItem>() && trimW > 0 && trimH > 0) {
+        if (IsSpellCapture(m_pending.obj) && trimW > 0 && trimH > 0) {   // GI102
             const auto vOf = [](const std::uint8_t* a_px) {
                 const double lum = (a_px[0] * 0.299 + a_px[1] * 0.587 +
                                     a_px[2] * 0.114) / 255.0;

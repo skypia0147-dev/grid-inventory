@@ -4570,6 +4570,7 @@ namespace FUI::Wheeler
                     // counted BEFORE the fallback, which is the only point at
                     // which the two answers are still distinguishable
                     if (icon) ++diagHit; else ++diagMiss;
+                    const bool hadCapture = icon != nullptr;   // GI104: before the fallback
                     // ★★A miss here is "not loaded YET", not "no icon". The
                     // sprite pak survives a restart; the D3D texture does not,
                     // and nothing uploads an item's sprite until something
@@ -4611,6 +4612,28 @@ namespace FUI::Wheeler
                                 icon = Symbol(key);
                                 symbolFace = icon != nullptr;
                             }
+                        }
+                    }
+                    // ★★GI104: SAY WHY A SPELL HAS NO PICTURE -- once per form.
+                    //
+                    // "Only the novice Destruction spell Flames has no icon, on
+                    // every save" (zhenguoce). Every road that produces that ends
+                    // in the same silence, and the wheel is the one place that
+                    // sees the result: a spell slot with no capture behind it, or
+                    // a slot that drew nothing at all. IconCache::DescribeMiss
+                    // names the branch. Once per form per session -- the set
+                    // guards the string, so a steady miss costs one hash lookup.
+                    if ((magicUnder && !hadCapture) || !(icon && icon->srv)) {
+                        static std::set<RE::FormID> s_missSaid;
+                        if (s_missSaid.insert(face->GetFormID()).second) {
+                            const char* sch = SchoolOf(face);
+                            SKSE::log::warn(
+                                "[WHEEL] no picture for '{}' ({:08X}): drew={} sigil={} "
+                                "school={} -- {}",
+                                face->GetName() ? face->GetName() : "-",
+                                face->GetFormID(), (icon && icon->srv) ? 1 : 0,
+                                symbolFace ? 1 : 0, sch ? sch : "-",
+                                cache->DescribeMiss(face));
                         }
                     }
                     if (icon && icon->srv) {

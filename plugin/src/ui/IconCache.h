@@ -78,6 +78,11 @@ namespace FUI
 
         // Enqueue an item for capture (no-op if cached or already queued).
         void QueueCapture(RE::TESBoundObject* a_obj);
+        // ★GI104 diagnostic: why an object has no icon, in one line -- what
+        // would be photographed, whether its mesh exists, whether it may be
+        // queued at all, and whether its key is on the fail or deferred list.
+        // Builds a string: call it once per object, never per frame.
+        [[nodiscard]] std::string DescribeMiss(RE::TESBoundObject* a_obj) const;
 
         // ★Drop the not-yet-started backlog. For settings that re-key EVERY
         // item at once (the global capture light) — without it a slider drag
