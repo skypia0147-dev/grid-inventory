@@ -1,10 +1,12 @@
 #include "ui/Loadout.h"
 #include "game/Costume.h"
+#include "game/DualRing.h"
 #include "ui/Equip.h"
 #include "ui/Grid.h"
 #include "ui/Lang.h"
 #include "ui/Wheeler.h"
 
+#include <algorithm>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -70,6 +72,65 @@ namespace FUI::Loadout
             return true;   // not a weapon and reported in both hands
         }
 
+        // ★★★GI103: A RING IS A UNIT, AND TWO OF THEM HAVE AN ORDER.
+        //
+        // This file handled rings with the single-slot armour rules, and a ring
+        // is the one kind of armour the body can wear TWICE. All three roads
+        // were wrong in the same way:
+        //
+        //   CaptureWorn  walked the pack per FORM and recorded each form once,
+        //                so two identical rings were saved as ONE.
+        //   UnequipAll   removed one unit per form, so a second identical ring
+        //                stayed on through the strip.
+        //   EquipSet     put each ring on with a bare EquipObject. The body has
+        //                one kRing slot, and the engine's own conflict pass takes
+        //                the first ring off the moment the second goes on --
+        //                which is the report, word for word: "switching presets
+        //                and back, the first ring is automatically unequipped
+        //                and the second ring takes the first ring's place"
+        //                (zhenguoce, 2026-09-12).
+        //
+        // DualRing is the one place that knows how to hold two, and its header
+        // states the rule: every road a ring ARRIVES on goes through
+        // PrepareForEquip and every road it LEAVES on goes through
+        // RemoveWornUnit -- "a rule kept on half the roads is worse than no
+        // rule". The loadout was the other half.
+        struct RingUnit
+        {
+            RE::TESObjectARMO* armo   = nullptr;
+            std::uint16_t      sig    = 0;
+            bool               second = false;   // DualRing's second cell
+        };
+
+        // Every worn ring UNIT, the first-cell ring first. Reads only: the
+        // snapshot dies with this call, and nothing but form pointers and
+        // signature VALUES leaves it.
+        std::vector<RingUnit> WornRingUnits(RE::PlayerCharacter* a_p)
+        {
+            std::vector<RingUnit> out;
+            auto inv = a_p->GetInventory([](RE::TESBoundObject& o) {
+                auto* a = o.As<RE::TESObjectARMO>();
+                return a && Grid::IsRing(a);
+            });
+            for (auto& [obj, data] : inv) {
+                if (data.first <= 0 || !data.second || !data.second->extraLists) continue;
+                auto* armo = obj->As<RE::TESObjectARMO>();
+                if (!armo || Costume::IsAnchor(obj)) continue;
+                for (auto* xl : *data.second->extraLists) {
+                    if (!xl || !(xl->HasType<RE::ExtraWorn>() ||
+                                 xl->HasType<RE::ExtraWornLeft>())) {
+                        continue;
+                    }
+                    const std::uint16_t sig = Grid::InstanceSigOf(xl);
+                    out.push_back({ armo, sig, DualRing::IsSecondCell(armo, sig) });
+                }
+            }
+            // First cell first, so a restore puts them back where they were.
+            std::stable_partition(out.begin(), out.end(),
+                                  [](const RingUnit& a_r) { return !a_r.second; });
+            return out;
+        }
+
         std::vector<Entry> CaptureWorn(RE::PlayerCharacter* a_p)
         {
             std::vector<Entry> out;
@@ -116,12 +177,21 @@ namespace FUI::Loadout
                 // into the preset, and activating that preset would then try to
                 // equip a form the player is not supposed to own.
                 if (Costume::IsAnchor(obj)) continue;
+                // ★GI103: rings are recorded by UNIT below, not once per form.
+                if (auto* ar = obj->As<RE::TESObjectARMO>(); ar && Grid::IsRing(ar)) {
+                    continue;
+                }
                 // GI53: a worn SHIELD was already captured by the left-hand
                 // path above -- a second (form, right) entry duplicated it in
                 // the preset: ReservedCount said 2, EquipSet equipped it twice,
                 // and a spare copy of the same shield vanished from the board.
                 if (seen.contains({ obj->GetFormID(), true })) continue;
                 add(obj, false);
+            }
+            // ★GI103: every worn ring, first cell first -- EquipSet reads the
+            // order back to decide which cell each one goes to.
+            for (const auto& r : WornRingUnits(a_p)) {
+                out.push_back({ r.armo->GetFormID(), false, r.sig });
             }
             return out;
         }
@@ -181,12 +251,41 @@ namespace FUI::Loadout
                     [](RE::TESBoundObject& o) { return o.Is(RE::FormType::Armor); });
                 for (auto& [obj, data] : inv) {
                     if (data.first > 0 && data.second && data.second->IsWorn()) {
+                        // ★GI103: rings leave by unit, below
+                        if (auto* ar = obj->As<RE::TESObjectARMO>(); ar && Grid::IsRing(ar)) {
+                            continue;
+                        }
                         strip.push_back(obj);
                     }
                 }
             }   // ★the snapshot dies here, before a single list is touched
             for (auto* obj : strip) {
                 a_em->UnequipObject(a_p, obj, worn(obj, 0), 1, nullptr, false, false, true, true);
+            }
+            // ★★GI103: RINGS LEAVE BY UNIT, AND THROUGH DualRing.
+            //
+            // One UnequipObject per form took off one ring of an identical pair
+            // and left the other on. And a bare removal is the road DualRing's
+            // header forbids: the engine dispels worn enchantments by
+            // ENCHANTMENT, not by unit, so it strips the magic from a matching
+            // ring that stays -- RemoveWornUnit repairs exactly that.
+            //
+            // ★Carried as (form, signature) VALUES and re-resolved at every
+            // removal: RemoveWornUnit can re-equip a survivor that shared the
+            // dispelled enchantment, which rewrites the entry any list pointer
+            // collected before it would have lived in (GI91's lesson).
+            for (const auto& r : WornRingUnits(a_p)) {
+                RE::ExtraDataList* xl = nullptr;
+                if (auto* live = Grid::LiveEntryOf(a_p, r.armo); live && live->extraLists) {
+                    for (auto* l : *live->extraLists) {
+                        if (l && (l->HasType<RE::ExtraWorn>() || l->HasType<RE::ExtraWornLeft>()) &&
+                            Grid::InstanceSigOf(l) == r.sig) {
+                            xl = l;
+                            break;
+                        }
+                    }
+                }
+                if (xl) DualRing::RemoveWornUnit(r.armo, xl);
             }
         }
 
@@ -215,6 +314,7 @@ namespace FUI::Loadout
         void EquipSet(RE::PlayerCharacter* a_p, RE::ActorEquipManager* a_em,
                       const std::vector<Entry>& a_items)
         {
+            int ringsPlaced = 0;   // GI103: which cell the next ring goes to
             for (const auto& e : a_items) {
                 auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(e.id);
                 if (!obj || !StillOwned(a_p, obj)) continue;   // sold/dropped -> skip
@@ -226,9 +326,21 @@ namespace FUI::Loadout
                 if (e.leftHand && !obj->Is(RE::FormType::Armor)) {
                     slot = RE::TESForm::LookupByID<RE::BGSEquipSlot>(kLeftHandSlot);
                 }
+                // ★★GI103: A RING ARRIVES THROUGH DualRing. Without it the body's
+                // single kRing slot hands the engine a conflict, and its conflict
+                // pass takes the ring before this one off. PrepareForEquip has
+                // the survivor give up the slot bit first, so both stay on.
+                // The first ring goes to the first cell and every later one to
+                // the second -- the order CaptureWorn wrote them in.
+                if (auto* ring = obj->As<RE::TESObjectARMO>(); ring && Grid::IsRing(ring)) {
+                    DualRing::PrepareForEquip(ring, e.sig, nullptr, ringsPlaced > 0);
+                    ++ringsPlaced;
+                }
                 // D4-b: name the unit the preset actually captured. Sig 0 (a
                 // plain unit) resolves to nullptr and the engine picks, which
                 // is right -- plain units are interchangeable.
+                // ★GI103: resolved AFTER PrepareForEquip, which can take rings
+                // off and put them back -- a list read before it may be gone.
                 auto* xl = Grid::ExtraForPool(Grid::LiveEntryOf(a_p, obj), 0, e.sig);
                 a_em->EquipObject(a_p, obj, xl, 1, slot, false, false, true, true);
             }

@@ -346,6 +346,21 @@ namespace FUI::DualRing
         auto* p = RE::PlayerCharacter::GetSingleton();
         if (!p || !a_incoming) return;
 
+        // ★★GI103: NEVER DECIDE ON A CACHED PICTURE OF THE BODY.
+        //
+        // The worn-ring cache is per FRAME, and the frame counter only moves
+        // in Tick() -- which runs AFTER the loadout switch in the same UI tick.
+        // So a preset that puts two rings on in one call asked this function
+        // about ring two with a cache taken before ring one was equipped. It
+        // saw no survivor, stripped no slot bit, and the engine's kRing
+        // conflict took ring one off as ring two went on: the reported swap,
+        // reproduced by the very fix that routed the loadout through here.
+        //
+        // One inventory walk per ring equip, which is nothing -- rings go on
+        // rarely, and the per-frame readers (the doll, HoldsRingSlot) keep the
+        // cache for the reason it exists.
+        ForgetWorn();
+
         // 1. WHO MUST LEAVE -- two separate questions, and running them
         //    together was a bug.
         std::vector<WornRing> victims;
