@@ -2822,6 +2822,35 @@ namespace FUI
         // That is the most likely way a reporter's PBR weapon was condemned
         // during a warm-up precache while loading perfectly well.
         if (!a_persist) return;
+        // ★★★GI101: A DEAD SCENE MUST NOT CONDEMN GOOD ITEMS.
+        //
+        // The permanent fail list is for an item whose model cannot be
+        // captured. It is not for a session in which the SCENE is gone and
+        // NOTHING can be captured -- which is exactly what an adopted scene
+        // turned out to be (GI100). Measured, one menu close apart: every
+        // capture landing at ~30ms, then zero, with every item timing out and
+        // every one of them written to the persisted list. Eleven good items
+        // condemned in four seconds, by a verdict that outlives the restart
+        // that would have fixed it.
+        //
+        // A run this long is the scene, not the items: a genuinely missing
+        // mesh never gets a capture slot at all, and a slow item recovers
+        // within a few. So this reads the same streak the systemic-fault
+        // warning above is built on, at half its threshold, and answers with
+        // DEFERRAL -- which the player and the retry pass can both undo --
+        // instead of a verdict that neither can.
+        if (m_timeoutStreak >= 4) {
+            if (m_deferred.insert(m_pending.key).second) {
+                m_deferredObj[m_pending.key] = m_pending.obj;
+                PersistSlow(m_pending.key);
+            }
+            if (m_timeoutStreak == 4) {
+                SKSE::log::warn("[ICONS] four captures in a row have failed -- reading "
+                                "that as the scene and not the items: deferring them "
+                                "instead of condemning them (GI101)");
+            }
+            return;
+        }
         // One verdict, no attempt counting HERE -- the strike count lives in
         // CheckPendingGates, which decides whether to call this at all.
         // Reaching this line means the item has been judged done.
@@ -2982,6 +3011,19 @@ namespace FUI
                     PersistSlow(m_pending.key);
                 }
                 GiveUpPending("precache deferred (first miss)", false);
+                return GateResult::kAbandoned;
+            }
+            // ★GI101: the same scene-fault guard GiveUpPending carries, asked
+            // here because this path condemns BEFORE it calls that one -- so
+            // the streak has not been bumped for this item yet and the
+            // threshold is one lower. The "timeout" in the reason is load
+            // bearing: it is what keeps the streak counting.
+            if (m_timeoutStreak >= 3) {
+                if (m_deferred.insert(m_pending.key).second) {
+                    m_deferredObj[m_pending.key] = m_pending.obj;
+                    PersistSlow(m_pending.key);
+                }
+                GiveUpPending("precache timeout -- scene fault, deferred", false);
                 return GateResult::kAbandoned;
             }
             m_deferred.erase(m_pending.key);
