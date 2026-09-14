@@ -2267,18 +2267,107 @@ namespace FUI
                 // and a dropped item gain a picture too rather than lose one.
                 // SetModel is the engine's own virtual setter.
                 if (hasM != hasF) {
-                    if (hasM) wf.SetModel(m); else wm.SetModel(f);
-                    // ★A handful of lines, not one per record: a load-order sweep
-                    // healed 3098 of these in one session and the log was a
-                    // third this message. The rule is deterministic; five
-                    // examples say it is running and which way.
-                    static int s_said = 0;
-                    if (s_said < 5) {
-                        ++s_said;
-                        SKSE::log::info("[ICONS] '{}' has a ground model for one sex only "
-                                        "-- filled the {} slot from it{}",
-                            a_obj->GetName(), hasM ? "female" : "male",
-                            s_said == 5 ? " (further ones not logged)" : "");
+                    // ★★★GI106: A PATH IS NOT THE WHOLE GROUND MODEL.
+                    //
+                    // Each ground-model slot is a TESModelTextureSwap: the nif
+                    // path AND a list of texture swaps (MODS) that re-skin named
+                    // shapes of that nif. SetModel writes the PATH and nothing
+                    // else ("{ model = a_model; }"), so the slot filled above
+                    // pointed at the right mesh with NO swaps -- and drew the
+                    // mesh's own default textures.
+                    //
+                    // That is invisible for most armour, whose nif already
+                    // carries its real textures. It is not invisible for jewelry
+                    // mods, which commonly ship ONE mesh and give every ring its
+                    // look through swaps. Reported against 1.6.3 with Complete
+                    // Crafting Overhaul Remastered and Unique Utopia SE - Rings:
+                    // "it breaks the textures from the model ... if I reinstall
+                    // 1.6.0 they work again" (Ezequiel2018). 1.6.0 is the last
+                    // build without GI78, and this is the only thing GI78 does.
+                    // And it is not confined to icons: the fill lands on the
+                    // FORM, so a dropped ring and the 3D preview wore the bare
+                    // mesh as well, for a character of the sex whose slot was
+                    // empty.
+                    //
+                    // ★So a slot whose source carries swaps is NOT filled, and
+                    // that item goes back to exactly what 1.6.0 did. Copying the
+                    // swaps instead would need the engine's own component copier
+                    // (BaseFormComponent::CopyComponent), which this project has
+                    // never measured -- not a call to place on a path that runs
+                    // over thousands of records in one sweep. Aliasing the swap
+                    // array between the two slots is out: each slot's destructor
+                    // frees its own.
+                    //
+                    // ★★And not filled means a MALE character may have nothing
+                    // to photograph -- a male one only, because the engine's
+                    // fallback runs ONE way. A female character whose slot is
+                    // empty is handed the male model: that is how every vanilla
+                    // armour draws for her, and vanilla sets the male slot alone
+                    // (read from the masters: Skyrim.esm 1881 male-only ground
+                    // models, 42 of them with swaps; female-only, none).
+                    // A male character is handed the male slot and nothing else
+                    // -- the Bride measurement GI78 was written for. So only a
+                    // female-only record in front of a male character comes back
+                    // "no model" on every attempt, and two strikes put a
+                    // perfectly good ring on the PERMANENT fail list -- which
+                    // 1.6.0 also did, and which a sex change would then never
+                    // undo. Refused here instead: the tile keeps its drawn icon,
+                    // nothing is condemned, and a female character still
+                    // captures it normally.
+                    // ★★The first build refused BOTH ways, reading "the engine
+                    // loads the player's own slot". Its first run, on a female
+                    // character, refused Markarth Guard's Shield -- a male-only
+                    // model with one swap (the hold emblem) -- and the whole
+                    // Shattered Royal Armor set. That is the ring report's own
+                    // shape (a jewelry mod sets the male slot alone as well) and
+                    // 1.6.0's WORKING case, turned into a drawn icon.
+                    const bool srcSwaps =
+                        (hasM ? wm : wf).numAlternateTextures > 0;
+                    if (srcSwaps) {
+                        auto* pc = RE::PlayerCharacter::GetSingleton();
+                        auto* base = pc ? pc->GetActorBase() : nullptr;
+                        // unknown sex (main menu): attempt as before rather than guess
+                        const bool noModelForUs =
+                            hasF && base && base->GetSex() != RE::SEX::kFemale;
+                        // ★Once per RECORD. Capturable is asked again on every
+                        // rebuild and an unfilled slot stays unfilled, so the
+                        // first run spent two of its five lines on one shield.
+                        // Locked for the same reason PathMissing is: KeyFor
+                        // reaches this from the render thread and from OnShow's
+                        // Prefetch on the UI thread.
+                        static std::mutex s_swapLock;
+                        static RE::FormID s_swapSaid[5]{};
+                        static std::size_t s_swapN = 0;
+                        const RE::FormID id = a_obj->GetFormID();
+                        std::scoped_lock lock(s_swapLock);
+                        const auto seenEnd = s_swapSaid + s_swapN;
+                        if (s_swapN < std::size(s_swapSaid) &&
+                            std::find(s_swapSaid, seenEnd, id) == seenEnd) {
+                            s_swapSaid[s_swapN++] = id;
+                            SKSE::log::info(
+                                "[ICONS] '{}' ({:08X}) has a {} ground model only, with "
+                                "{} texture swap(s) -- NOT filled, the copy would draw the "
+                                "bare mesh (GI106){}{}",
+                                a_obj->GetName(), id, hasM ? "male" : "female",
+                                (hasM ? wm : wf).numAlternateTextures,
+                                noModelForUs ? "; a male character has no model to photograph" : "",
+                                s_swapN == std::size(s_swapSaid) ? " (further ones not logged)" : "");
+                        }
+                        if (noModelForUs) return false;
+                    } else {
+                        if (hasM) wf.SetModel(m); else wm.SetModel(f);
+                        // ★A handful of lines, not one per record: a load-order sweep
+                        // healed 3098 of these in one session and the log was a
+                        // third this message. The rule is deterministic; five
+                        // examples say it is running and which way.
+                        static int s_said = 0;
+                        if (s_said < 5) {
+                            ++s_said;
+                            SKSE::log::info("[ICONS] '{}' has a ground model for one sex only "
+                                            "-- filled the {} slot from it{}",
+                                a_obj->GetName(), hasM ? "female" : "male",
+                                s_said == 5 ? " (further ones not logged)" : "");
+                        }
                     }
                 }
             }
