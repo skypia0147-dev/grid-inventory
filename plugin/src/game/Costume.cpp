@@ -750,31 +750,57 @@ namespace FUI::Costume
                 // the list would take the limb with it -- an armour's addon
                 // carries that part of the body, which is why culling gloves
                 // removed the hands.
+                std::uint32_t skinMask = 0;    // GI107: the skin addon found, and
+                std::uint32_t skinReach = 0;   // the costume's slots it also claims
                 if (!want && skin) {
                     for (std::uint32_t i = 0; i < kSlots; ++i) {
                         if (!(covered & (1u << i))) continue;
                         want = skin->GetArmorAddonByMask(race, SlotOf(i));
                         if (want) { at = i; break; }
                     }
-                    // ★★★AND FENCE IT IN. A body replacer's skin addon is ONE
-                    // mesh for the whole body, and it claims every slot that
-                    // body covers -- on UBE that is body + forearms + hands
-                    // together. Lend it to a bare HANDS carrier and the engine
-                    // puts it on all three, painting bare skin straight over
-                    // the costume's chest. Borrowing it to fill one empty slot
-                    // emptied two full ones.
-                    // ★It is the SKIN that gets narrowed, not the costume that
-                    // gets moved: the costume's claim is the correct one, and
-                    // the skin is only here to keep a limb from vanishing.
-                    // Restored with every other mask edit by RestoreAll.
+                    // ★★★GI107: A SKIN ADDON THAT REACHES THE COSTUME IS NOT
+                    // LENT -- AND NOT FENCED EITHER.
+                    //
+                    // 1.1.0 lent it and fenced it. A body replacer's skin addon is
+                    // ONE mesh claiming every slot that body covers (UBE: body +
+                    // forearms + hands), and lent whole to a bare HANDS carrier it
+                    // painted bare skin straight over the costume's chest -- so
+                    // the lent addon lost the costume's slots for the length of
+                    // the rebuild.
+                    //
+                    // But that addon is the RACE's own skin, and the engine reads
+                    // it during the same rebuild for something else. An armour
+                    // addon carries no skin texture of its own (IronCuirassAA has
+                    // no NAM0/NAM1 and serves 23 races); the texture lives on the
+                    // naked addons -- NakedTorsoKhajiit's NAM0 is
+                    // SkinBodyMaleKhajiit, on the same MaleBody_1.nif every race
+                    // shares. Fence the body slot out of that addon and the
+                    // garment's bare skin comes out in the texture baked into its
+                    // mesh, which is human.
+                    //
+                    // ★Measured on a Khajiit (reported for Khajiit, Argonian and
+                    // a modded race): a costume with a top and no ring, a ring
+                    // actually worn, and vanilla's naked torso claims the RING
+                    // slot too (0x174 = body, forearms, amulet, ring, calves). The
+                    // ring borrowed the torso, the fence took the body slot out of
+                    // it (0x174 -> 0x150), and the top turned human -- on exactly
+                    // the two switches that logged the fence and on none of the
+                    // others. On a human the baked texture IS the right one, which
+                    // is why it took a beast race to show.
+                    //
+                    // ★So such a carrier withdraws its claim instead -- the road a
+                    // cape or a circlet already takes below. The slot is freed, the
+                    // race's skin addon is never edited, and the body grows into
+                    // the free slot the way it does whenever nothing is worn
+                    // there, which is what the fence was reaching for without the
+                    // edit. A skin addon that stays clear of the costume (bare
+                    // hands 0x8, bare feet 0x80) is still lent as before.
+                    // ★★Not yet measured on a one-mesh body: the UBE case the
+                    // fence was built for is the check this change still owes.
                     if (want) {
-                        const auto sm = static_cast<std::uint32_t>(want->GetSlotMask().get());
-                        if (sm & dressed) {
-                            reclaim(want, sm & ~dressed);
-                            SKSE::log::info("[COSTUME]     skin addon fenced: 0x{:08X} -> "
-                                            "0x{:08X} (costume owns 0x{:08X})",
-                                sm, sm & ~dressed, dressed);
-                        }
+                        skinMask = static_cast<std::uint32_t>(want->GetSlotMask().get());
+                        skinReach = skinMask & dressed;
+                        if (skinReach) want = nullptr;
                     }
                 }
 
@@ -785,8 +811,11 @@ namespace FUI::Costume
                 SKSE::log::info("[COSTUME]   worn '{}' (slots 0x{:08X}) <- {}",
                     armo->GetName(), covered,
                     fromCostume ? std::format("costume @{}", at)
-                                : (want ? std::format("skin @{}", at)
-                                        : std::string("claim withdrawn (no skin here)")));
+                    : want      ? std::format("skin @{}", at)
+                    : skinReach ? std::format("claim withdrawn (skin addon 0x{:08X} reaches "
+                                              "the costume's 0x{:08X}, GI107)",
+                                      skinMask, skinReach)
+                                : std::string("claim withdrawn (no skin here)"));
                 const auto full = static_cast<std::uint32_t>(armo->GetSlotMask().get());
                 if (!want) {
                     // ★★Withdraw the claim, do not hide the node. A culled slot

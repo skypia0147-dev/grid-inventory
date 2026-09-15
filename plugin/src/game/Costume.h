@@ -17,7 +17,9 @@ namespace SKSE
 //
 //   1. back up each worn armour's TESObjectARMO::armorAddons
 //   2. overwrite them with the costume piece's addon for that slot
-//      (or the SKIN's addon when the costume leaves the slot empty)
+//      (or the SKIN's addon when the costume leaves the slot empty -- unless
+//      that addon also claims a slot the costume fills; then the slot's claim
+//      is withdrawn instead, and the race's skin is never edited: GI107)
 //   3. Actor::DoReset3D  -- synchronous; the engine builds the 3D from the
 //      list it can see right now
 //   4. put every list back
