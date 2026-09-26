@@ -482,6 +482,16 @@ namespace FUI::Equip
                 // placeholder that gives a bare slot an appearance list. Showing
                 // it on the doll would advertise a helmet the player never put on.
                 if (Costume::IsAnchor(obj)) continue;
+                // ★The board's own door policy (Grid.cpp SkipInventoryEntry):
+                // unnamed or non-playable armour is a scripting form, never
+                // gear. Devious Devices wears an unnamed "render" copy beside
+                // every inventory device; the board already hid it, the doll
+                // drew it as <Missing Name>, and unequipping it by hand breaks
+                // the device's script state.
+                {
+                    const char* nm = obj->GetName();
+                    if (!nm || !*nm || !obj->GetPlayable()) continue;
+                }
                 auto* armo = obj->As<RE::TESObjectARMO>();
                 if (!armo) continue;
                 const char* slot = SlotForArmor(armo);
