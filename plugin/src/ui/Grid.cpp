@@ -12826,7 +12826,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // Once per tooltip, not once per effect line — the answer cannot change
         // between two lines of the same card.
         const bool survivalOn = SurvivalModeOn();
-        auto effectLine = [&](RE::Effect* a_e, const ImVec4& a_col) {
+        auto effectLine = [&](RE::Effect* a_e, const ImVec4& a_col,
+                              bool a_descOnly = false) {
             auto* base = a_e ? a_e->baseEffect : nullptr;
             if (!base) return;
             // The engine hides these from every item card and the magic menu:
@@ -12867,6 +12868,13 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 TrimInPlace(line);
                 if (line.empty()) return;   // resolved to nothing: vanilla shows none
             } else {
+                // ★A spell's undescribed effects are its plumbing -- the
+                // reanimate follow-up, the spider touch's poison tick, a ward's
+                // shield value -- and vanilla's tome card prints none of them.
+                // Spelling them out by name put lines on the card the game
+                // never shows (Cunoyu, compared against vanilla with the magic
+                // mods off).
+                if (a_descOnly) return;
                 // No description (common on crafted and mod-added effects):
                 // fall back to the old "Name 50 (10s)" form.
                 const char* n = base->GetName();
@@ -13063,10 +13071,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 }
             }
             if (magic) {
+                // a scroll carries a spell, plumbing and all -- the tome's rule
+                const bool descOnly = magic->Is(RE::FormType::Scroll);
                 std::uint16_t bit = 1;
                 for (auto* e : magic->effects) {
                     if (known & bit) {
-                        effectLine(e, Theme::TipBody());
+                        effectLine(e, Theme::TipBody(), descOnly);
                     } else {
                         // ★An unknown effect keeps its PLACE. Vanilla's item
                         // card simply omits it, which left a freshly picked
@@ -13118,7 +13128,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 // text. The effect belongs to the SPELL, and effectLine
                 // already renders one the way vanilla does -- tags filled,
                 // hidden helpers skipped.
-                for (auto* e : spell->effects) effectLine(e, Theme::TipBody());
+                for (auto* e : spell->effects) {
+                    effectLine(e, Theme::TipBody(), /*descOnly=*/true);
+                }
             }
         }
 
