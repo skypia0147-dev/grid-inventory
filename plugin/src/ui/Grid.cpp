@@ -17131,18 +17131,48 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
 
     // A RUNTIME-CREATED form (potion brewed at an alchemy lab, weapon the player
     // enchanted) has no source plugin, so FormKey names it "Dynamic|0x<FormID>".
-    // Those FormIDs are handed out per session and are NOT stable across a
-    // save/load, which makes such a key useless to persist and mildly harmful:
-    //   - it can never match its own item again, so it is dead weight that grows
-    //     with every distinct recipe the player ever brews, and
-    //   - a DIFFERENT runtime form can be handed the same id after a load and
-    //     inherit the old item's grid slot.
-    // The stale-instance pruner does not collect these (it only walks '@'/'~'
-    // suffixed keys), so filter them at the cosave boundary instead. In-memory
-    // they stay live and behave normally for the rest of the session.
-    bool IsPersistableKey(const std::string& a_key)
+    //
+    // ★These used to be dropped at the cosave boundary on the belief that 0xFF
+    // ids are re-dealt every session. They are not: the save file stores a
+    // created form under its full 0xFF id and the load recreates it under the
+    // same one (which is also why SKSE's ResolveFormID passes 0xFF through
+    // unchanged, and why Loadout has always kept them). Dropping them sent
+    // every brewed potion back to the main board on each load, and the ones
+    // the board could not hold spilled into the free cells of whatever bag was
+    // open -- "some went back to the inventory, the rest got shuffled" (CACO
+    // report, where nearly every potion is brewed).
+    //
+    // What IS true: once the last unit of a created form is gone, the engine
+    // may hand its id to the next thing brewed. So a dynamic key is written
+    // only while the player still holds that form. The rule-13 sweep in
+    // FinalizeRebuild clears such keys too, but only when a rebuild runs --
+    // a potion drunk off a hotkey and then saved never gets one.
+    std::unordered_set<RE::FormID> HeldCreatedForms()
     {
-        return !a_key.starts_with("Dynamic|");
+        std::unordered_set<RE::FormID> out;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* changes = player ? player->GetInventoryChanges() : nullptr;
+        if (!changes || !changes->entryList) return out;
+        for (auto* e : *changes->entryList) {
+            // a created form is never in a base container, so its whole count
+            // is the delta
+            if (e && e->object && e->object->IsDynamicForm() && e->countDelta > 0) {
+                out.insert(e->object->GetFormID());
+            }
+        }
+        return out;
+    }
+
+    bool IsPersistableKey(const std::string& a_key,
+                          const std::unordered_set<RE::FormID>& a_heldCreated)
+    {
+        constexpr std::string_view kDyn = "Dynamic|0x";
+        if (!a_key.starts_with(kDyn)) return true;
+        // strtoul stops at the first non-hex char, so a '#n' / '@uid' suffix
+        // needs no stripping
+        const auto id = static_cast<RE::FormID>(
+            std::strtoul(a_key.c_str() + kDyn.size(), nullptr, 16));
+        return a_heldCreated.contains(id);
     }
 
     void SaveGame(SKSE::SerializationInterface* a_intfc)
@@ -17156,14 +17186,15 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // F2: parked-in-trash entries never persist (a mid-menu F5 save would
         // otherwise strand items in a view that doesn't exist after load) —
         // they save at their PRE-park spot so a load simply restores them.
+        const auto heldCreated = HeldCreatedForms();
         std::uint32_t persisted = 0;
         for (const auto& [key, le] : g_layout) {
-            if (!IsPersistableKey(key)) continue;
+            if (!IsPersistableKey(key, heldCreated)) continue;
             ++persisted;
         }
         a_intfc->WriteRecordData(persisted);
         for (const auto& [key, le] : g_layout) {
-            if (!IsPersistableKey(key)) continue;
+            if (!IsPersistableKey(key, heldCreated)) continue;
             const LayoutEntry* out = &le;
             LayoutEntry back;
             if (le.bag == kTrashKey) {
@@ -17196,21 +17227,30 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         }
         // v7: the "already seen" baseline. Without it, loading a save would make
         // the entire inventory read as new the first time the menu opens.
-        // ★Dynamic FormIDs are dropped rather than written: SKSE resolves 0xFF
-        // ids by passing them through unchanged, so a stale one could land on
-        // whatever occupies that slot in the new session.
+        // ★Created (0xFF) forms follow the layout's rule above: kept while the
+        // player holds them. Dropping them all made every brewed potion read
+        // as NEW after each load.
+        const auto seenKept = [&](RE::FormID a_fid) {
+            return (a_fid >> 24) != 0xFF || heldCreated.contains(a_fid);
+        };
         std::uint32_t seenN = 0;
         for (const auto& [fid, n] : g_seenCount) {
-            if ((fid >> 24) != 0xFF) ++seenN;
+            if (seenKept(fid)) ++seenN;
         }
         a_intfc->WriteRecordData(seenN);
         for (const auto& [fid, n] : g_seenCount) {
-            if ((fid >> 24) == 0xFF) continue;
+            if (!seenKept(fid)) continue;
             a_intfc->WriteRecordData(fid);
             a_intfc->WriteRecordData(static_cast<std::int32_t>(n));
         }
-        SKSE::log::info("[GRID] cosave: saved {} placements, {} open bags, {} seen counts",
-            g_layout.size(), g_openBags.size(), seenN);
+        std::size_t dynKept = 0;
+        for (const auto& [key, le] : g_layout) {
+            if (key.starts_with("Dynamic|") && IsPersistableKey(key, heldCreated)) ++dynKept;
+        }
+        SKSE::log::info("[GRID] cosave: saved {} of {} placements ({} created-form, "
+                        "{} created forms held), {} open bags, {} seen counts",
+            persisted, g_layout.size(), dynKept, heldCreated.size(),
+            g_openBags.size(), seenN);
     }
 
     void LoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version)
@@ -17297,9 +17337,11 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 le.uid = UidOf(key);
                 le.sig = SigOf(key);
             }
-            // Saves written before the filter above carry dynamic keys; drop
-            // them on the way in so an existing playthrough gets cleaned too.
-            if (!IsPersistableKey(key)) continue;
+            // ★Dynamic keys are taken as written. The save side only writes
+            // held ones; a key from an older save whose form is gone meets the
+            // rule-13 sweep on the first rebuild. (Checking here would need
+            // the created forms to exist already at cosave-load time, which
+            // nothing guarantees.)
             layout[std::move(key)] = std::move(le);
         }
 
