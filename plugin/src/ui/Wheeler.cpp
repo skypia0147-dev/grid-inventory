@@ -896,7 +896,7 @@ namespace FUI::Wheeler
 
         struct GroupDesc
         {
-            const char* title;                     // shown on the brush banner
+            Lang::Str title;                       // shown on the brush banner
             bool (*filled)(int slot);              // is there anything here at all
             bool (*eligible)(int slot);            // ...and may it be chosen now
             const char* (*name)(int slot);         // hub text
@@ -1128,16 +1128,16 @@ namespace FUI::Wheeler
             // and squeezed into this circle is a hairline. COSTUME gets the real
             // ITEM icon, because a costume IS armour and the body piece is what
             // the player recognises; there is no weapon in it to name.
-            { "PRESET", Preset::filled, Preset::eligible, Preset::name,
+            { Lang::Str::WheelPreset, Preset::filled, Preset::eligible, Preset::name,
               Preset::current, Art::noCount, Art::noHands, Preset::apply,
               Art::presetMedallion, Art::noFace, Preset::click, Preset::reorder },
-            { "COSTUME", Costume_::filled, Costume_::eligible, Costume_::name,
+            { Lang::Str::WheelCostume, Costume_::filled, Costume_::eligible, Costume_::name,
               Costume_::current, Art::noCount, Art::noHands, Costume_::apply,
               Art::noMedallion, Art::costumeFace, Costume_::click, Costume_::reorder },
-            { "GEAR", Items::filled, Items::eligible, Items::name,
+            { Lang::Str::WheelGear, Items::filled, Items::eligible, Items::name,
               Items::current, Art::itemCount, Art::itemHands, Items::apply,
               Art::itemMedallion, Art::itemFace, Items::click, Items::reorder },
-            { "MAGIC", Magic::filled, Magic::eligible, Magic::name,
+            { Lang::Str::WheelMagic, Magic::filled, Magic::eligible, Magic::name,
               Magic::current, Art::noCount, Art::magicHands, Magic::apply,
               Art::magicMedallion, Art::magicFace, Magic::click, Magic::reorder },
         };
@@ -1190,9 +1190,11 @@ namespace FUI::Wheeler
         {
             const GroupDesc& g = G(a_group);
             const int pages = PageCount(a_group);
-            if (pages <= 1) return g.title;
+            // (Cunoyu: the banners were English literals in every language)
+            const char* title = Lang::T(g.title);
+            if (pages <= 1) return title;
             static char s_buf[64];
-            std::snprintf(s_buf, sizeof(s_buf), "%s  %d/%d", g.title,
+            std::snprintf(s_buf, sizeof(s_buf), "%s  %d/%d", title,
                           std::clamp(g_page, 0, pages - 1) + 1, pages);
             return s_buf;
         }

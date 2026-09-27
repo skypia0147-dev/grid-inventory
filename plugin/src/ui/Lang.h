@@ -282,7 +282,11 @@ namespace FUI::Lang
         X(WheelPick, "pick")                                                                        \
         X(WheelApply, "release to apply") \
         X(WheelPage, "page")   /* quick menu: W/S, only shown when there IS another page */ \
-        X(WheelClose, "press again to close")   /* ...when a TAP left it standing */
+        X(WheelClose, "press again to close")   /* ...when a TAP left it standing */ \
+        X(WheelPreset, "PRESET")   /* quick menu group banners */                                   \
+        X(WheelCostume, "COSTUME")                                                                  \
+        X(WheelGear, "GEAR")                                                                        \
+        X(WheelMagic, "MAGIC")
 
     enum class Str : int
     {
